@@ -31,6 +31,11 @@ type BaseTool interface {
 	AfterExecInfo(json.RawMessage) string
 }
 
+// ResultTool 可同时返回正文、压缩文本及归档引用；其他工具继续使用 Execute。
+type ResultTool interface {
+	ExecuteResult(ctx context.Context, args json.RawMessage) *sharedkernel.ToolResult
+}
+
 type DefaultRegistry struct {
 	db map[string]BaseTool
 	// tracer 是工具执行 span 的追踪注入点，经构造注入；nil 缺省 noop，
@@ -89,24 +94,18 @@ func (d *DefaultRegistry) Execute(ctx context.Context, toolCall *sharedkernel.To
 		}
 	}
 
-	output, execErr := tool.Execute(ctx, toolCall.Arguments)
-	if execErr != nil {
-		// 与老 engine.buildToolResultContent 对齐：执行失败时在返回前就把
-		// 自愈引导提示词与原始输出包进 Output，使 ToolResult.Output 成为
-		// 可直接回写模型的最终内容
-		return &sharedkernel.ToolResult{
-			Error:      execErr,
-			Output:     buildToolResultContent(toolCall.Name, execErr, output),
-			IsError:    true,
-			ToolCallID: toolCall.ID,
-		}
+	var result *sharedkernel.ToolResult
+	if rich, ok := tool.(ResultTool); ok {
+		result = rich.ExecuteResult(ctx, toolCall.Arguments)
+	} else {
+		output, err := tool.Execute(ctx, toolCall.Arguments)
+		result = &sharedkernel.ToolResult{Output: output, Error: err}
 	}
-
-	return &sharedkernel.ToolResult{
-		Output:     output,
-		IsError:    false,
-		ToolCallID: toolCall.ID,
-	}
+	execErr = result.Error
+	result.ToolCallID = toolCall.ID
+	result.IsError = execErr != nil
+	result.Output = buildToolResultContent(toolCall.Name, execErr, result.Output)
+	return result
 }
 
 func (d *DefaultRegistry) Register(tool BaseTool) {
@@ -158,9 +157,13 @@ func buildToolResultContent(name string, execErr error, output string) string {
 // 自愈引导提示词已在 Registry.Execute 阶段包进 result.Output，此处直接
 // 透传 Output 作为消息正文，不再重复包装。
 func ToolResultAsMsg(result *sharedkernel.ToolResult) *sharedkernel.Message {
-	return &sharedkernel.Message{
-		Role:       sharedkernel.RoleTool,
-		ToolCallID: result.ToolCallID,
-		Content:    result.Output,
+	msg := sharedkernel.Message{
+		Role:           sharedkernel.RoleTool,
+		ToolCallID:     result.ToolCallID,
+		Content:        result.Output,
+		CompactContent: result.CompactContent,
+		Artifact:       result.Artifact,
 	}
+	copy := msg.Clone()
+	return &copy
 }

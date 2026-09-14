@@ -86,14 +86,9 @@ func (r *Runner) Run(ctx context.Context, workDir, command string, timeout time.
 	waitErr := cmd.Wait()
 	_ = tmp.Close()
 
-	// 超时/取消：交回原始 ctx 错误，由领域层据 errors.Is 区分面向模型的文案
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return tools.ShellOutcome{}, ctxErr
-	}
-
 	output, readErr := os.ReadFile(tmp.Name())
 	if readErr != nil {
-		return tools.ShellOutcome{}, fmt.Errorf("读取命令输出失败: %w", readErr)
+		return tools.ShellOutcome{}, errors.Join(ctx.Err(), fmt.Errorf("读取命令输出失败: %w", readErr))
 	}
 
 	outcome := tools.ShellOutcome{Output: string(output)}
@@ -101,10 +96,14 @@ func (r *Runner) Run(ctx context.Context, workDir, command string, timeout time.
 		var exitErr *exec.ExitError
 		if !errors.As(waitErr, &exitErr) {
 			// 非退出码类失败（如 I/O 异常）属基础设施错误，不当作命令结果
-			return tools.ShellOutcome{}, waitErr
+			return outcome, errors.Join(ctx.Err(), waitErr)
 		}
 		outcome.ExitCode = exitErr.ExitCode()
 		outcome.ExitErr = waitErr.Error()
+	}
+	// 超时/取消也交回终止前输出；调用方仍可用 errors.Is 识别原因。
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return outcome, ctxErr
 	}
 	return outcome, nil
 }

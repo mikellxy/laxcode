@@ -36,6 +36,8 @@ type Message struct {
 	Artifact    *ArtifactRef `json:"artifact,omitempty"`
 	Role        string       `json:"role"`
 	Content     string       `json:"content"`
+	// CompactContent 是工具提供的简短结果，压缩器无需解释具体工具字段。
+	CompactContent string `json:"compact_content,omitempty"`
 	// ReasoningID and ReasoningContent carry the model's chain-of-thought
 	// (assistant messages only), replayed to Responses API on later turns.
 	ReasoningID      string     `json:"reasoning_id,omitempty"`

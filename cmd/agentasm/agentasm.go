@@ -103,7 +103,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	// 文件，由 Cleanup 里的 toolReg.Close() 统一回收。
 	shellRunner := shell.New()
 	toolReg := tools.NewDefaultRegistry(tracer)
-	toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner))
+	toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, artifactStore, sess.ID))
 	toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS))
 	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS))
 	toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS))

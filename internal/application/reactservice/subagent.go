@@ -122,7 +122,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// 一次运行即完整生命周期，defer Close 回收 bash 后台进程与临时文件；
 	// 命令执行端口按子 Agent 新建，以免回收波及父 Agent 的后台进程。
 	childReg := tools.NewDefaultRegistry(s.parent.tracer)
-	childReg.Register(tools.NewBashTool(workDir, s.deps.NewShell()))
+	childReg.Register(tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID))
 	childReg.Register(tools.NewReadFileTool(workDir, s.deps.WorkFS))
 	defer childReg.Close()
 

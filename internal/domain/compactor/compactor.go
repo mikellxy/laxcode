@@ -168,8 +168,12 @@ func ArtifactCandidates(msgs []sharedkernel.Message) []int {
 }
 
 func clearedToolOutput(msg sharedkernel.Message) string {
-	return fmt.Sprintf("[早期工具输出已归档 call_id=%s bytes=%d；read_artifact(artifact_id=%s, offset=0, limit=4000) 按需读取]",
+	ref := fmt.Sprintf("[早期工具输出已归档 call_id=%s bytes=%d；read_artifact(artifact_id=%s, offset=0, limit=4000) 按需读取]",
 		msg.ToolCallID, msg.Artifact.ByteSize, msg.Artifact.ID)
+	if msg.CompactContent != "" {
+		return msg.CompactContent + "\n" + ref
+	}
+	return ref
 }
 
 func replaceContent(msg *sharedkernel.Message, content string) int {

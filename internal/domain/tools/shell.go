@@ -10,11 +10,12 @@ import (
 	"time"
 )
 
-// ShellOutcome 是一次 shell 命令执行的归一结果，仅在命令确实跑完时有意义。
+// ShellOutcome 是一次 shell 执行的观测结果；超时/取消时也保留终止前输出。
 type ShellOutcome struct {
 	// Output 是 stdout 与 stderr 合并后的原始输出，未截断。
 	Output string
 	// ExitCode 是命令退出码，正常结束为 0。
+	// Run 返回 error 时，不应仅凭 ExitCode 判断命令是否成功。
 	ExitCode int
 	// ExitErr 是命令未正常结束时的原始错误描述（如 "exit status 3"、
 	// "signal: killed"）；退出码为 0 时为空串。领域层据此拼面向模型的
@@ -32,6 +33,7 @@ type ShellOutcome struct {
 //     仅在超时/取消、无法启动、无法读取输出等基础设施失败时返回 error，
 //     且超时/取消返回的 error 须满足 errors.Is(err, context.DeadlineExceeded)
 //     或 errors.Is(err, context.Canceled)，供领域层区分文案。
+//     超时/取消返回 error 时，仍须尽可能在 ShellOutcome 中保留已有输出。
 type ShellRunner interface {
 	// Run 在 workDir 下执行 command，至多等待 timeout；timeout <= 0 时取实现默认值。
 	Run(ctx context.Context, workDir, command string, timeout time.Duration) (ShellOutcome, error)

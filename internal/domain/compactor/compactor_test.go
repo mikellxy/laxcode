@@ -35,6 +35,35 @@ func TestCompressZeroSavingsIsNoopAndDoesNotAliasSlice(t *testing.T) {
 	}
 }
 
+func TestCompressReusesArtifactAndToolProvidedCompactContent(t *testing.T) {
+	ref := &sharedkernel.ArtifactRef{ID: strings.Repeat("a", 64), ByteSize: 20000}
+	compact := "status:completed\nexit_code:7\nstdout_truncated:true"
+	msgs := []sharedkernel.Message{assistantToolTurn("old"), {
+		Role: sharedkernel.RoleTool, ToolCallID: "old", Content: strings.Repeat("preview", 1000),
+		CompactContent: compact, Artifact: ref,
+	}}
+	for _, id := range []string{"a", "b", "c"} {
+		msgs = append(msgs, assistantToolTurn(id), sharedkernel.Message{Role: sharedkernel.RoleTool, ToolCallID: id, Content: "recent"})
+	}
+	if len(ArtifactCandidates(msgs)) != 0 {
+		t.Fatal("already archived output must not be archived again")
+	}
+	out, saved, err := SimpleCompactor.Compress(msgs, 1)
+	if err != nil || saved <= 0 {
+		t.Fatalf("saved=%d err=%v", saved, err)
+	}
+	if !strings.HasPrefix(out[1].Content, compact) || !strings.Contains(out[1].Content, ref.ID) || out[1].CompactContent != compact || *out[1].Artifact != *ref {
+		t.Fatal("compact content or full-output reference lost")
+	}
+	again, savedAgain, err := SimpleCompactor.Compress(out, 1)
+	if err != nil || savedAgain != 0 || again[1].Content != out[1].Content {
+		t.Fatal("repeated compaction changed tool facts")
+	}
+	if msgs[1].Content == out[1].Content {
+		t.Fatal("original message mutated")
+	}
+}
+
 func TestCompressUsesRoleToolAndKeepsLatestParallelSpan(t *testing.T) {
 	oldOutput := strings.Repeat("旧结果", 500)
 	midOutput := strings.Repeat("中", 800)

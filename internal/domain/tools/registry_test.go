@@ -242,7 +242,8 @@ func TestToolNameConstants(t *testing.T) {
 }
 
 func TestExecResultString(t *testing.T) {
-	res := ExecResult{ExitCode: 1, Stdout: "boom", Desc: "命令执行失败"}
+	exitCode := 1
+	res := ExecResult{ExitCode: &exitCode, Stdout: "boom", Desc: "命令执行失败"}
 	s := res.String()
 	if !strings.Contains(s, "exit_code:1") || !strings.Contains(s, "stdout:boom") {
 		t.Errorf("ExecResult.String 输出不符：%q", s)

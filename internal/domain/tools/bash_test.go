@@ -7,11 +7,15 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
 
 // fakeRunner 是 ShellRunner 的测试替身：记录调用入参并回放预设结果。
@@ -43,7 +47,31 @@ var _ ShellRunner = (*fakeRunner)(nil)
 
 func newTestBashTool(t *testing.T, runner ShellRunner) *BashTool {
 	t.Helper()
-	return NewBashTool(t.TempDir(), runner)
+	return NewBashTool(t.TempDir(), runner, &bashArtifactStore{}, "bash-test")
+}
+
+type bashArtifactStore struct {
+	content string
+	puts    int
+	err     error
+}
+
+func (s *bashArtifactStore) PutArtifact(ctx context.Context, sid, content string) (sharedkernel.ArtifactRef, error) {
+	if err := ctx.Err(); err != nil {
+		return sharedkernel.ArtifactRef{}, err
+	}
+	s.puts++
+	s.content = content
+	return sharedkernel.ArtifactRef{ID: fmt.Sprintf("%x", sha256.Sum256([]byte(content))), ByteSize: len(content)}, s.err
+}
+
+func (*bashArtifactStore) ReadArtifact(context.Context, string, string, int, int) (ArtifactPage, error) {
+	return ArtifactPage{}, errors.New("unexpected read")
+}
+
+func bashPreview(out string) string {
+	body := strings.SplitN(out, "stdout:", 2)[1]
+	return strings.SplitN(body, "\n[完整输出已归档", 2)[0]
 }
 
 func execBash(t *testing.T, b *BashTool, command string) (string, error) {
@@ -132,8 +160,7 @@ func TestBashToolTruncateOutput(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("missing stdout section: %q", out)
 	}
-	// ExecResult.String 不追加尾换行，stdout: 之后即截断后的正文
-	if got := len([]rune(out[idx+len("stdout:"):])); got != 8000 {
+	if got := len([]rune(bashPreview(out))); got != 8000 {
 		t.Errorf("truncated stdout rune count = %d, want 8000", got)
 	}
 }
@@ -152,7 +179,7 @@ func TestBashToolTruncateKeepsMultibyteRunes(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("missing stdout section: %q", out)
 	}
-	body := out[idx+len("stdout:"):]
+	body := bashPreview(out)
 	if got := len([]rune(body)); got != 8000 {
 		t.Errorf("truncated rune count = %d, want 8000", got)
 	}
@@ -161,8 +188,7 @@ func TestBashToolTruncateKeepsMultibyteRunes(t *testing.T) {
 	}
 }
 
-// TestBashToolTimeoutWording 验证超时被归为 BashExecuteError 且文案引导模型
-// 改用后台进程，而非误判为命令写错。
+// TestBashToolTimeoutWording 验证超时被归为 BashExecuteError，并保留底层原因。
 func TestBashToolTimeoutWording(t *testing.T) {
 	runner := &fakeRunner{err: context.DeadlineExceeded}
 	b := newTestBashTool(t, runner)

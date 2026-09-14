@@ -55,6 +55,7 @@ type messageModel struct {
 	Role             string    `gorm:"column:role;type:varchar(32);not null"`
 	ToolCallID       string    `gorm:"column:tool_call_id;type:varchar(128);not null"`
 	Content          string    `gorm:"column:content;type:text;not null"`
+	CompactContent   string    `gorm:"column:compact_content;type:text;not null;default:''"`
 	ReasoningID      string    `gorm:"column:reasoning_id;type:varchar(255);not null"`
 	ReasoningContent string    `gorm:"column:reasoning_content;type:text;not null"`
 	ToolCallsJSON    []byte    `gorm:"column:tool_calls_json;type:json"`
@@ -102,7 +103,7 @@ func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error
 	return r, nil
 }
 
-// 无老数据兼容要求，当前 schema 直接以最终形态创建；业务数据只使用两张表。
+// 业务数据只使用两张表；新增可选消息字段时为已有会话补列。
 func (r *SqliteSessionRepo) migrate() error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		statements := []string{
@@ -118,7 +119,7 @@ func (r *SqliteSessionRepo) migrate() error {
 				created_at DATETIME NOT NULL,
 				updated_at DATETIME NOT NULL
 			)`,
-				`CREATE TABLE IF NOT EXISTS messages (
+			`CREATE TABLE IF NOT EXISTS messages (
 					session_id VARCHAR(128) NOT NULL,
 					message_type VARCHAR(32) NOT NULL CHECK (message_type IN ('original', 'in_memory')),
 					memory_generation BIGINT NOT NULL CHECK (memory_generation >= 0),
@@ -127,6 +128,7 @@ func (r *SqliteSessionRepo) migrate() error {
 					role VARCHAR(32) NOT NULL,
 					tool_call_id VARCHAR(128) NOT NULL DEFAULT '',
 					content TEXT NOT NULL,
+					compact_content TEXT NOT NULL DEFAULT '',
 					reasoning_id VARCHAR(255) NOT NULL DEFAULT '',
 					reasoning_content TEXT NOT NULL DEFAULT '',
 					tool_calls_json JSON,
@@ -148,6 +150,11 @@ func (r *SqliteSessionRepo) migrate() error {
 		for _, statement := range statements {
 			if err := tx.Exec(statement).Error; err != nil {
 				return fmt.Errorf("create session schema: %w", err)
+			}
+		}
+		if !tx.Migrator().HasColumn(&messageModel{}, "compact_content") {
+			if err := tx.Exec("ALTER TABLE messages ADD COLUMN compact_content TEXT NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add compact content column: %w", err)
 			}
 		}
 		return nil
@@ -453,9 +460,10 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 		SessionID: id, MessageType: messageType, MemoryGeneration: generation,
 		Seq: msg.Seq, OriginalSeqJSON: originalSeq, Role: msg.Role,
 		ToolCallID: msg.ToolCallID, Content: msg.Content, ReasoningID: msg.ReasoningID,
+		CompactContent:   msg.CompactContent,
 		ReasoningContent: msg.ReasoningContent, ToolCallsJSON: toolCalls,
 		FinishReason: msg.FinishReason,
-		TokenInput: int64(msg.TokenUsed.TokenInput), TokenOutput: int64(msg.TokenUsed.TokenOutput),
+		TokenInput:   int64(msg.TokenUsed.TokenInput), TokenOutput: int64(msg.TokenUsed.TokenOutput),
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if msg.Artifact != nil {
@@ -470,9 +478,10 @@ func messagePayload(row messageModel) map[string]any {
 	return map[string]any{
 		"original_seq_json": row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
 		"content": row.Content, "reasoning_id": row.ReasoningID,
+		"compact_content":   row.CompactContent,
 		"reasoning_content": row.ReasoningContent, "tool_calls_json": row.ToolCallsJSON,
 		"finish_reason": row.FinishReason,
-		"artifact_id": row.ArtifactID, "artifact_byte_size": row.ArtifactByteSize,
+		"artifact_id":   row.ArtifactID, "artifact_byte_size": row.ArtifactByteSize,
 		"token_input": row.TokenInput, "token_output": row.TokenOutput, "updated_at": row.UpdatedAt,
 	}
 }
@@ -490,7 +499,8 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 	}
 	msg := sharedkernel.Message{
 		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content,
-		ReasoningID: row.ReasoningID, ReasoningContent: row.ReasoningContent,
+		CompactContent: row.CompactContent,
+		ReasoningID:    row.ReasoningID, ReasoningContent: row.ReasoningContent,
 		ToolCalls: calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,
 		TokenUsed: sharedkernel.TokenStatistics{TokenInput: int(row.TokenInput), TokenOutput: int(row.TokenOutput)},
 	}

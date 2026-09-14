@@ -228,6 +228,32 @@ func TestRunParentContextCanceled(t *testing.T) {
 	}
 }
 
+func TestRunInterruptedKeepsDiagnosticOutput(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent_canceled=%v", canceled), func(t *testing.T) {
+			r := New()
+			t.Cleanup(func() { _ = r.Close() })
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			timeout := 300 * time.Millisecond
+			wantErr := context.DeadlineExceeded
+			if canceled {
+				timeout = 30 * time.Second
+				wantErr = context.Canceled
+				timer := time.AfterFunc(300*time.Millisecond, cancel)
+				defer timer.Stop()
+			}
+			outcome, err := r.Run(ctx, t.TempDir(), "printf 'started\\n'; printf 'diagnostic\\n' >&2; sleep 30", timeout)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("err=%v want=%v", err, wantErr)
+			}
+			if !strings.Contains(outcome.Output, "started\n") || !strings.Contains(outcome.Output, "diagnostic\n") {
+				t.Fatalf("partial stdout/stderr lost: %q", outcome.Output)
+			}
+		})
+	}
+}
+
 func TestRunTimeoutKillsBackgroundChildren(t *testing.T) {
 	if _, err := exec.LookPath("pgrep"); err != nil {
 		t.Skip("pgrep not available")
