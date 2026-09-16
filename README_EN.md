@@ -22,6 +22,7 @@ LaxCode is a lightweight AI Agent implemented in Go. It does not depend on any t
 ## 1. Usage
 ### 1.1 Go Version
 * **Go version**: LaxCode requires Go version 1.26 or above
+* The `grep` and `glob` tools require ripgrep (`rg`) on `PATH`; run `rg --version` to check.
 
 ### 1.2 Model Configuration (any OpenAI-compatible endpoint)
 * **Using a config file**
@@ -208,7 +209,26 @@ Edge handling tailored for agent scenarios:
 - Built-in timeout control; a timeout is classified as a recoverable error;
 - Structured return of exit code and stdout; distinguishes command failure from process-level faults.
 
-### 3.5 run_sub_agent
+### 3.5 glob
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `pattern` | string | File path glob, such as `**/*.go` |
+| `path` | string | Optional search directory within the working directory; defaults to the working directory |
+
+Runs `rg --files` directly without a shell. Returns up to 100 absolute file paths. Paths and symlink targets must stay within the working directory.
+
+### 3.6 grep
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `pattern` | string | Regular expression for searching file contents |
+| `path` | string | Optional file or directory within the working directory; defaults to the working directory |
+| `include` | string | Optional file glob, such as `*.go` |
+
+Runs `rg` directly without a shell. Returns file paths and matching line numbers, up to 100 results. Paths and symlink targets must stay within the working directory.
+
+### 3.7 run_sub_agent
 
 | Argument | Type | Description |
 | --- | --- | --- |
@@ -261,7 +281,7 @@ LaxCode/
 │   │   └── llm_router/    # Local model-gateway HTTP/SSE orchestration
 │   ├── domain/
 │   │   ├── session/       # session aggregate, SessionRepository interface
-│   │   ├── tools/         # tool registry & read/write/edit/bash behavioral contracts, WorkFS / ShellRunner ports
+│   │   ├── tools/         # tool registry, built-in tool contracts, and infrastructure ports
 │   │   ├── llmprovider/   # LLM client interface
 │   │   ├── llmrouter/     # Gateway upstream streaming port
 │   │   ├── prompt/        # system prompt assembly (persona / skill index / Plan Mode), SkillSource port

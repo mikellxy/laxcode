@@ -27,7 +27,8 @@ type subAgentArgs struct {
 // 只依赖 domain 端口、不反向依赖 infrastructure，且后续新增端口不破构造签名。
 type SubAgentDeps struct {
 	// WorkFS 是沙箱文件读写端口，供子 Agent 的 read_file 使用；无状态，可与父共享。
-	WorkFS tools.WorkFS
+	WorkFS  tools.WorkFS
+	Ripgrep tools.RipgrepRunner
 	// NewShell 为每个子 Agent 新建一个独立的命令执行端口。**必须每次新建**：
 	// 实现方持有自己派生的后台进程与输出临时文件登记表，子 Agent 结束时
 	// childReg.Close() 会回收它；若与父共享同一实例，子 Agent 收尾会连带
@@ -41,7 +42,7 @@ type SubAgentDeps struct {
 // SubAgent 把「启动一个隔离子 Agent 跑子任务」包装成 tools.BaseTool 的适配器。
 // 它编排一个子 ReActService：
 //   - 全新子会话（id=sub:<ts>-<parentID>，复用父 SessRepo），历史独立，绝不写回父对话；
-//   - 受限工具集（仅 bash + read_file，且不含 sub-agent 自身 → 天然防递归）；
+//   - 受限工具集（bash/read_file/grep/glob，且不含 sub-agent 自身 → 天然防递归）；
 //   - planMode=false，继承父的生成/摘要 LLMClient 与 tracer（子 span 树挂在同一 trace 下）；
 //   - 事件静默（子 Agent 中间过程不外发）。
 //
@@ -117,13 +118,17 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	childSkills := prompt.LoadSkills(s.deps.SkillSrc, workDir, nil)
 	childSysPrompt := prompt.GetSysPrompt(workDir, childSkills, nil)
 
-	// 受限工具集：bash + read_file；构造服务时另注册会话级 read_artifact。
+	// 受限工具集不含 sub-agent 自身；构造服务时另注册会话级 read_artifact。
 	// 不含 sub-agent 自身，避免递归。子 Agent
 	// 一次运行即完整生命周期，defer Close 回收 bash 后台进程与临时文件；
 	// 命令执行端口按子 Agent 新建，以免回收波及父 Agent 的后台进程。
 	childReg := tools.NewDefaultRegistry(s.parent.tracer)
 	childReg.Register(tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID))
 	childReg.Register(tools.NewReadFileTool(workDir, s.deps.WorkFS))
+	if s.deps.Ripgrep != nil {
+		childReg.Register(tools.NewGrepTool(workDir, s.deps.Ripgrep))
+		childReg.Register(tools.NewGlobTool(workDir, s.deps.Ripgrep))
+	}
 	defer childReg.Close()
 
 	// 事件静默：子 Agent 中间过程不外发（consumer 直接丢弃）。

@@ -22,6 +22,7 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。它不依赖任何第三方 A
 ## 1. 使用
 ### 1.1 Go 版本
 * **Go version**: LaxCode requires Go version 1.26 or above
+* 使用 `grep`、`glob` 工具时，需安装 ripgrep 并确保 `rg` 在 `PATH` 中（可运行 `rg --version` 检查）。
 
 ### 1.2 模型配置（任意 OpenAI 兼容端点）
 * **使用配置文件**
@@ -203,7 +204,26 @@ LaxCode 在 ReAct 循环中完整实现 openai function call 协议。启动时�
 - 内置超时控制，超时归类为可恢复错误；
 - 结构化返回退出码、标准输出；区分命令执行失败与进程运行故障。
 
-### 3.5 run_sub_agent
+### 3.5 glob
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `pattern` | string | 匹配文件路径的 glob，如 `**/*.go` |
+| `path` | string | 可选；工作目录内的搜索目录，默认工作目录 |
+
+直接执行 `rg --files`，不经过 shell。返回绝对文件路径，最多显示 100 条；路径及符号链接目标须位于工作目录内。
+
+### 3.6 grep
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `pattern` | string | 搜索文件内容的正则表达式 |
+| `path` | string | 可选；工作目录内的文件或目录，默认工作目录 |
+| `include` | string | 可选；筛选文件的 glob，如 `*.go` |
+
+直接执行 `rg`，不经过 shell。返回文件路径和匹配行号，最多显示 100 条；路径及符号链接目标须位于工作目录内。
+
+### 3.7 run_sub_agent
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
@@ -257,7 +277,7 @@ LaxCode/
 │   │   └── llm_router/    # 本地模型网关 HTTP/SSE 编排
 │   ├── domain/
 │   │   ├── session/       # 会话聚合、SessionRepository 仓储接口
-│   │   ├── tools/         # 工具注册表与 read/write/edit/bash 行为契约，WorkFS / ShellRunner 端口
+│   │   ├── tools/         # 工具注册表与内置工具行为契约、基础设施端口
 │   │   ├── llmprovider/   # LLM 客户端接口
 │   │   ├── llmrouter/     # 网关上游流式端口
 │   │   ├── prompt/        # 系统提示词组装（人格 / Skill 索引 / Plan Mode），SkillSource 端口

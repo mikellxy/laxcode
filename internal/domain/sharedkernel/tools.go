@@ -20,10 +20,12 @@ const (
 )
 
 type ToolResult struct {
-	Error          error        `json:"error"`
-	ToolCallID     string       `json:"tool_call_id"`
-	Output         string       `json:"output"`
-	IsError        bool         `json:"is_error"`
-	CompactContent string       `json:"compact_content,omitempty"`
-	Artifact       *ArtifactRef `json:"artifact,omitempty"`
+	Error          error          `json:"error"`
+	ToolCallID     string         `json:"tool_call_id"`
+	Output         string         `json:"output"`
+	IsError        bool           `json:"is_error"`
+	Title          string         `json:"title,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	CompactContent string         `json:"compact_content,omitempty"`
+	Artifact       *ArtifactRef   `json:"artifact,omitempty"`
 }

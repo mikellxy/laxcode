@@ -22,6 +22,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
@@ -107,6 +108,9 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS))
 	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS))
 	toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS))
+	ripgrepRunner := ripgrep.New()
+	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner))
+	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner))
 
 	// provider + service
 	c := config.EnvAndFileConf
@@ -123,6 +127,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	toolReg.Register(reactservice.NewSubAgent(svc, in.WorkDir,
 		reactservice.SubAgentDeps{
 			WorkFS:   workFS,
+			Ripgrep:  ripgrepRunner,
 			SkillSrc: skillSrc,
 			// 每个子 Agent 各自新建：其 childReg.Close() 只回收自己派生的
 			// 后台进程，不会波及主 Agent 尚在运行的后台服务
