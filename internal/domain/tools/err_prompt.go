@@ -82,35 +82,35 @@ func (f *FileNotExistError) AsPrompt() (string, bool) {
 	), true
 }
 
-// EditNotFoundError edit_file 未找到匹配，suggestion 阻止模型凭记忆
-// 盲目重试，强制其重新 read_file 获取最新内容后再编辑。
-type EditNotFoundError struct {
+// EditBatchValidationError 表示 edit_file 的批量精确匹配预检失败。此时文件
+// 尚未写入，提示模型重新读取并逐字节核对空白与换行符。
+type EditBatchValidationError struct {
 	errWithPromptBase
 }
 
-func (f *EditNotFoundError) AsPrompt() (string, bool) {
+func (f *EditBatchValidationError) AsPrompt() (string, bool) {
 	if f.Err == nil {
 		return "", false
 	}
 	return buildErrPrompt(errTypeTool,
 		f.Err.Error(),
-		"禁止凭记忆盲目重试。文件内容可能已变化或 old_text 与文件不一致，请先用 read_file 重新获取文件最新内容，再逐字核对并重新组装 old_text 后重试",
+		"本次批量编辑未修改文件。请先用 read_file 重新获取最新内容，逐字核对每个 old_text；特别注意每行行首和行尾空白字符数量、空格与 Tab、空行数量以及 LF/CRLF 换行符，确保每项仅精确匹配一处且区间互不重叠后再试",
 	), true
 }
 
-// EditMultiMatchError edit_file 的 old_text 多处命中，suggestion 引导
-// 扩大 old_text 上下文范围使匹配唯一。
-type EditMultiMatchError struct {
+// EditPartialError 表示 edit_file 执行批次时发现文件变化或发生写入故障。
+// 此前成功项已经落盘，模型必须先重新读取，禁止按旧快照继续编辑。
+type EditPartialError struct {
 	errWithPromptBase
 }
 
-func (f *EditMultiMatchError) AsPrompt() (string, bool) {
+func (f *EditPartialError) AsPrompt() (string, bool) {
 	if f.Err == nil {
 		return "", false
 	}
 	return buildErrPrompt(errTypeTool,
 		f.Err.Error(),
-		"old_text 在文件中匹配到多处，请扩大 old_text 范围纳入更多上下文行使其唯一后重试",
+		"批量编辑已停止，文件可能已有部分替换成功。禁止沿用旧 offset 或原样重试；请立即用 read_file 重新读取文件，确认当前内容后重新组织剩余 edits",
 	), true
 }
 

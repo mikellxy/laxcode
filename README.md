@@ -189,10 +189,9 @@ LaxCode 在 ReAct 循环中完整实现 openai function call 协议。启动时�
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `path` | string | 已存在文件的相对路径 |
-| `old_text` | string | 待替换原文 |
-| `new_text` | string | 替换后内容 |
+| `edits` | array | 批量精确替换项，每项包含 `old_text` 与 `new_text` |
 
-针对 LLM 输出文本缩进、换行符差异问题，edit_file 实现**四级宽容降级匹配**，大幅降低因文本微小偏差导致的修改失败。
+每个 `old_text` 必须逐字节精确匹配一处，且匹配区间不得重叠。全部预检通过后按 offset 从后向前替换；执行期间若文件内容变化，工具保留已完成项、停止后续编辑并要求重新读取文件。
 
 ### 3.4 bash
 

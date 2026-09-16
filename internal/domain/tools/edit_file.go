@@ -7,11 +7,21 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
+
+type editFileChangeArgs struct {
+	OldText *string `json:"old_text"`
+	NewText *string `json:"new_text"`
+}
+
+type editFileArgs struct {
+	Path  string               `json:"path"`
+	Edits []editFileChangeArgs `json:"edits"`
+}
 
 type EditFileTool struct {
 	WorkDir string
@@ -28,16 +38,15 @@ func (e *EditFileTool) AfterExecInfo(message json.RawMessage) string {
 }
 
 func (e *EditFileTool) BeforeExecInfo(args json.RawMessage) string {
-	argsMap := make(map[string]string)
-	if err := json.Unmarshal(args, &argsMap); err != nil {
+	var argsObj editFileArgs
+	if err := json.Unmarshal(args, &argsObj); err != nil {
 		return ToolEditFile + "()"
 	}
-	path, ok := argsMap["path"]
-	if !ok {
+	if argsObj.Path == "" {
 		return ToolEditFile + "()"
 	}
 
-	return fmt.Sprintf("%s(%s)", ToolEditFile, path)
+	return fmt.Sprintf("%s(path=%s, edits=%d)", ToolEditFile, argsObj.Path, len(argsObj.Edits))
 }
 
 func (e *EditFileTool) Name() string {
@@ -47,7 +56,7 @@ func (e *EditFileTool) Name() string {
 func (e *EditFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        e.Name(),
-		Description: "替换文件中已有的文本片段。old_text 必须与文件内容精确一致且在文件中唯一；若报错多处匹配请扩大 old_text 加入上下文行，若未匹配请重新 read_file 确认内容。文件必须已存在，新建文件请使用 write_file。**严格限制**只编辑工作目录内的文件，提供相对路径",
+		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。**严格限制**只编辑工作目录内的文件，提供相对路径",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -55,40 +64,54 @@ func (e *EditFileTool) Definition() sharedkernel.ToolDefinition {
 					"type":        "string",
 					"description": "要编辑的文件的相对路径，如 cmd/main/main.go",
 				},
-				"old_text": map[string]any{
-					"type":        "string",
-					"description": "要替换的原文片段，须与文件内容精确一致并包含足够上下文使其在文件中唯一",
-				},
-				"new_text": map[string]any{
-					"type":        "string",
-					"description": "替换后的内容，允许为空字符串（删除该片段）",
+				"edits": map[string]any{
+					"type":        "array",
+					"minItems":    1,
+					"description": "要执行的精确替换列表；所有项目先统一预检，再按匹配 offset 从后向前执行",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"old_text": map[string]any{
+								"type":        "string",
+								"minLength":   1,
+								"description": "要替换的原文，必须逐字节精确匹配且在文件中仅出现一次",
+							},
+							"new_text": map[string]any{
+								"type":        "string",
+								"description": "替换后的原始内容，允许为空字符串（删除该片段）",
+							},
+						},
+						"required": []string{"old_text", "new_text"},
+					},
 				},
 			},
-			"required": []string{"path", "old_text", "new_text"},
+			"required": []string{"path", "edits"},
 		},
 	}
 }
 
 func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	argsMap := make(map[string]string)
-	if err := json.Unmarshal(args, &argsMap); err != nil {
-		return "", err
+	var argsObj editFileArgs
+	if err := json.Unmarshal(args, &argsObj); err != nil {
+		return "", NewErrorWithPrompt(&ParamError{}, err)
 	}
 
-	path, ok := argsMap["path"]
-	if !ok || strings.TrimSpace(path) == "" {
+	if strings.TrimSpace(argsObj.Path) == "" {
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("path required"))
 	}
-	oldText, ok := argsMap["old_text"]
-	if !ok || strings.TrimSpace(oldText) == "" {
-		return "", NewErrorWithPrompt(&ParamError{}, errors.New("old_text required"))
+	if len(argsObj.Edits) == 0 {
+		return "", NewErrorWithPrompt(&ParamError{}, errors.New("edits must contain at least one item"))
 	}
-	newText, ok := argsMap["new_text"]
-	if !ok {
-		return "", NewErrorWithPrompt(&ParamError{}, errors.New("new_text required"))
+	for i, edit := range argsObj.Edits {
+		if edit.OldText == nil || *edit.OldText == "" {
+			return "", NewErrorWithPrompt(&ParamError{}, fmt.Errorf("edits[%d].old_text must be non-empty", i))
+		}
+		if edit.NewText == nil {
+			return "", NewErrorWithPrompt(&ParamError{}, fmt.Errorf("edits[%d].new_text required", i))
+		}
 	}
 
-	target, err := safeJoinWorkDir(path, e.WorkDir)
+	target, err := safeJoinWorkDir(argsObj.Path, e.WorkDir)
 	if err != nil {
 		return "", err
 	}
@@ -97,26 +120,44 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", NewErrorWithPrompt(&FileNotExistError{},
-				fmt.Errorf("文件 %s 不存在，新建文件请使用 write_file", path))
+				fmt.Errorf("文件 %s 不存在，新建文件请使用 write_file", argsObj.Path))
 		}
 		return "", NewErrorWithPrompt(&FileIOError{}, err)
 	}
 
-	newContent, start, end, level, err := applyEdit(string(b), oldText, newText)
+	planned, err := planExactEdits(string(b), argsObj.Edits)
 	if err != nil {
 		return "", err
-	}
-
-	if err := e.FS.WriteFile(target, []byte(newContent)); err != nil {
-		return "", NewErrorWithPrompt(&FileIOError{}, err)
 	}
 
 	rel, err := filepath.Rel(e.WorkDir, target)
 	if err != nil {
 		rel = target
 	}
+	rel = filepath.ToSlash(rel)
 
-	return fmt.Sprintf("已在 %s 第 %d-%d 行完成替换（%s）", filepath.ToSlash(rel), start, end, level), nil
+	completed := make([]plannedEdit, 0, len(planned))
+	for _, edit := range planned {
+		currentBytes, readErr := e.FS.ReadFile(target)
+		if readErr != nil {
+			return partialEditResult(rel, completed, len(planned), edit,
+				fmt.Sprintf("重新读取文件失败: %v", readErr))
+		}
+		current := string(currentBytes)
+		if edit.Offset < 0 || edit.End > len(current) || current[edit.Offset:edit.End] != edit.OldText {
+			return partialEditResult(rel, completed, len(planned), edit,
+				"原 offset 处内容已不再与 old_text 精确匹配")
+		}
+
+		updated := replaceAt(current, edit.Offset, len(edit.OldText), edit.NewText)
+		if writeErr := e.FS.WriteFile(target, []byte(updated)); writeErr != nil {
+			return partialEditResult(rel, completed, len(planned), edit,
+				fmt.Sprintf("写入文件失败: %v", writeErr))
+		}
+		completed = append(completed, edit)
+	}
+
+	return formatCompletedEdits(rel, completed, len(planned)), nil
 }
 
 // safeJoinWorkDir 将用户提供的相对路径安全地解析到工作目录内，
@@ -146,112 +187,98 @@ func safeJoinWorkDir(rel string, workDir string) (string, error) {
 	return target, nil
 }
 
-// ---------- edit_file 四级匹配引擎 ----------
+// ---------- edit_file 批量精确匹配引擎 ----------
 
-// edit_file 匹配层级标识，用于成功反馈。
-const (
-	editLevelExact = "精确匹配"
-	editLevelNorm  = "换行归一化匹配"
-	editLevelTrim  = "首尾空白容忍匹配"
-	editLevelLines = "行级匹配"
-)
-
-// applyEdit 在 content 中按四级宽容降级策略定位 oldText 并替换为 newText，
-// 返回替换后的完整内容、替换区间（1-based 起止行号）与命中层级：
-//  1. 精确匹配：原始字节域，其余字节不动
-//  2. 换行符归一化匹配：双侧 \r\n 归一为 \n，命中后全文件以 LF 写回
-//  3. 首尾空白容忍匹配：oldText 去首尾空白后在归一化内容中定位，两侧空白保留
-//  4. 行级匹配：双侧逐行去首尾空白后滑动窗口比较，newText 原样写入
-//
-// 任一层命中多处即报错并给出各行号；四层均未命中返回引导重新读取的错误。
-// newText 的换行符统一按 LF 写入。调用方须保证 oldText 非空白。
-func applyEdit(content, oldText, newText string) (string, int, int, string, error) {
-	newText = normalizeNewlines(newText)
-
-	// L1 精确匹配：原始字节域
-	if hits := findAll(content, oldText); len(hits) > 0 {
-		if len(hits) > 1 {
-			return "", 0, 0, "", multiMatchError(offsetLines(content, hits))
-		}
-		i := hits[0]
-		start := lineAt(content, i)
-		return replaceAt(content, i, len(oldText), newText), start, lineAt(content, i+len(oldText)-1), editLevelExact, nil
-	}
-
-	norm := normalizeNewlines(content)
-	normOld := normalizeNewlines(oldText)
-
-	// L2 换行符归一化匹配：命中后全文件以 LF 写回
-	if hits := findAll(norm, normOld); len(hits) > 0 {
-		if len(hits) > 1 {
-			return "", 0, 0, "", multiMatchError(offsetLines(norm, hits))
-		}
-		i := hits[0]
-		start := lineAt(norm, i)
-		return replaceAt(norm, i, len(normOld), newText), start, lineAt(norm, i+len(normOld)-1), editLevelNorm, nil
-	}
-
-	// L3 首尾空白容忍匹配：命中区间为去空白后内容的出现区间
-	if trimmedOld := strings.TrimSpace(normOld); trimmedOld != "" {
-		if hits := findAll(norm, trimmedOld); len(hits) > 0 {
-			if len(hits) > 1 {
-				return "", 0, 0, "", multiMatchError(offsetLines(norm, hits))
-			}
-			i := hits[0]
-			start := lineAt(norm, i)
-			return replaceAt(norm, i, len(trimmedOld), newText), start, lineAt(norm, i+len(trimmedOld)-1), editLevelTrim, nil
-		}
-	}
-
-	// L4 行级匹配：双侧逐行去首尾空白后滑动窗口比较
-	if strings.TrimSpace(normOld) != "" {
-		oldLines := splitTrimLines(normOld)
-		windows := matchLines(splitTrimLines(norm), oldLines)
-		if len(windows) > 1 {
-			lineNos := make([]int, len(windows))
-			for i, w := range windows {
-				lineNos[i] = w + 1
-			}
-			return "", 0, 0, "", multiMatchError(lineNos)
-		}
-		if len(windows) == 1 {
-			w := windows[0]
-			starts := lineStartOffsets(norm)
-			startOff := starts[w]
-			endOff := len(norm)
-			if w+len(oldLines) < len(starts) {
-				endOff = starts[w+len(oldLines)] - 1
-			}
-			start := w + 1
-			return norm[:startOff] + newText + norm[endOff:], start, start + len(oldLines) - 1, editLevelLines, nil
-		}
-	}
-
-	return "", 0, 0, "", NewErrorWithPrompt(&EditNotFoundError{},
-		errors.New("未找到匹配。文件可能已被修改，请重新 read_file 后重试；注意 old_text 须与文件内容逐字一致"))
+type plannedEdit struct {
+	RequestIndex int
+	OldText      string
+	NewText      string
+	Offset       int
+	End          int
+	StartLine    int
+	EndLine      int
 }
 
-// normalizeNewlines 将 \r\n 统一归一为 \n，孤立 \r 保持原样。
-func normalizeNewlines(s string) string {
-	return strings.ReplaceAll(s, "\r\n", "\n")
+// planExactEdits 在原始文件快照中预检全部编辑项。每个 old_text 必须逐字节
+// 精确匹配一处，且各匹配区间不得重叠。预检失败时不返回执行计划，调用方不会
+// 写入文件。成功计划按 offset 降序排列，保证高位替换不会移动低位 offset。
+func planExactEdits(content string, edits []editFileChangeArgs) ([]plannedEdit, error) {
+	planned := make([]plannedEdit, 0, len(edits))
+	var issues []string
+
+	for i, edit := range edits {
+		oldText := *edit.OldText
+		hits := findAllExact(content, oldText)
+		switch len(hits) {
+		case 0:
+			issues = append(issues, fmt.Sprintf(
+				"#%d old_text 未找到逐字节精确匹配", i+1))
+		case 1:
+			offset := hits[0]
+			planned = append(planned, plannedEdit{
+				RequestIndex: i,
+				OldText:      oldText,
+				NewText:      *edit.NewText,
+				Offset:       offset,
+				End:          offset + len(oldText),
+				StartLine:    lineAt(content, offset),
+				EndLine:      lineAt(content, offset+len(oldText)-1),
+			})
+		default:
+			issues = append(issues, fmt.Sprintf(
+				"#%d old_text 精确匹配到 %d 处（第 %s 行）",
+				i+1, len(hits), joinLineNumbers(offsetLines(content, hits))))
+		}
+	}
+
+	// 即使其他项目未命中，也检查所有已唯一命中的区间，一次返回尽可能完整的
+	// 预检问题，避免模型逐项试错。
+	byOffset := append([]plannedEdit(nil), planned...)
+	sort.SliceStable(byOffset, func(i, j int) bool {
+		if byOffset[i].Offset == byOffset[j].Offset {
+			return byOffset[i].End < byOffset[j].End
+		}
+		return byOffset[i].Offset < byOffset[j].Offset
+	})
+	for i := 1; i < len(byOffset); i++ {
+		prev, current := byOffset[i-1], byOffset[i]
+		if current.Offset < prev.End {
+			issues = append(issues, fmt.Sprintf(
+				"#%d 与 #%d 的精确匹配区间重叠（字节区间 [%d,%d) 与 [%d,%d)）",
+				prev.RequestIndex+1, current.RequestIndex+1,
+				prev.Offset, prev.End, current.Offset, current.End))
+		}
+	}
+
+	if len(issues) > 0 {
+		return nil, NewErrorWithPrompt(&EditBatchValidationError{},
+			errors.New("批量编辑预检失败，文件未修改：\n- "+strings.Join(issues, "\n- ")))
+	}
+
+	sort.SliceStable(planned, func(i, j int) bool {
+		return planned[i].Offset > planned[j].Offset
+	})
+	return planned, nil
 }
 
-// findAll 返回 sub 在 s 中所有出现的起始字节偏移，sub 为空时返回 nil。
-func findAll(s, sub string) []int {
+// findAllExact 返回 sub 在 s 中的全部精确起始字节偏移。每次从命中位置的下
+// 一个字节继续查找，因此重叠出现也会被识别为多处匹配。
+func findAllExact(s, sub string) []int {
 	if sub == "" {
 		return nil
 	}
+
 	var offsets []int
-	off := 0
-	for {
-		i := strings.Index(s[off:], sub)
+	for from := 0; from+len(sub) <= len(s); {
+		i := strings.Index(s[from:], sub)
 		if i < 0 {
-			return offsets
+			break
 		}
-		off += i
-		offsets = append(offsets, off)
-		off += len(sub)
+		offset := from + i
+		offsets = append(offsets, offset)
+		from = offset + 1
 	}
+	return offsets
 }
 
 // lineAt 返回字节偏移 off 对应的 1-based 行号。
@@ -268,62 +295,43 @@ func offsetLines(s string, offsets []int) []int {
 	return lines
 }
 
+func joinLineNumbers(lines []int) string {
+	parts := make([]string, len(lines))
+	for i, line := range lines {
+		parts[i] = fmt.Sprintf("%d", line)
+	}
+	return strings.Join(parts, "、")
+}
+
 // replaceAt 将 s 中 [start, start+length) 区间替换为 repl。
 func replaceAt(s string, start, length int, repl string) string {
 	return s[:start] + repl + s[start+length:]
 }
 
-// splitTrimLines 按 \n 切分并去除每行首尾空白。
-func splitTrimLines(s string) []string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimSpace(line)
+func formatCompletedEdits(path string, completed []plannedEdit, total int) string {
+	ordered := append([]plannedEdit(nil), completed...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].RequestIndex < ordered[j].RequestIndex
+	})
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "已在 %s 完成 %d/%d 处精确替换", path, len(ordered), total)
+	for _, edit := range ordered {
+		fmt.Fprintf(&b, "\n#%d 第 %d-%d 行", edit.RequestIndex+1, edit.StartLine, edit.EndLine)
 	}
-	return lines
+	return b.String()
 }
 
-// matchLines 在 fileLines 上以 len(oldLines) 为窗口大小滑动，
-// 返回所有整窗相等命中的起始行下标（0-based）；入参行须已去首尾空白。
-func matchLines(fileLines, oldLines []string) []int {
-	k := len(oldLines)
-	if k == 0 {
-		return nil
+func partialEditResult(path string, completed []plannedEdit, total int, stopped plannedEdit, reason string) (string, error) {
+	var b strings.Builder
+	if len(completed) == 0 {
+		fmt.Fprintf(&b, "批量编辑未执行：%s 尚未写入任何替换", path)
+	} else {
+		b.WriteString(formatCompletedEdits(path, completed, total))
 	}
-	var hits []int
-	for i := 0; i+k <= len(fileLines); i++ {
-		match := true
-		for j := 0; j < k; j++ {
-			if fileLines[i+j] != oldLines[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			hits = append(hits, i)
-		}
-	}
-	return hits
-}
+	fmt.Fprintf(&b, "\n处理 #%d 时停止：%s。文件当前可能已被部分修改，请立即重新 read_file 确认后再编辑",
+		stopped.RequestIndex+1, reason)
 
-// lineStartOffsets 返回 s 按 \n 切分后每行的起始字节偏移，
-// 行数与 strings.Split(s, "\n") 一致。
-func lineStartOffsets(s string) []int {
-	starts := []int{0}
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			starts = append(starts, i+1)
-		}
-	}
-	return starts
-}
-
-// multiMatchError 生成多处命中的报错并附各行号，驱动模型扩大 old_text 上下文，
-// 错误携带 EditMultiMatchError 以便向模型附加指引提示词。
-func multiMatchError(lineNos []int) error {
-	parts := make([]string, len(lineNos))
-	for i, n := range lineNos {
-		parts[i] = strconv.Itoa(n)
-	}
-	return NewErrorWithPrompt(&EditMultiMatchError{},
-		fmt.Errorf("old_text 在文件中匹配到 %d 处（第 %s 行），请扩大 old_text 范围加入上下文行使其唯一", len(lineNos), strings.Join(parts, "、")))
+	message := b.String()
+	return message, NewErrorWithPrompt(&EditPartialError{}, errors.New(message))
 }

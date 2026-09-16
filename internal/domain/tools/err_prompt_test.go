@@ -74,19 +74,23 @@ func TestFileNotExistErrorAsPrompt(t *testing.T) {
 	}
 }
 
-func TestEditNotFoundErrorSuggestionForcesReread(t *testing.T) {
-	e := NewErrorWithPrompt(&EditNotFoundError{}, errors.New("not found"))
+func TestEditBatchValidationErrorSuggestion(t *testing.T) {
+	e := NewErrorWithPrompt(&EditBatchValidationError{}, errors.New("batch invalid"))
 	prompt, _ := e.AsPrompt()
-	if !strings.Contains(prompt, "请先用 read_file 重新获取") {
-		t.Errorf("EditNotFoundError 应阻止盲目重试并引导 read_file：%q", prompt)
+	for _, want := range []string{"本次批量编辑未修改文件", "read_file", "行首和行尾空白字符数量", "LF/CRLF"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("EditBatchValidationError suggestion 缺少 %q：%q", want, prompt)
+		}
 	}
 }
 
-func TestEditMultiMatchErrorSuggestion(t *testing.T) {
-	e := NewErrorWithPrompt(&EditMultiMatchError{}, errors.New("multi match"))
+func TestEditPartialErrorSuggestion(t *testing.T) {
+	e := NewErrorWithPrompt(&EditPartialError{}, errors.New("partial edit"))
 	prompt, _ := e.AsPrompt()
-	if !strings.Contains(prompt, "扩大 old_text") {
-		t.Errorf("EditMultiMatchError suggestion 应引导扩大上下文：%q", prompt)
+	for _, want := range []string{"部分替换成功", "禁止沿用旧 offset", "read_file"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("EditPartialError suggestion 缺少 %q：%q", want, prompt)
+		}
 	}
 }
 
@@ -116,7 +120,7 @@ func TestBashExecuteErrorAsPrompt(t *testing.T) {
 var _ ErrorWithPrompt = &ParamError{}
 var _ ErrorWithPrompt = &FilePathError{}
 var _ ErrorWithPrompt = &FileNotExistError{}
-var _ ErrorWithPrompt = &EditNotFoundError{}
-var _ ErrorWithPrompt = &EditMultiMatchError{}
+var _ ErrorWithPrompt = &EditBatchValidationError{}
+var _ ErrorWithPrompt = &EditPartialError{}
 var _ ErrorWithPrompt = &FileIOError{}
 var _ ErrorWithPrompt = &BashExecuteError{}

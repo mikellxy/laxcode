@@ -194,10 +194,9 @@ Creates or fully overwrites a file and returns the written path for the model to
 | Argument | Type | Description |
 | --- | --- | --- |
 | `path` | string | Relative path of an existing file |
-| `old_text` | string | Original text to replace |
-| `new_text` | string | Replacement content |
+| `edits` | array | Batch of exact replacements, each containing `old_text` and `new_text` |
 
-To cope with indentation and line-ending differences in LLM output, edit_file implements **four-level tolerant fallback matching**, greatly reducing edit failures caused by minor text deviations.
+Each `old_text` must have exactly one byte-for-byte match, and matched ranges must not overlap. After validation, replacements run from the highest offset to the lowest. If the file changes during execution, completed edits are preserved, remaining edits stop, and the tool requires a fresh read.
 
 ### 3.4 bash
 
