@@ -15,12 +15,10 @@ type readFileToolArgs struct {
 	Path        string `json:"path"`
 	StartLineNo int    `json:"start_line_no"`
 	StartBytes  int    `json:"start_bytes"`
+	LineCount   int    `json:"line_count"`
 }
 
-const (
-	readFileToolMaxReadLines = 2000
-	readFileToolMaxReadBytes = 50 * 1024
-)
+const readFileToolMaxReadBytes = 50 * 1024
 
 type ReadFileTool struct {
 	WorkDir string `json:"work_dir"`
@@ -45,7 +43,7 @@ func (r *ReadFileTool) BeforeExecInfo(args json.RawMessage) string {
 		return ToolReadFile + "()"
 	}
 
-	return fmt.Sprintf("%s(path=%s, start_line_no=%d, start_bytes=%d)", ToolReadFile, argsObj.Path, argsObj.StartLineNo, argsObj.StartBytes)
+	return fmt.Sprintf("%s(path=%s, start_line_no=%d, start_bytes=%d, line_count=%d)", ToolReadFile, argsObj.Path, argsObj.StartLineNo, argsObj.StartBytes, argsObj.LineCount)
 }
 
 func (r *ReadFileTool) Name() string {
@@ -55,7 +53,7 @@ func (r *ReadFileTool) Name() string {
 func (r *ReadFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        r.Name(),
-		Description: "读取文件内容。 **严格限制**只读取你的工作目录下的文件，提供文件在工作目录的相对路径。单次最多返回 2000 行且内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
+		Description: "读取文件内容。 **严格限制**只读取你的工作目录下的文件，提供文件在工作目录的相对路径。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -72,6 +70,11 @@ func (r *ReadFileTool) Definition() sharedkernel.ToolDefinition {
 					"type":        "integer",
 					"minimum":     1,
 					"description": "起始行内字节偏移，1-based，最小为 1，禁止传 0；从起始字节开始读传 start_bytes=1",
+				},
+				"line_count": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"description": "本次读取的总行数，最小为 1；不传则不限制行数，仅受 50KB 最大读取字节数限制",
 				},
 			},
 			"required": []string{"path", "start_line_no", "start_bytes"},
@@ -106,7 +109,7 @@ func (r *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	result := ReadPaged(file, PagedReadRequest{
 		MaxBytes:    readFileToolMaxReadBytes,
-		MaxLines:    readFileToolMaxReadLines,
+		MaxLines:    argsObj.LineCount,
 		StartLineNo: argsObj.StartLineNo,
 		StartBytes:  argsObj.StartBytes,
 	})

@@ -43,6 +43,21 @@ func TestReadFileTool(t *testing.T) {
 		return out
 	}
 
+	t.Run("工具定义包含可选 line_count 参数", func(t *testing.T) {
+		definition := r.Definition()
+		properties, ok := definition.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("properties 类型错误: %T", definition.Parameters["properties"])
+		}
+		lineCount, ok := properties["line_count"].(map[string]any)
+		if !ok {
+			t.Fatalf("line_count 定义不存在或类型错误: %T", properties["line_count"])
+		}
+		if got := lineCount["minimum"]; got != 1 {
+			t.Fatalf("line_count minimum = %v, want 1", got)
+		}
+	})
+
 	t.Run("全量读取输出内容加已读完 footer", func(t *testing.T) {
 		seed("small.txt", "aaa\nbbb\n")
 		want := "aaa\nbbb\n\n(文件已读完，最后一行行号: 2)\n"
@@ -68,24 +83,28 @@ func TestReadFileTool(t *testing.T) {
 		}
 	})
 
-	t.Run("超过行数上限时 footer 给出下一页参数", func(t *testing.T) {
+	t.Run("未指定行数时不再限制最多读取 2000 行", func(t *testing.T) {
 		var sb strings.Builder
 		for i := 1; i <= 2001; i++ {
 			fmt.Fprintf(&sb, "line%04d\n", i)
 		}
 		seed("manylines.txt", sb.String())
 
-		want := sb.String()[:2000*9] + "\n(文件未读完，最后一行行号: 2000，" +
-			"续读请传 start_line_no=2001, start_bytes=1)\n"
+		want := sb.String() + "\n(文件已读完，最后一行行号: 2001)\n"
 		if got := exec(map[string]any{"path": "manylines.txt"}); got != want {
-			t.Fatalf("output mismatch:\n got  %q\n want %q", got[:len(want)-1], want[:len(want)-1])
+			t.Fatalf("output mismatch:\n got  %q\n want %q", got, want)
 		}
+	})
 
-		// 按 footer 指引续读最后一页
-		want2 := "line2001\n\n(文件已读完，最后一行行号: 2001)\n"
-		got2 := exec(map[string]any{"path": "manylines.txt", "start_line_no": 2001, "start_bytes": 1})
-		if got2 != want2 {
-			t.Fatalf("second page mismatch:\n got  %q\n want %q", got2, want2)
+	t.Run("line_count 指定本次读取总行数", func(t *testing.T) {
+		seed("linecount.txt", "one\ntwo\nthree\nfour\n")
+		want := "two\nthree\n\n(文件未读完，最后一行行号: 3，" +
+			"续读请传 start_line_no=4, start_bytes=1)\n"
+		got := exec(map[string]any{
+			"path": "linecount.txt", "start_line_no": 2, "start_bytes": 1, "line_count": 2,
+		})
+		if got != want {
+			t.Fatalf("output mismatch:\n got  %q\n want %q", got, want)
 		}
 	})
 

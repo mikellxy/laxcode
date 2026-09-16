@@ -171,8 +171,9 @@ LaxCode 在 ReAct 循环中完整实现 openai function call 协议。启动时�
 | `path` | string | 工作目录内的相对路径 |
 | `start_line_no` | int | 起始行号，1‑based |
 | `start_bytes` | int | 起始行内字节偏移，1‑based |
+| `line_count` | int | 可选，本次读取的总行数；不传则不限制行数 |
 
-单次读取存在上限。工具返回附带自描述翻页状态，模型可自主完成超长文件分页续读，无需预判文件总长度。
+单次读取最多返回 50KB。工具返回附带自描述翻页状态，模型可自主完成超长文件分页续读，无需预判文件总长度。
 
 ### 3.2 write_file
 

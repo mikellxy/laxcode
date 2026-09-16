@@ -99,6 +99,17 @@ func TestReadPaged(t *testing.T) {
 			wantEndLineNo: 3,
 		},
 		{
+			name:          "linesMax 为零时不限制读取行数",
+			content:       fourLines,
+			nMax:          10 * 1024,
+			linesMax:      0,
+			startLineNo:   1,
+			wantContent:   "11111111111\n22222222222\n33333333333\n44444444444\n",
+			wantLinesRead: 4,
+			wantEndLineNo: 4,
+			wantFinished:  true,
+		},
+		{
 			name:          "跳过前序行后仍可读满 linesMax 行",
 			content:       fourLines,
 			nMax:          10 * 1024,

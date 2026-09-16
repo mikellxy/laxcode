@@ -176,8 +176,9 @@ All tools parse paths safely internally, preventing path traversal.
 | `path` | string | Relative path within the working directory |
 | `start_line_no` | int | Starting line number, 1‑based |
 | `start_bytes` | int | Byte offset within the starting line, 1‑based |
+| `line_count` | int | Optional number of lines to read; unlimited when omitted |
 
-A single read has a size limit. The tool response carries a self-describing pagination state, so the model can page through very long files on its own without guessing the total file length.
+A single read returns at most 50KB. The tool response carries a self-describing pagination state, so the model can page through very long files on its own without guessing the total file length.
 
 ### 3.2 write_file
 

@@ -16,7 +16,7 @@ import (
 type PagedReadRequest struct {
 	// MaxBytes 是本次读取的内容字节上限，须为正。
 	MaxBytes int
-	// MaxLines 是本次读取的行数上限，须为正。
+	// MaxLines 是本次读取的行数上限；小于等于 0 时不限制行数。
 	MaxLines int
 	// StartLineNo 是起始行号，1-based；小于 1 时按 1 处理。
 	StartLineNo int
@@ -37,7 +37,7 @@ type PagedReadResult struct {
 }
 
 // ReadPaged 从 r 的 StartLineNo 行（1-based）、该行内 StartBytes 字节（1-based）
-// 起读取，内容至多 MaxBytes 字节、至多 MaxLines 行。
+// 起读取，内容至多 MaxBytes 字节；MaxLines 大于 0 时至多读取对应行数。
 // Content 中每行均以 \n 结尾（含文件本身无尾换行的末行）；\r\n 归一为 \n；
 // 超出 bufio 缓冲区长度的行分段读取后拼接。
 //
@@ -72,7 +72,7 @@ func ReadPaged(r io.Reader, req PagedReadRequest) *PagedReadResult {
 	)
 
 	for {
-		if nRead >= req.MaxBytes || linesRead >= req.MaxLines {
+		if nRead >= req.MaxBytes || (req.MaxLines > 0 && linesRead >= req.MaxLines) {
 			break
 		}
 
