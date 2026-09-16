@@ -48,7 +48,8 @@ func New() *Runner { return &Runner{} }
 // 编译期确保 Runner 满足领域端口。
 var _ tools.ShellRunner = (*Runner)(nil)
 
-// Run 在 workDir 下以 bash -c 执行 command，至多等待 timeout。
+// Run 在 workDir 下以 bash -o pipefail -c 执行 command，至多等待 timeout。
+// 管道中任一命令失败时，Bash 返回最右侧非零退出码。
 // 命令非零退出不算错误，退出码与原始错误描述填入 ShellOutcome；
 // 仅超时/取消、无法启动、无法读取输出等基础设施失败才返回 error。
 func (r *Runner) Run(ctx context.Context, workDir, command string, timeout time.Duration) (tools.ShellOutcome, error) {
@@ -66,7 +67,7 @@ func (r *Runner) Run(ctx context.Context, workDir, command string, timeout time.
 		return tools.ShellOutcome{}, fmt.Errorf("创建命令输出临时文件失败: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, shellBin, "-c", command)
+	cmd := exec.CommandContext(ctx, shellBin, "-o", "pipefail", "-c", command)
 	cmd.Dir = workDir
 	cmd.Stdout = tmp
 	cmd.Stderr = tmp

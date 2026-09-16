@@ -208,6 +208,7 @@ To cope with indentation and line-ending differences in LLM output, edit_file im
 Edge handling tailored for agent scenarios:
 
 - Built-in timeout control; a timeout is classified as a recoverable error;
+- Enables `pipefail` by default, so a pipeline returns the rightmost failing command's exit code;
 - Structured return of exit code and stdout; distinguishes command failure from process-level faults.
 
 ### 3.5 glob

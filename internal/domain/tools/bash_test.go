@@ -338,6 +338,9 @@ func TestBashToolExecInfo(t *testing.T) {
 	if def.Description == "" {
 		t.Error("Definition.Description 不应为空")
 	}
+	if !strings.Contains(def.Description, "pipefail") {
+		t.Error("Definition.Description 应说明默认启用 pipefail")
+	}
 	params, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("Definition.Parameters 应含 properties：%v", def.Parameters)

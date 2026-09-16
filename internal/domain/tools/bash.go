@@ -70,6 +70,7 @@ func (b *BashTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name: b.Name(),
 		Description: "在工作目录执行 bash 命令。timeout_ms 默认 30000，超过 60000 按 60000 执行。" +
+			"默认启用 pipefail，管道中任一命令失败时返回最右侧非零退出码。" +
 			"长输出会先归档，再返回前 8000 字符及 read_artifact 引用；不必为缩短输出追加 head/tail。退出码代表整段脚本。" +
 			"需要后台进程（如启动服务器）时，" +
 			"务必重定向输出到日志文件并记录pid，例如: " +

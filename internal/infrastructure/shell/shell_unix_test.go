@@ -110,6 +110,34 @@ func TestRunNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestRunPipefail(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		command  string
+		wantCode int
+	}{
+		{name: "earlier command fails", command: "exit 7 | true", wantCode: 7},
+		{name: "rightmost failure wins", command: "(exit 3) | (exit 7) | true", wantCode: 7},
+		{name: "successful pipeline", command: "true | true", wantCode: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New()
+			t.Cleanup(func() { _ = r.Close() })
+
+			outcome, err := runShell(t, r, t.TempDir(), tc.command, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if outcome.ExitCode != tc.wantCode {
+				t.Errorf("ExitCode = %d, want %d", outcome.ExitCode, tc.wantCode)
+			}
+			if tc.wantCode != 0 && outcome.ExitErr != fmt.Sprintf("exit status %d", tc.wantCode) {
+				t.Errorf("ExitErr = %q, want %q", outcome.ExitErr, fmt.Sprintf("exit status %d", tc.wantCode))
+			}
+		})
+	}
+}
+
 // TestRunHonorsWorkDir 验证命令在指定工作目录执行，而非进程当前目录。
 func TestRunHonorsWorkDir(t *testing.T) {
 	r := New()
