@@ -8,6 +8,7 @@ import (
 
 	"github.com/mikellxy/laxcode/cmd/run_cli"
 	"github.com/mikellxy/laxcode/cmd/run_oneshot"
+	"github.com/mikellxy/laxcode/cmd/run_qa"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
 	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -62,8 +63,8 @@ func main() {
 	}
 	defer shutdownRouter()
 
-	// 三态分发，优先级 oneshot > sse > cli：oneshot 保留原有 os.Exit 契约，
-	// sse 起阻塞式 HTTP 服务，二者皆未开启时进入默认 TUI 交互模式。
+	// 模式分发，优先级 oneshot > sse > qa > cli：oneshot 保留原有 os.Exit 契约，
+	// sse 起阻塞式 HTTP 服务，qa 进入知识库问答，其余进入默认 TUI 交互模式。
 	switch {
 	case config.CliConf.Oneshot:
 		// one-shot：跑单个任务、结果 JSON 直写 stdout，Run 返回进程 exit code
@@ -77,6 +78,8 @@ func main() {
 		// sse server：阻塞式监听，接受 POST /chat 并把 ReAct 事件以 SSE 流式回传；
 		// SIGINT/SIGTERM 触发优雅关闭后 Run 返回。
 		run_sse.Run()
+	case config.CliConf.QA:
+		run_qa.Run()
 	default:
 		run_cli.Run()
 	}

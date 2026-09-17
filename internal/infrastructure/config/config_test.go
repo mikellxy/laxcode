@@ -40,6 +40,9 @@ func TestParseEnvAndFileFromEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env-key")
 	t.Setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
 	t.Setenv("OPENAI_MODEL", "gpt-env")
+	t.Setenv("EMBBED_OPENAI_API_KEY", "embed-key")
+	t.Setenv("EMBBED_OPENAI_BASE_URL", "https://embed.example.com/v1")
+	t.Setenv("EMBBED_OPENAI_MODEL", "embed-model")
 
 	if err := ParseEnvAndFile(); err != nil {
 		t.Fatalf("ParseEnvAndFile: %v", err)
@@ -50,6 +53,11 @@ func TestParseEnvAndFileFromEnv(t *testing.T) {
 	if EnvAndFileConf.OpenaiBaseUrl != "https://env.example.com/v1" ||
 		EnvAndFileConf.OpenaiModel != "gpt-env" {
 		t.Errorf("base url/model 应从环境读取，实际 %+v", EnvAndFileConf)
+	}
+	if EnvAndFileConf.EmbedOpenaiApiKey != "embed-key" ||
+		EnvAndFileConf.EmbedOpenaiBaseUrl != "https://embed.example.com/v1" ||
+		EnvAndFileConf.EmbedOpenaiModel != "embed-model" {
+		t.Errorf("embedding config should come from EMBBED_* env vars: %+v", EnvAndFileConf)
 	}
 	if EnvAndFileConf.OpenaiContextWindow != DefaultContextWindow ||
 		EnvAndFileConf.OpenaiMaxOutputTokens != DefaultMaxOutputTokens {
@@ -192,6 +200,7 @@ func TestParseCli(t *testing.T) {
 	swapCliGlobals(t,
 		"-oneshot=true",
 		"-sse=true",
+		"-qa=true",
 		"-addr", ":9000",
 		"-workdir", "/tmp/proj",
 		"-task", "do something",
@@ -216,6 +225,9 @@ func TestParseCli(t *testing.T) {
 	if !CliConf.SSE {
 		t.Error("sse 应为 true")
 	}
+	if !CliConf.QA {
+		t.Error("qa 应为 true")
+	}
 	if CliConf.Addr != ":9000" {
 		t.Errorf("addr 应为 :9000，实际 %q", CliConf.Addr)
 	}
@@ -226,7 +238,7 @@ func TestParseCliDefaults(t *testing.T) {
 	if err := ParseCli(); err != nil {
 		t.Fatalf("ParseCli with no args: %v", err)
 	}
-	if CliConf.Oneshot || CliConf.Plan || CliConf.SSE {
+	if CliConf.Oneshot || CliConf.Plan || CliConf.SSE || CliConf.QA {
 		t.Errorf("缺省布尔参数应全为 false，实际 %+v", CliConf)
 	}
 	if CliConf.WorkDir != "" || CliConf.Task != "" || CliConf.Session != "" {

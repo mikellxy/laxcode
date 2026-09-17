@@ -49,6 +49,11 @@ func TestPaths(t *testing.T) {
 			want: filepath.Join(workDir, ".laxcode", "sessions.db"),
 		},
 		{
+			name: "KnowledgeBaseDB",
+			got:  KnowledgeBaseDB(workDir),
+			want: filepath.Join(workDir, "kb", "kb.sqlite"),
+		},
+		{
 			name: "SessionRoot",
 			got:  SessionRoot(workDir),
 			want: filepath.Join(workDir, ".laxcode", ".session"),

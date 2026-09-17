@@ -4,9 +4,11 @@ go 1.26.6
 
 require (
 	charm.land/bubbletea/v2 v2.0.9
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/google/uuid v1.6.0
 	github.com/libtnb/sqlite v1.2.2
+	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/openai/openai-go/v3 v3.52.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/pkoukk/tiktoken-go-loader v0.0.2

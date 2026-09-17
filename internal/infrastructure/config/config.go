@@ -14,6 +14,9 @@ type envAndFileConf struct {
 	OpenaiApiKey                    string `mapstructure:"openai_api_key"`
 	OpenaiBaseUrl                   string `mapstructure:"openai_base_url"`
 	OpenaiModel                     string `mapstructure:"openai_model"`
+	EmbedOpenaiApiKey               string `mapstructure:"embbed_openai_api_key"`
+	EmbedOpenaiBaseUrl              string `mapstructure:"embbed_openai_base_url"`
+	EmbedOpenaiModel                string `mapstructure:"embbed_openai_model"`
 	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
 	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
 	CompactionOpenaiApiKey          string `mapstructure:"compaction_openai_api_key"`
@@ -43,6 +46,7 @@ var EnvOrFile = viper.New()
 type cliConf struct {
 	Oneshot  bool   `mapstructure:"oneshot"`
 	SSE      bool   `mapstructure:"sse"`
+	QA       bool   `mapstructure:"qa"`
 	Addr     string `mapstructure:"addr"`
 	WorkDir  string `mapstructure:"workdir"`
 	Task     string `mapstructure:"task"`
@@ -84,6 +88,9 @@ func ParseEnvAndFile() error {
 	EnvOrFile.BindEnv("openai_api_key", "OPENAI_API_KEY")
 	EnvOrFile.BindEnv("openai_base_url", "OPENAI_BASE_URL")
 	EnvOrFile.BindEnv("openai_model", "OPENAI_MODEL")
+	EnvOrFile.BindEnv("embbed_openai_api_key", "EMBBED_OPENAI_API_KEY")
+	EnvOrFile.BindEnv("embbed_openai_base_url", "EMBBED_OPENAI_BASE_URL")
+	EnvOrFile.BindEnv("embbed_openai_model", "EMBBED_OPENAI_MODEL")
 	EnvOrFile.BindEnv("openai_context_window", "OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("openai_max_output_tokens", "OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("compaction_openai_api_key", "COMPACTION_OPENAI_API_KEY")
@@ -143,6 +150,7 @@ func ParseEnvAndFile() error {
 func ParseCli() error {
 	oneshot := flag.Bool("oneshot", false, "one-shot mode: run a single task and print structured JSON to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
+	qa := flag.Bool("qa", false, "knowledge-base question answering mode")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
 	workDir := flag.String("workdir", "", "working directory; required in one-shot mode, defaults to cwd otherwise")
 	task := flag.String("task", "", "one-shot task prompt text")
@@ -153,6 +161,7 @@ func ParseCli() error {
 
 	Cli.Set("oneshot", *oneshot)
 	Cli.Set("sse", *sse)
+	Cli.Set("qa", *qa)
 	Cli.Set("addr", *addr)
 	Cli.Set("workdir", *workDir)
 	Cli.Set("task", *task)

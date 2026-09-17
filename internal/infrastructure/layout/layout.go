@@ -33,6 +33,10 @@ const (
 	// sessionDBFileName 是当前工作目录下的 SQLite 会话数据库。
 	sessionDBFileName = "sessions.db"
 
+	// knowledgeBaseDirName 与 knowledgeBaseFileName 定位项目内的向量知识库。
+	knowledgeBaseDirName  = "kb"
+	knowledgeBaseFileName = "kb.sqlite"
+
 	// tracingLogDirName 与 tracingLogFileName 定位会话级 trace 日志。
 	tracingLogDirName  = "log"
 	tracingLogFileName = "tracing.log"
@@ -46,6 +50,11 @@ func Root(workDir string) string {
 // SessionDB 返回当前工作目录的会话数据库 ${workDir}/.laxcode/sessions.db。
 func SessionDB(workDir string) string {
 	return filepath.Join(Root(workDir), sessionDBFileName)
+}
+
+// KnowledgeBaseDB 返回当前工作目录的知识库 ${workDir}/kb/kb.sqlite。
+func KnowledgeBaseDB(workDir string) string {
+	return filepath.Join(workDir, knowledgeBaseDirName, knowledgeBaseFileName)
 }
 
 // SessionRoot 返回会话文件根 ${workDir}/.laxcode/.session；history 冷备、

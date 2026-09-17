@@ -39,6 +39,9 @@ Write the following into the config file
   "OPENAI_MODEL": "gpt-4o-mini",
   "OPENAI_CONTEXT_WINDOW": 128000,
   "OPENAI_MAX_OUTPUT_TOKENS": 16384,
+  "EMBBED_OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
+  "EMBBED_OPENAI_BASE_URL": "https://api.openai.com/v1",
+  "EMBBED_OPENAI_MODEL": "text-embedding-3-small",
   "LLM_ROUTER_ADDR": "127.0.0.1:0",
   "COMPACTION_OPENAI_MODEL": "gpt-4o-mini",
   "COMPACTION_OPENAI_CONTEXT_WINDOW": 128000,
@@ -52,6 +55,10 @@ export OPENAI_BASE_URL=https://api.openai.com/v1     # any OpenAI-compatible end
 export OPENAI_MODEL=gpt-4o-mini
 export OPENAI_CONTEXT_WINDOW=128000
 export OPENAI_MAX_OUTPUT_TOKENS=16384
+# Embedding provider for QA mode; the configured prefix is intentionally EMBBED
+export EMBBED_OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+export EMBBED_OPENAI_BASE_URL=https://api.openai.com/v1
+export EMBBED_OPENAI_MODEL=text-embedding-3-small
 # Defaults to 127.0.0.1:0; use a fixed port when external access is needed
 export LLM_ROUTER_ADDR=127.0.0.1:18080
 # Omitted compaction-provider settings inherit the main provider
@@ -131,6 +138,24 @@ curl -N http://127.0.0.1:18080/openai/generate_stream \
 | `-sse`     | false   | Start the sse server      |
 | `-addr`    | empty   | sse server listen address |
 | `-workdir` | cwd     | Working directory         |
+
+### 1.7 Knowledge-base QA Mode
+
+```shell
+./bin/laxcode -qa -workdir /path/to/project
+```
+
+QA mode reads `${workdir}/kb/kb.sqlite`. It embeds every question through the
+OpenAI-compatible API configured by `EMBBED_OPENAI_*`, retrieves the 10 closest
+chunks from `vec_chunks`, and sends them to the main LLM. Indexing and querying
+must use the same 1024-dimensional embedding model. The QA agent currently has
+no tools and does not print reasoning content to the terminal.
+
+| Argument   | Default | Description                              |
+|------------|---------|------------------------------------------|
+| `-qa`      | false   | Start knowledge-base QA mode             |
+| `-workdir` | cwd     | Working directory containing `kb/`       |
+| `-session` | empty   | Resume a QA conversation                 |
 
 ## 2. Session Management
 Resuming a conversation from a previous run is supported by specifying a session id

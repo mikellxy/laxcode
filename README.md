@@ -39,6 +39,9 @@ touch ~/.laxcode/settings.json
   "OPENAI_MODEL": "gpt-4o-mini",
   "OPENAI_CONTEXT_WINDOW": 128000,
   "OPENAI_MAX_OUTPUT_TOKENS": 16384,
+  "EMBBED_OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
+  "EMBBED_OPENAI_BASE_URL": "https://api.openai.com/v1",
+  "EMBBED_OPENAI_MODEL": "text-embedding-3-small",
   "LLM_ROUTER_ADDR": "127.0.0.1:0",
   "COMPACTION_OPENAI_MODEL": "gpt-4o-mini",
   "COMPACTION_OPENAI_CONTEXT_WINDOW": 128000,
@@ -52,6 +55,10 @@ export OPENAI_BASE_URL=https://api.openai.com/v1     # 任意 OpenAI 兼容端�
 export OPENAI_MODEL=gpt-4o-mini
 export OPENAI_CONTEXT_WINDOW=128000
 export OPENAI_MAX_OUTPUT_TOKENS=16384
+# QA 模式向量化模型；变量名按现有约定使用 EMBBED 前缀
+export EMBBED_OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+export EMBBED_OPENAI_BASE_URL=https://api.openai.com/v1
+export EMBBED_OPENAI_MODEL=text-embedding-3-small
 # 默认 127.0.0.1:0；需要从外部访问路由器时改成固定端口
 export LLM_ROUTER_ADDR=127.0.0.1:18080
 # 压缩 provider 的未配置项会继承主 provider
@@ -127,6 +134,23 @@ curl -N http://127.0.0.1:18080/openai/generate_stream \
 | `-sse`     | false | 启动 sse server     |
 | `-addr`    | 空    | sse server 监听地址 |
 | `-workdir` | cwd   | 工作目录            |
+
+### 1.7 知识库问答模式
+
+```shell
+./bin/laxcode -qa -workdir /path/to/project
+```
+
+QA 模式读取 `${workdir}/kb/kb.sqlite`，将每个问题通过 `EMBBED_OPENAI_*` 配置的
+OpenAI 兼容 Embeddings API 转为 1024 维向量，从 `vec_chunks` 召回最相关的 10 个
+chunk，再交给主 LLM 回答。建库和查询必须使用同一个 embedding 模型。当前 QA
+Agent 不挂载任何工具，终端也不会输出 reasoning content。
+
+| 参数       | 默认  | 说明                         |
+|------------|-------|------------------------------|
+| `-qa`      | false | 启动知识库问答模式           |
+| `-workdir` | cwd   | 工作目录及 `kb/` 所在目录    |
+| `-session` | 空    | 续聊指定 QA 会话             |
 
 ## 2. session 管理
 支持通过指定 session id 进行断点续聊

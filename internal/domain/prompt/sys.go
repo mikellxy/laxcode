@@ -12,6 +12,9 @@ var personalityPrompt string
 //go:embed tmpl/plan_mode.md
 var planModePrompt string
 
+//go:embed tmpl/qa.md
+var qaPrompt string
+
 // PlanMode 是 Plan Mode 段的渲染入参。SessionDir 是本次会话规划文件
 // （plan.md / design.md 等）的落盘目录，由组合根按磁盘布局算好后注入
 // （见 infrastructure/layout.SessionDir），领域层不再自行拼路径。
@@ -43,4 +46,10 @@ func GetSysPrompt(workDir string, skills []Skill, plan *PlanMode) string {
 	}
 
 	return sb.String()
+}
+
+// GetQASysPrompt returns the focused prompt used by knowledge-base QA. It does
+// not include coding-agent, skill or plan-mode instructions.
+func GetQASysPrompt() string {
+	return strings.TrimSpace(qaPrompt)
 }
