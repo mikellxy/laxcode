@@ -41,18 +41,20 @@ var (
 )
 
 const (
-	ReActEventTypeChunk      = "chunk"
-	ReActEventTypeToolCall   = "tool_call"
-	ReActEventTypeRecovery   = "recovery"
-	contextTriggerPercent    = 80
-	contextTargetPercent     = 60
-	recoveryToolResultPrompt = "上一次工具调用未获得可确认的结果；它可能尚未执行，也可能已经执行但结果未被保存。请先检查当前状态，再决定是否重试。"
+	ReActEventTypeChunk          = "chunk"
+	ReActEventTypeToolCall       = "tool_call"
+	ReActEventTypeRecovery       = "recovery"
+	ReActEventTypeHumanInTheLoop = "human_in_the_loop"
+	contextTriggerPercent        = 80
+	contextTargetPercent         = 60
+	recoveryToolResultPrompt     = "上一次工具调用未获得可确认的结果；它可能尚未执行，也可能已经执行但结果未被保存。请先检查当前状态，再决定是否重试。"
 )
 
 type ReactEvent struct {
-	Type       string
-	Content    string                    // 工具执行提示
-	ChunkEvent *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
+	Type             string
+	Content          string                    // 工具执行提示或人工确认说明
+	ChunkEvent       *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
+	HumanConfirmChan chan<- string             // 人工确认回复通道，仅 human_in_the_loop 事件携带
 }
 
 // PromptEnricher 在 chat 根 span 内把用户输入扩充为最终模型提示词。
@@ -94,6 +96,25 @@ func NewReActService(sess *session.Session,
 // 应仅在服务对外可见前由组合根调用，不应在并发 Chat 期间修改。
 func (r *ReActService) SetPromptEnricher(enricher PromptEnricher) {
 	r.promptEnricher = enricher
+}
+
+// requestHumanConfirmation 向交互前端发出一次人工确认请求，并等待回复或取消。
+// channel 由 ReActService 创建并持有；前端只获得发送端，不应关闭。容量为 1，
+// 避免取消与用户提交同时发生时让前端发送 goroutine 永久阻塞。
+// 当前尚无风险检测调用此能力，待策略确定后在相应边界接入。
+func (r *ReActService) requestHumanConfirmation(ctx context.Context, content string) (string, error) {
+	confirmChan := make(chan string, 1)
+	r.ReActEventConsumerF(&ReactEvent{
+		Type:             ReActEventTypeHumanInTheLoop,
+		Content:          content,
+		HumanConfirmChan: confirmChan,
+	})
+	select {
+	case confirmation := <-confirmChan:
+		return confirmation, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // InitSession 从数据库恢复最新工作集。

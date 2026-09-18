@@ -74,6 +74,12 @@ func newEventConsumer(sendEvent func(cliprinter.StreamEvent)) func(*reactservice
 			sendIn(fmt.Sprintf("%s[LaxCode] tool execute... %s%s\n", ColorYellow, e.Content, ColorReset))
 		case reactservice.ReActEventTypeRecovery:
 			sendIn(fmt.Sprintf("%s[LaxCode] %s%s\n", ColorYellow, e.Content, ColorReset))
+		case reactservice.ReActEventTypeHumanInTheLoop:
+			sendEvent(cliprinter.StreamEvent{
+				Kind:             cliprinter.HumanInTheLoop,
+				Text:             fmt.Sprintf("%s[LaxCode] approval required: %s%s\n", ColorYellow, e.Content, ColorReset),
+				HumanConfirmChan: e.HumanConfirmChan,
+			})
 		}
 	}
 }

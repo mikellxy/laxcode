@@ -19,19 +19,21 @@ import (
 // StreamEvent 是终端展示事件，由 cmd 将应用事件映射到此类型。
 // cliprinter 不依赖 application；展示状态也不进入 domain。
 type StreamEvent struct {
-	Kind StreamEventKind
-	Text string
+	Kind             StreamEventKind
+	Text             string
+	HumanConfirmChan chan<- string
 }
 
 // StreamEventKind 区分持久输出、临时思考状态和本轮结束。
 type StreamEventKind int
 
 const (
-	StreamText    StreamEventKind = iota // 正文、工具提示和错误，保留在终端历史
-	ThinkingStart                        // 开始原位显示思考状态
-	ThinkingDelta                        // Text 是思考增量，不写入终端历史
-	ThinkingEnd                          // 将思考状态收为一行完成提示，保留在终端历史
-	StreamEnd                            // 本轮结束，回到用户输入阶段
+	StreamText     StreamEventKind = iota // 正文、工具提示和错误，保留在终端历史
+	ThinkingStart                         // 开始原位显示思考状态
+	ThinkingDelta                         // Text 是思考增量，不写入终端历史
+	ThinkingEnd                           // 将思考状态收为一行完成提示，保留在终端历史
+	StreamEnd                             // 本轮结束，回到用户输入阶段
+	HumanInTheLoop                        // 暂停本轮流，等待人工输入后继续
 )
 
 // phase 表示交互阶段，用于控制何时接受用户输入编辑。
@@ -84,6 +86,9 @@ type model struct {
 	streamBuf string   // 正在流式接收、尚未遇到换行的尾部：完整行即时打印到 scrollback，尾部半行由 View 实时显示
 	outChan   chan<- string
 	inChan    <-chan StreamEvent
+	// humanConfirmChan 仅在等待人工确认时非 nil。通道由 reactservice 创建并持有，
+	// model 只发送一次回复，不负责关闭。
+	humanConfirmChan chan<- string
 
 	thinking        bool
 	thinkingLine    string // 最近一行思考，仅用于原位展示
@@ -151,6 +156,17 @@ func (m *model) startOfLine() { m.col = 0 }
 // endOfLine 把光标移到当前行行尾（row 不变，col 以 rune 计）。
 func (m *model) endOfLine() { m.col = len([]rune(m.lines[m.row])) }
 
+// takeInputTarget 返回本次 Enter 应发送到的通道。人工确认通道优先且只使用一次；
+// 普通输入继续发送到模型的 outChan。
+func (m *model) takeInputTarget() chan<- string {
+	if m.humanConfirmChan == nil {
+		return m.outChan
+	}
+	out := m.humanConfirmChan
+	m.humanConfirmChan = nil
+	return out
+}
+
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -173,6 +189,28 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 读取，避免 Batch 的并发乱序。
 		var cmds []tea.Cmd
 		switch msg.event.Kind {
+		case HumanInTheLoop:
+			// 没有回复通道的 HITL 事件无法完成握手；按普通文本处理并继续读取，
+			// 避免状态机停在一个永远无法恢复的输入阶段。
+			if msg.event.HumanConfirmChan == nil {
+				m.clearThinking()
+				cmds = m.appendStream(msg.event.Text)
+				cmds = append(cmds, readIn(m.inChan))
+				return m, tea.Sequence(cmds...)
+			}
+			m.clearThinking()
+			cmds = m.appendStream(msg.event.Text)
+			if flush := m.flushStream(); flush != nil {
+				cmds = append(cmds, flush)
+			}
+			m.humanConfirmChan = msg.event.HumanConfirmChan
+			m.phase = phaseInput
+			// 必须暂停读取。人工回复发出后的 outFlushedMsg 会恢复 readIn；若此处
+			// 继续读取，之后会有两个 Cmd 并发消费同一个 inChan。
+			if len(cmds) == 0 {
+				return m, nil
+			}
+			return m, tea.Sequence(cmds...)
 		case ThinkingStart:
 			m.clearThinking()
 			m.thinking = true
@@ -227,10 +265,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lines = []string{""}
 			m.row, m.col = 0, 0
 			m.phase = phaseSending
+			out := m.takeInputTarget()
 			// 用户输入以浅灰背景+黑字回显到 scrollback（可上翻），随后阻塞写入 OutChan
 			// 等待上层消费。用 Sequence 保证“先回显、后发送”的顺序。
 			echo := tea.Println(strings.TrimSuffix(m.userMessageView(input), "\n"))
-			return m, tea.Sequence(echo, sendOut(m.outChan, input))
+			return m, tea.Sequence(echo, sendOut(out, input))
 		case "alt+enter":
 			m.newline()
 		case "up":

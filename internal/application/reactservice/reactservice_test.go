@@ -34,6 +34,46 @@ func TestNewReActService(t *testing.T) {
 	}
 }
 
+func TestRequestHumanConfirmation(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("s-confirm", repo)
+	var emitted *ReactEvent
+	svc := NewReActService(sess, repo, &scriptedLLM{}, nil, tools.NewDefaultRegistry(nil), func(event *ReactEvent) {
+		emitted = event
+		event.HumanConfirmChan <- "approve"
+	}, nil)
+
+	confirmation, err := svc.requestHumanConfirmation(context.Background(), "allow risky action?")
+	if err != nil {
+		t.Fatalf("requestHumanConfirmation: %v", err)
+	}
+	if confirmation != "approve" {
+		t.Fatalf("confirmation=%q，期望 approve", confirmation)
+	}
+	if emitted == nil || emitted.Type != ReActEventTypeHumanInTheLoop || emitted.Content != "allow risky action?" {
+		t.Fatalf("人工确认事件不符：%+v", emitted)
+	}
+	if emitted.HumanConfirmChan == nil {
+		t.Fatal("人工确认事件未携带回复通道")
+	}
+}
+
+func TestRequestHumanConfirmationHonorsCancellation(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("s-confirm-cancel", repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	svc := NewReActService(sess, repo, &scriptedLLM{}, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil)
+
+	confirmation, err := svc.requestHumanConfirmation(ctx, "allow risky action?")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v，期望 context.Canceled", err)
+	}
+	if confirmation != "" {
+		t.Fatalf("取消时 confirmation=%q，期望空串", confirmation)
+	}
+}
+
 type promptEnricherFunc func(context.Context, string) (string, error)
 
 func (f promptEnricherFunc) Enrich(ctx context.Context, query string) (string, error) {

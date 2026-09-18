@@ -63,6 +63,26 @@ func TestEventConsumerShowsRecovery(t *testing.T) {
 	}
 }
 
+func TestEventConsumerMapsHumanInTheLoop(t *testing.T) {
+	var output []cliprinter.StreamEvent
+	confirm := make(chan string, 1)
+	rcf := newEventConsumer(func(s cliprinter.StreamEvent) { output = append(output, s) })
+	rcf(&reactservice.ReactEvent{
+		Type:             reactservice.ReActEventTypeHumanInTheLoop,
+		Content:          "allow risky action?",
+		HumanConfirmChan: confirm,
+	})
+
+	want := cliprinter.StreamEvent{
+		Kind:             cliprinter.HumanInTheLoop,
+		Text:             ColorYellow + "[LaxCode] approval required: allow risky action?" + ColorReset + "\n",
+		HumanConfirmChan: confirm,
+	}
+	if len(output) != 1 || output[0] != want {
+		t.Fatalf("人工确认事件映射不符：got %#v, want %#v", output, want)
+	}
+}
+
 func TestFormatRuntimeErrorAddsPersistRetryHint(t *testing.T) {
 	got := formatRuntimeError(errors.Join(reactservice.ErrPersistRequestContext, errors.New("disk full")))
 	if !strings.Contains(got, "下次对话开始前先恢复上一轮") {

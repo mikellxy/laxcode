@@ -290,6 +290,57 @@ func TestUpdateOutFlushedStartsStreaming(t *testing.T) {
 	}
 }
 
+func TestUpdateHumanInTheLoopWaitsForInput(t *testing.T) {
+	m, _, _ := newTestModel()
+	m.phase = phaseStreaming
+	confirm := make(chan string, 1)
+
+	_, cmd := m.Update(inChunkMsg{event: StreamEvent{
+		Kind:             HumanInTheLoop,
+		HumanConfirmChan: confirm,
+	}})
+
+	if m.phase != phaseInput {
+		t.Fatalf("HITL 后 phase=%v，期望 phaseInput", m.phase)
+	}
+	if m.humanConfirmChan != (chan<- string)(confirm) {
+		t.Fatal("model 未保存人工确认通道")
+	}
+	if cmd != nil {
+		t.Fatal("无提示文本时 HITL 不应继续 readIn 或产生其他命令")
+	}
+}
+
+func TestTakeInputTargetUsesHumanConfirmationOnce(t *testing.T) {
+	m, out, _ := newTestModel()
+	confirm := make(chan string, 1)
+	m.humanConfirmChan = confirm
+
+	if got := m.takeInputTarget(); got != (chan<- string)(confirm) {
+		t.Fatal("首次输入应发送到人工确认通道")
+	}
+	if m.humanConfirmChan != nil {
+		t.Fatal("取出后应清除人工确认通道")
+	}
+	if got := m.takeInputTarget(); got != (chan<- string)(out) {
+		t.Fatal("人工确认通道只应使用一次，后续输入应发送到 outChan")
+	}
+}
+
+func TestHumanInTheLoopWithoutChannelKeepsReading(t *testing.T) {
+	m, _, _ := newTestModel()
+	m.phase = phaseStreaming
+
+	_, cmd := m.Update(inChunkMsg{event: StreamEvent{Kind: HumanInTheLoop}})
+
+	if m.phase != phaseStreaming {
+		t.Fatalf("缺少确认通道时 phase=%v，期望继续 streaming", m.phase)
+	}
+	if cmd == nil {
+		t.Fatal("缺少确认通道时应继续 readIn")
+	}
+}
+
 // TestAppendStreamSplitsCompleteLines 是本次修复的核心：完整行被切出交给打印命令
 // （随后滚入 scrollback，可上翻），未结束的尾部留在 streamBuf。
 func TestAppendStreamSplitsCompleteLines(t *testing.T) {
