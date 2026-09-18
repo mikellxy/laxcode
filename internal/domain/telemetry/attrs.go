@@ -1,6 +1,6 @@
 // Package telemetry 是 DDD 架构下领域层的可观测性词汇包：集中定义 span
 // 名与属性键常量、OTel API 类型的别名（Tracer/Span/KeyValue，见 trace.go）、
-// session_id 的 ctx 传播、span 开启与关闭辅助、noop 缺省。
+// session_id / agent_role 的 ctx 传播、span 开启与关闭辅助、noop 缺省。
 //
 // 依赖约定：本包只依赖 OpenTelemetry **API**（go.opentelemetry.io/otel，
 // 厂商中立的稳定抽象），不包含任何上报后端、装配或资源生命周期逻辑。

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 )
 
@@ -131,9 +133,13 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 	defer childReg.Close()
 
+	// 运行账目是 run_sub_agent 的返回协议，由工具边界装饰通用
+	// LLMClient 采集，不向 ReActService 增加 Task 专用返回结构。
+	run := &subAgentRun{}
+	childLLM := &subAgentLLMClient{LLMClient: s.parent.LLMClient, run: run}
+
 	// 事件静默：子 Agent 中间过程不外发（consumer 直接丢弃）。
-	// NewSubAgentService 使子会话 chat span 的 agent_role=sub。
-	childSvc := NewSubAgentService(childSess, s.parent.SessRepo, s.parent.LLMClient,
+	childSvc := NewReActService(childSess, s.parent.SessRepo, childLLM,
 		s.parent.ContextSummaryLLMClient, childReg, func(*ReactEvent) {}, s.parent.tracer, s.parent.Artifacts)
 	if err := childSvc.InitSession(ctx); err != nil {
 		return "", fmt.Errorf("init session: %w", err)
@@ -142,19 +148,14 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", fmt.Errorf("init sys prompt: %w", err)
 	}
 
-	msg, stats, chatErr := childSvc.ChatWithStats(ctx, a.Task)
+	childCtx := telemetry.ContextWithAgentRole(ctx, telemetry.AgentRoleSub)
+	msg, chatErr := childSvc.Chat(childCtx, a.Task)
 	res := &SubAgentResult{
-		Status:         classifySubAgentRun(msg, stats, chatErr),
+		Status:         classifySubAgentRun(msg, run, chatErr),
 		ChildSessionID: childID,
-		FinishReason:   "",
+		FinishReason:   subAgentFinishReason(msg, run),
 		Report:         subAgentReport(msg, chatErr),
-		Usage:          subAgentUsage(stats),
-	}
-	if msg != nil {
-		res.FinishReason = msg.FinishReason
-	}
-	if stats != nil && stats.FinishReason != "" {
-		res.FinishReason = stats.FinishReason
+		Usage:          run.Usage,
 	}
 	out, marshalErr := json.Marshal(res)
 	if marshalErr != nil {
@@ -179,24 +180,10 @@ func subAgentReport(msg *sharedkernel.Message, chatErr error) string {
 	return msg.Content
 }
 
-// subAgentUsage 从运行账目提取用量；stats 为 nil 时返回零值（真实路径
-// ChatWithStats 恒返回非 nil stats，防御性兼容）。
-func subAgentUsage(stats *RunStats) Usage {
-	if stats == nil {
-		return Usage{}
-	}
-	return Usage{
-		InputTokens:  stats.InputTokens,
-		OutputTokens: stats.OutputTokens,
-		Turns:        stats.Turns,
-		ToolCalls:    stats.ToolCalls,
-	}
-}
-
 // SubAgentResult 是 run_sub_agent 工具回传给主 Agent 的结构化结果协议：
 // 状态可机器判定（classifySubAgentRun），完整报告与用量一并携带，
 // child_session_id 可检索子会话原始记录。设计见
-// articles/subagent-structured-result-design.md（评估 5.1）。
+// articles/subagent-task-context-isolation-assessment.md 5.1。
 type SubAgentResult struct {
 	// Status 是子任务终态：complete / partial / failed / cancelled。
 	Status string `json:"status"`
@@ -235,28 +222,67 @@ const (
 //   - 其余（max_output_tokens / content_filter / usage_unavailable / 空）
 //     有产出但不可信 → partial。
 //
-// stats 为 nil 时按无账目处理（不会发生在 Execute 的真实路径，防御性兼容）。
-func classifySubAgentRun(msg *sharedkernel.Message, stats *RunStats, runErr error) string {
+// run 为 nil 时按无账目处理，便于独立测试状态分类。
+func classifySubAgentRun(msg *sharedkernel.Message, run *subAgentRun, runErr error) string {
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			return SubAgentStatusCancelled
 		}
 		return SubAgentStatusFailed
 	}
-	// 优先取 stats 的终止原因（含出错轮已采集值）；stats 为 nil 或为空时
-	// 退回消息自身（ChatWithStats 真实路径两者恒一致，防御性双读）。
-	finishReason := msgFinishReason(msg)
-	if stats != nil && stats.FinishReason != "" {
-		finishReason = stats.FinishReason
-	}
+	finishReason := subAgentFinishReason(msg, run)
 	if finishReason == "" {
-		// 无 msg 也无 stats 的成功返回：拿不到任何终止信号，按不可信处理。
+		// 无 msg 也无 recorder 信号的成功返回，按不可信处理。
 		return SubAgentStatusPartial
 	}
 	if finishReason == sharedkernel.FinishReasonStop {
 		return SubAgentStatusComplete
 	}
 	return SubAgentStatusPartial
+}
+
+// subAgentRun 是 run_sub_agent 边界的运行账目，不是通用 Chat 协议。
+type subAgentRun struct {
+	Usage        Usage
+	FinishReason string
+}
+
+// subAgentLLMClient 只装饰子 Agent 的正常生成调用。上下文压缩使用
+// 独立 ContextSummaryLLMClient，不计入子任务 usage，与原协议口径一致。
+type subAgentLLMClient struct {
+	llmprovider.LLMClient
+	run *subAgentRun
+}
+
+func (c *subAgentLLMClient) GenerateStream(
+	ctx context.Context,
+	msgs []sharedkernel.Message,
+	toolDefs []sharedkernel.ToolDefinition,
+	emit func(sharedkernel.StreamChunk),
+) (*sharedkernel.Message, error) {
+	c.run.Usage.Turns++
+	msg, err := c.LLMClient.GenerateStream(ctx, msgs, toolDefs, emit)
+	c.run.FinishReason = ""
+	if msg != nil {
+		c.run.FinishReason = msg.FinishReason
+	}
+	if err != nil || msg == nil {
+		return msg, err
+	}
+	c.run.Usage.InputTokens += msg.TokenUsed.TokenInput
+	c.run.Usage.OutputTokens += msg.TokenUsed.TokenOutput
+	c.run.Usage.ToolCalls += len(msg.ToolCalls)
+	return msg, nil
+}
+
+func subAgentFinishReason(msg *sharedkernel.Message, run *subAgentRun) string {
+	if run != nil && run.FinishReason != "" {
+		return run.FinishReason
+	}
+	if msg == nil {
+		return ""
+	}
+	return msg.FinishReason
 }
 
 func (s *SubAgent) BeforeExecInfo(args json.RawMessage) string {

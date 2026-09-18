@@ -11,7 +11,6 @@
 ## 关键代码入口
 [laxcode-断点恢复实现方式]
 - internal/application/reactservice/reactservice.go:ReActService.Chat
-- internal/application/reactservice/reactservice.go:ReActService.ChatWithStats
 - internal/application/reactservice/reactservice.go:ReActService.recoverBeforeChat
 - internal/application/reactservice/reactservice.go:missingToolResults
 - internal/application/reactservice/reactservice.go:ReActService.handleTurnMsg

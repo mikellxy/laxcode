@@ -69,7 +69,7 @@ func TestRunReturnsImmediateAnswer(t *testing.T) {
 	rec := &eventRecorder{}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), rec.record, nil)
 
-	msg, _, err := svc.think(context.Background())
+	msg, err := svc.think(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRunEmitsReasoningEvent(t *testing.T) {
 	rec := &eventRecorder{}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), rec.record, nil)
 
-	if _, _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	assertChunks(t, rec.events, []sharedkernel.StreamChunk{
@@ -132,7 +132,7 @@ func TestRunToolCallLoop(t *testing.T) {
 	rec := &eventRecorder{}
 	svc := NewReActService(sess, repo, llm, nil, reg, rec.record, nil)
 
-	msg, _, err := svc.think(context.Background())
+	msg, err := svc.think(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -193,8 +193,9 @@ func TestRunToolCallTraceHierarchy(t *testing.T) {
 	reg.Register(echoTool{})
 	svc := NewReActService(sess, repo, llm, nil, reg, nil, handle.Tracer)
 
-	if _, _, err := svc.ChatWithStats(context.Background(), "question"); err != nil {
-		t.Fatalf("ChatWithStats: %v", err)
+	ctx := telemetry.ContextWithAgentRole(context.Background(), telemetry.AgentRoleSub)
+	if _, err := svc.Chat(ctx, "question"); err != nil {
+		t.Fatalf("Chat: %v", err)
 	}
 	if err := handle.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -231,6 +232,9 @@ func TestRunToolCallTraceHierarchy(t *testing.T) {
 	}
 	if root.SpanID == "" || root.ParentSpanID != "" {
 		t.Fatalf("chat must be the root span: %+v", root)
+	}
+	if got := root.Attributes["laxcode.agent_role"]; got != telemetry.AgentRoleSub {
+		t.Fatalf("chat agent_role = %v, want %q", got, telemetry.AgentRoleSub)
 	}
 
 	llmGenerateCount := 0
@@ -341,7 +345,7 @@ func TestRunForwardsChunksBeforeStreamReturns(t *testing.T) {
 				return assistantMsg("hello"), nil
 			})
 			svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), rec.record, nil)
-			msg, _, err := svc.think(context.Background())
+			msg, err := svc.think(context.Background())
 			if !errors.Is(err, streamErr) {
 				t.Fatalf("错误未透传：%v", err)
 			}
@@ -365,7 +369,7 @@ func TestRunPropagatesGenerateError(t *testing.T) {
 	}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil)
 
-	_, _, err := svc.think(context.Background())
+	_, err := svc.think(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "llm down") {
 		t.Fatalf("应透传 LLM 错误，实际 %v", err)
 	}
@@ -386,7 +390,7 @@ func TestRunUnknownToolDoesNotHang(t *testing.T) {
 	reg.Register(echoTool{}) // 不含 ghost_tool
 	svc := NewReActService(sess, repo, llm, nil, reg, func(*ReactEvent) {}, nil)
 
-	msg, _, err := svc.think(context.Background())
+	msg, err := svc.think(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -416,7 +420,7 @@ func TestRunRegistersTokenUsageToSession(t *testing.T) {
 		}},
 	}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
-	if _, _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if sess.TokenUsed.TokenInput != 100 || sess.TokenUsed.TokenOutput != 20 {
@@ -425,75 +429,6 @@ func TestRunRegistersTokenUsageToSession(t *testing.T) {
 }
 
 // ===== 会话生命周期与持久化编排（application 层职责） =====
-
-// TestChatWithStatsExposesRunAccounting 验证 Chat 的带账目变体：stats 透出
-// 轮次 / token 累计 / 最后一轮终止原因，供子 Agent 委派边界做完整性判定。
-func TestChatWithStatsExposesRunAccounting(t *testing.T) {
-	repo := newMemRepo()
-	sess := newTestSession("s-stats", repo)
-	llm := &scriptedLLM{responses: []scriptedResp{
-		{msg: &sharedkernel.Message{
-			Role:    sharedkernel.RoleAssistant,
-			Content: "最终结论",
-			TokenUsed: sharedkernel.TokenStatistics{
-				TokenInput:  20327,
-				TokenOutput: 16384,
-			},
-			FinishReason: sharedkernel.FinishReasonMaxOutputTokens,
-		}},
-	}}
-	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
-
-	msg, stats, err := svc.ChatWithStats(context.Background(), "调查一下")
-	if err != nil {
-		t.Fatalf("ChatWithStats: %v", err)
-	}
-	if msg == nil || msg.FinishReason != sharedkernel.FinishReasonMaxOutputTokens {
-		t.Fatalf("消息应携带终止原因：%+v", msg)
-	}
-	if stats == nil {
-		t.Fatal("stats 不应为 nil")
-	}
-	if stats.Turns != 1 {
-		t.Errorf("turns = %d, want 1", stats.Turns)
-	}
-	if stats.InputTokens != 20327 || stats.OutputTokens != 16384 {
-		t.Errorf("token 账目不符：%+v", stats)
-	}
-	if stats.FinishReason != sharedkernel.FinishReasonMaxOutputTokens {
-		t.Errorf("stats.finish_reason = %q, want max_output_tokens", stats.FinishReason)
-	}
-}
-
-// TestChatWithStatsToolLoopAccounting 验证带工具调用的多轮循环账目：
-// 轮次与工具调用数正确累计，终止原因取最后一轮。
-func TestChatWithStatsToolLoopAccounting(t *testing.T) {
-	repo := newMemRepo()
-	sess := newTestSession("s-stats-2", repo)
-	reg := tools.NewDefaultRegistry(nil)
-	reg.Register(echoTool{})
-	llm := &scriptedLLM{responses: []scriptedResp{
-		{msg: assistantMsgWithTool(sharedkernel.ToolCall{
-			ID: "c1", Name: "echo_tool", Arguments: json.RawMessage(`{"msg":"x"}`),
-		})},
-		{msg: assistantMsg("done"), finishReason: sharedkernel.FinishReasonStop},
-	}}
-	svc := NewReActService(sess, repo, llm, nil, reg, func(*ReactEvent) {}, nil, repo)
-
-	_, stats, err := svc.ChatWithStats(context.Background(), "q")
-	if err != nil {
-		t.Fatalf("ChatWithStats: %v", err)
-	}
-	if stats.Turns != 2 {
-		t.Errorf("turns = %d, want 2", stats.Turns)
-	}
-	if stats.ToolCalls != 1 {
-		t.Errorf("tool_calls = %d, want 1", stats.ToolCalls)
-	}
-	if stats.FinishReason != sharedkernel.FinishReasonStop {
-		t.Errorf("finish_reason = %q, want stop（最后一轮）", stats.FinishReason)
-	}
-}
 
 func TestInitSessionRestoresHistoryAndMeta(t *testing.T) {
 	ctx := context.Background()
@@ -831,7 +766,7 @@ func TestRunPersistsMetaAfterAssistantMessage(t *testing.T) {
 	sess := newTestSession("s-meta", repo)
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
 
-	if _, _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background()); err != nil {
 		t.Fatalf("think: %v", err)
 	}
 	stored := repo.contexts["s-meta"]
@@ -877,7 +812,7 @@ func TestRunPropagatesContextPersistError(t *testing.T) {
 	repo.failSaveContext = true
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
 
-	_, _, err := svc.think(context.Background())
+	_, err := svc.think(context.Background())
 	if !errors.Is(err, errRepo) {
 		t.Fatalf("meta 落盘失败应透传，实际 %v", err)
 	}
@@ -936,7 +871,7 @@ func TestRunCompactsHistoryBeforeGenerate(t *testing.T) {
 		},
 	}
 	svc.LLMClient = llm
-	if _, _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background()); err != nil {
 		t.Fatalf("think: %v", err)
 	}
 
@@ -1024,7 +959,7 @@ func TestRunDoesNotGenerateWhenCompactionCannotReachExactTarget(t *testing.T) {
 		},
 	}
 	svc.LLMClient = llm
-	_, _, err = svc.think(context.Background())
+	_, err = svc.think(context.Background())
 	if !errors.Is(err, ErrContextTargetNotReach) {
 		t.Fatalf("expected target-not-reached error, got %v", err)
 	}

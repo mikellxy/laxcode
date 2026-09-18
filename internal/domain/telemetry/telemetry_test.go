@@ -159,6 +159,18 @@ func TestTurnSeqContextPropagation(t *testing.T) {
 	}
 }
 
+func TestAgentRoleContextPropagation(t *testing.T) {
+	ctx := context.Background()
+	if got := AgentRoleFromContext(ctx); got != "" {
+		t.Errorf("未携带 agent_role 时应返回空串，实际 %q", got)
+	}
+
+	ctx = ContextWithAgentRole(ctx, AgentRoleSub)
+	if got := AgentRoleFromContext(ctx); got != AgentRoleSub {
+		t.Errorf("应取回 %q，实际 %q", AgentRoleSub, got)
+	}
+}
+
 func TestCloseSpanWithoutOpts(t *testing.T) {
 	s := new(recordingSpan)
 	CloseSpan(s)

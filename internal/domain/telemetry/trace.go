@@ -68,6 +68,8 @@ type sessionIDKey struct{}
 
 type turnSeqKey struct{}
 
+type agentRoleKey struct{}
+
 // ContextWithSessionID 把 session_id 写入 ctx，供下游埋点读取。
 // ReActService 在每次 Chat 开始时调用，使嵌套子树中的工具 span 归属会话。
 func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
@@ -90,6 +92,18 @@ func ContextWithTurnSeq(ctx context.Context, turnSeq int) context.Context {
 func TurnSeqFromContext(ctx context.Context) int {
 	turnSeq, _ := ctx.Value(turnSeqKey{}).(int)
 	return turnSeq
+}
+
+// ContextWithAgentRole 把当前 Agent 角色写入 ctx，供 chat 根 span 标记
+// main/sub，避免为不同运行者派生专用服务构造器。
+func ContextWithAgentRole(ctx context.Context, role string) context.Context {
+	return context.WithValue(ctx, agentRoleKey{}, role)
+}
+
+// AgentRoleFromContext 读取 ctx 中的 Agent 角色；未携带时返回空串。
+func AgentRoleFromContext(ctx context.Context) string {
+	role, _ := ctx.Value(agentRoleKey{}).(string)
+	return role
 }
 
 // CloseSpan 统一 span 收尾：按需落耗时属性、记录错误状态，最后 End。

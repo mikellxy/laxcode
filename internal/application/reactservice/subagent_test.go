@@ -303,27 +303,76 @@ func TestClassifySubAgentRun(t *testing.T) {
 	cases := []struct {
 		name string
 		msg  *sharedkernel.Message
-		stat *RunStats
+		run  *subAgentRun
 		err  error
 		want string
 	}{
 		{"nil msg nil err", nil, nil, nil, SubAgentStatusPartial},
-		{"stop via stats", nil, &RunStats{FinishReason: sharedkernel.FinishReasonStop}, nil, SubAgentStatusComplete},
+		{"stop via recorder", nil, &subAgentRun{FinishReason: sharedkernel.FinishReasonStop}, nil, SubAgentStatusComplete},
 		{"stop via msg", &sharedkernel.Message{FinishReason: sharedkernel.FinishReasonStop}, nil, nil, SubAgentStatusComplete},
-		{"stats 覆盖 msg", &sharedkernel.Message{FinishReason: sharedkernel.FinishReasonStop}, &RunStats{FinishReason: sharedkernel.FinishReasonMaxOutputTokens}, nil, SubAgentStatusPartial},
-		{"max_output_tokens", nil, &RunStats{FinishReason: sharedkernel.FinishReasonMaxOutputTokens}, nil, SubAgentStatusPartial},
-		{"usage_unavailable", nil, &RunStats{FinishReason: sharedkernel.FinishReasonUsageUnavailable}, nil, SubAgentStatusPartial},
-		{"空 finish_reason", nil, &RunStats{}, nil, SubAgentStatusPartial},
+		{"recorder 覆盖 msg", &sharedkernel.Message{FinishReason: sharedkernel.FinishReasonStop}, &subAgentRun{FinishReason: sharedkernel.FinishReasonMaxOutputTokens}, nil, SubAgentStatusPartial},
+		{"max_output_tokens", nil, &subAgentRun{FinishReason: sharedkernel.FinishReasonMaxOutputTokens}, nil, SubAgentStatusPartial},
+		{"usage_unavailable", nil, &subAgentRun{FinishReason: sharedkernel.FinishReasonUsageUnavailable}, nil, SubAgentStatusPartial},
+		{"空 finish_reason", nil, &subAgentRun{}, nil, SubAgentStatusPartial},
 		{"运行错误", nil, nil, errors.New("llm boom"), SubAgentStatusFailed},
 		{"ctx 取消", nil, nil, context.Canceled, SubAgentStatusCancelled},
 		{"ctx 超时", nil, nil, context.DeadlineExceeded, SubAgentStatusCancelled},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifySubAgentRun(tc.msg, tc.stat, tc.err); got != tc.want {
+			if got := classifySubAgentRun(tc.msg, tc.run, tc.err); got != tc.want {
 				t.Errorf("classify = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSubAgentLLMClientRecordsTaskUsage(t *testing.T) {
+	llm := &scriptedLLM{responses: []scriptedResp{
+		{msg: &sharedkernel.Message{
+			Role:      sharedkernel.RoleAssistant,
+			ToolCalls: []sharedkernel.ToolCall{{ID: "c1", Name: "read_file"}},
+			TokenUsed: sharedkernel.TokenStatistics{TokenInput: 100, TokenOutput: 20},
+		}},
+		{msg: &sharedkernel.Message{
+			Role:         sharedkernel.RoleAssistant,
+			Content:      "done",
+			TokenUsed:    sharedkernel.TokenStatistics{TokenInput: 140, TokenOutput: 30},
+			FinishReason: sharedkernel.FinishReasonStop,
+		}},
+	}}
+	run := &subAgentRun{}
+	client := &subAgentLLMClient{LLMClient: llm, run: run}
+
+	for range 2 {
+		if _, err := client.GenerateStream(context.Background(), nil, nil, func(sharedkernel.StreamChunk) {}); err != nil {
+			t.Fatalf("GenerateStream: %v", err)
+		}
+	}
+	if run.Usage != (Usage{InputTokens: 240, OutputTokens: 50, Turns: 2, ToolCalls: 1}) {
+		t.Fatalf("usage = %+v", run.Usage)
+	}
+	if run.FinishReason != sharedkernel.FinishReasonStop {
+		t.Fatalf("finish_reason = %q", run.FinishReason)
+	}
+}
+
+func TestSubAgentLLMClientClearsStaleFinishReasonOnFailure(t *testing.T) {
+	llm := &scriptedLLM{responses: []scriptedResp{
+		{msg: &sharedkernel.Message{Role: sharedkernel.RoleAssistant, FinishReason: sharedkernel.FinishReasonStop}},
+		{err: errors.New("stream failed")},
+	}}
+	run := &subAgentRun{}
+	client := &subAgentLLMClient{LLMClient: llm, run: run}
+
+	if _, err := client.GenerateStream(context.Background(), nil, nil, func(sharedkernel.StreamChunk) {}); err != nil {
+		t.Fatalf("first GenerateStream: %v", err)
+	}
+	if _, err := client.GenerateStream(context.Background(), nil, nil, func(sharedkernel.StreamChunk) {}); err == nil {
+		t.Fatal("second GenerateStream should fail")
+	}
+	if run.FinishReason != "" {
+		t.Fatalf("failed turn must not retain prior finish_reason, got %q", run.FinishReason)
 	}
 }
 
