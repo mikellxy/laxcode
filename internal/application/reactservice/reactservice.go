@@ -25,14 +25,17 @@ type ReActService struct {
 	ToolRegistry            tools.Registry
 	Artifacts               tools.ArtifactStore
 	ReActEventConsumerF     func(reactEvent *ReactEvent)
-	// tracer 是 ReAct/llm-turn span 的追踪注入点，经构造注入；nil 缺省
+	// tracer 是 chat 及其子 span 的追踪注入点，经构造注入；nil 缺省
 	// noop，不产生任何观测输出。类型经 telemetry 别名持有，本包不直接
 	// 依赖 OTel（span 的开启与收尾均走 telemetry 辅助函数）。
 	tracer telemetry.Tracer
-	// agentRole 写入 ReAct span 的 laxcode.agent_role：主服务为 main，
+	// agentRole 写入 chat span 的 laxcode.agent_role：主服务为 main，
 	// 子 Agent 派生服务为 sub（经 NewSubAgentService 构造时注入），
-	// 使子会话的 ReAct span 不再被误标为主会话。
+	// 使子会话的 chat span 不再被误标为主会话。
 	agentRole string
+	// promptEnricher 是 chat 根 span 内、消息落盘前执行的可选查询增强器。
+	// QA 模式注入向量化与知识库召回实现；普通模式保持 nil。
+	promptEnricher PromptEnricher
 }
 
 var (
@@ -70,6 +73,12 @@ type RunStats struct {
 	FinishReason string
 }
 
+// PromptEnricher 在 chat 根 span 内把用户输入扩充为最终模型提示词。
+// 实现可创建 query-embedding、vector-retrieval 等子 span。
+type PromptEnricher interface {
+	Enrich(ctx context.Context, query string) (string, error)
+}
+
 func NewReActService(sess *session.Session,
 	sessRepo session.SessionRepository,
 	llmClient llmprovider.LLMClient,
@@ -101,7 +110,7 @@ func NewReActService(sess *session.Session,
 }
 
 // NewSubAgentService 构造子 Agent 用的 ReActService：与 NewReActService 的
-// 区别仅是 agentRole=sub，使子会话的 ReAct span 角色正确。子 Agent 的完整
+// 区别仅是 agentRole=sub，使子会话的 chat span 角色正确。子 Agent 的完整
 // 装配（受限工具集、事件静默）由 SubAgent.Execute 编排。
 func NewSubAgentService(sess *session.Session,
 	sessRepo session.SessionRepository,
@@ -115,6 +124,12 @@ func NewSubAgentService(sess *session.Session,
 		toolRegistry, reActEventConsumerF, tracer, artifactStores...)
 	r.agentRole = telemetry.AgentRoleSub
 	return r
+}
+
+// SetPromptEnricher 配置 chat 开始后、用户消息落盘前运行的可选提示词增强器。
+// 应仅在服务对外可见前由组合根调用，不应在并发 Chat 期间修改。
+func (r *ReActService) SetPromptEnricher(enricher PromptEnricher) {
+	r.promptEnricher = enricher
 }
 
 // InitSession 从数据库恢复最新工作集。
@@ -145,9 +160,38 @@ func (r *ReActService) Chat(ctx context.Context, p string) (*sharedkernel.Messag
 }
 
 // ChatWithStats 是 Chat 的带账目变体：需要运行统计（轮次、工具调用、token、
-// 终止原因）的调用方使用；前端三个调用方继续走 Chat 保持零改动。
-func (r *ReActService) ChatWithStats(ctx context.Context, p string) (*sharedkernel.Message, *RunStats, error) {
-	if err := r.recoverBeforeChat(ctx); err != nil {
+// 终止原因）的调用方使用；普通入口继续通过 Chat 调用。
+func (r *ReActService) ChatWithStats(ctx context.Context, p string) (
+	msg *sharedkernel.Message, stats *RunStats, err error,
+) {
+	ctx = telemetry.ContextWithSessionID(ctx, r.Session.ID)
+	ctx, chatSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanChat,
+		telemetry.AttrSessionID.String(r.Session.ID),
+		telemetry.AttrAgentRole.String(r.agentRole),
+	)
+	startedAt := time.Now()
+	defer func() {
+		if stats != nil {
+			chatSpan.SetAttributes(
+				telemetry.AttrInputTokens.Int(stats.InputTokens),
+				telemetry.AttrOutputTokens.Int(stats.OutputTokens),
+				telemetry.AttrToolCallCount.Int(stats.ToolCalls),
+				telemetry.AttrFinishReason.String(stats.FinishReason),
+			)
+		}
+		telemetry.CloseSpan(chatSpan,
+			telemetry.WithErr(err),
+			telemetry.WithTimeCostMs(time.Since(startedAt).Milliseconds()),
+		)
+	}()
+
+	if r.promptEnricher != nil {
+		p, err = r.promptEnricher.Enrich(ctx, p)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if err = r.recoverBeforeChat(ctx); err != nil {
 		return nil, nil, fmt.Errorf("recover previous chat: %w", err)
 	}
 	userMsg := r.Session.BuildUserMessage(p)
@@ -155,7 +199,7 @@ func (r *ReActService) ChatWithStats(ctx context.Context, p string) (*sharedkern
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := r.commitCreatedMessage(ctx, candidate, userMsg, userMsg); err != nil {
+	if err = r.commitCreatedMessage(ctx, candidate, userMsg, userMsg); err != nil {
 		return nil, nil, err
 	}
 	return r.think(ctx)
@@ -228,106 +272,69 @@ func missingToolResults(messages []sharedkernel.Message) []sharedkernel.ToolCall
 }
 
 func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, *RunStats, error) {
-	// session_id 写入 ctx 向下传播：工具注册表的 tool-exec span 经它读取
-	// 业务关联键（span 属性不会自动继承）。ReAct span 的父链由调用方 ctx
-	// 决定，交互模式下本 span 自动成为 root。
-	ctx = telemetry.ContextWithSessionID(ctx, r.Session.ID)
-	ctx, reActSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanReAct,
-		telemetry.AttrSessionID.String(r.Session.ID),
-		telemetry.AttrAgentRole.String(r.agentRole),
-	)
-	// run 级 token 合计在 defer 中统一落属性，各 return 路径共享
-	var reActInput, reActOutput int
-	var reActErr error
-	startTime := time.Now()
 	stats := &RunStats{}
-	defer func() {
-		reActSpan.SetAttributes(
-			telemetry.AttrInputTokens.Int(reActInput),
-			telemetry.AttrOutputTokens.Int(reActOutput),
-		)
-		telemetry.CloseSpan(reActSpan,
-			telemetry.WithErr(reActErr),
-			telemetry.WithTimeCostMs(time.Since(startTime).Milliseconds()),
-		)
-	}()
 
 	turnCnt := 0
 	for {
 		turnCnt++
 		stats.Turns = turnCnt
-		turnCtx, turnSpan := telemetry.Start(ctx, r.tracer, telemetry.LLMTurn,
-			telemetry.AttrTurnSeq.Int(turnCnt),
-		)
-		turnStart := time.Now()
-		// closeTurn 是本轮 span 的唯一收尾点：各 return 路径都经它落耗时与错误
-		// 状态。span 生命周期留在本函数而不交给持久化辅助函数，本包才能继续
-		// 只经 telemetry 使用追踪能力，不直接依赖 OTel 类型。
-		closeTurn := func(err error) {
-			telemetry.CloseSpan(turnSpan,
-				telemetry.WithTimeCostMs(time.Since(turnStart).Milliseconds()),
-				telemetry.WithErr(err))
-		}
 
 		// 每轮固定一份工具定义：精确计数与随后的生成请求必须
 		// 序列化同一份 tools，不能让 registry map 的遍历顺序在两次读取间漂移。
 		toolDefs := r.ToolRegistry.GetAvailableTools()
-		if err := r.compactContext(turnCtx, toolDefs); err != nil {
-			reActErr = err
-			closeTurn(err)
+		if err := r.compactContext(ctx, toolDefs); err != nil {
 			return nil, stats, err
 		}
 
-		msg, err := r.LLMClient.GenerateStream(turnCtx, r.Session.Messages, toolDefs, func(chunkEvent sharedkernel.StreamChunk) {
+		llmStart := time.Now()
+		llmCtx, llmSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanLLMGenerate,
+			telemetry.AttrTurnSeq.Int(turnCnt),
+		)
+		msg, err := r.LLMClient.GenerateStream(llmCtx, r.Session.Messages, toolDefs, func(chunkEvent sharedkernel.StreamChunk) {
 			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeChunk, ChunkEvent: &chunkEvent})
 		})
+		if msg != nil {
+			llmSpan.SetAttributes(
+				telemetry.AttrInputTokens.Int(msg.TokenUsed.TokenInput),
+				telemetry.AttrOutputTokens.Int(msg.TokenUsed.TokenOutput),
+				telemetry.AttrToolCallCount.Int(len(msg.ToolCalls)),
+				telemetry.AttrFinishReason.String(msg.FinishReason),
+			)
+		}
+		telemetry.CloseSpan(llmSpan,
+			telemetry.WithTimeCostMs(time.Since(llmStart).Milliseconds()),
+			telemetry.WithErr(err),
+		)
 		if err != nil {
 			// 出错轮已采集的终止原因（provider 在返回错误的同时可能标记
 			// cancelled）留给 stats；Think 循环本身不再继续。
 			stats.FinishReason = msgFinishReason(msg)
-			reActErr = err
-			closeTurn(err)
 			return msg, stats, err
 		}
 		if err := r.handleTurnMsg(ctx, msg); err != nil {
-			reActErr = err
-			closeTurn(err)
 			return nil, stats, err
 		}
-		// llm-turn / ReAct 级 token 用量统计
-		reActInput += msg.TokenUsed.TokenInput
-		reActOutput += msg.TokenUsed.TokenOutput
 		stats.InputTokens += msg.TokenUsed.TokenInput
 		stats.OutputTokens += msg.TokenUsed.TokenOutput
 		stats.FinishReason = msg.FinishReason
-		turnSpan.SetAttributes(
-			telemetry.AttrInputTokens.Int(msg.TokenUsed.TokenInput),
-			telemetry.AttrOutputTokens.Int(msg.TokenUsed.TokenOutput),
-			telemetry.AttrToolCallCount.Int(len(msg.ToolCalls)),
-			telemetry.AttrFinishReason.String(msg.FinishReason),
-		)
 
 		// 无工具调用，推理循环完成
 		if len(msg.ToolCalls) == 0 {
-			closeTurn(nil)
 			return msg, stats, nil
 		}
 		stats.ToolCalls += len(msg.ToolCalls)
+		toolCtx := telemetry.ContextWithTurnSeq(ctx, turnCnt)
 
 		for _, tc := range msg.ToolCalls {
 			info := r.ToolRegistry.BeforeExecInfo(&tc)
 			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info})
 
-			// turnCtx 携带 llm-turn span，tool-exec span 经注册表挂到其下
-			result := r.ToolRegistry.Execute(turnCtx, &tc)
+			result := r.ToolRegistry.Execute(toolCtx, &tc)
 			toolMsg := tools.ToolResultAsMsg(result)
 			if err := r.handleTurnMsg(ctx, toolMsg); err != nil {
-				reActErr = err
-				closeTurn(err)
 				return nil, stats, err
 			}
 		}
-		closeTurn(nil)
 	}
 }
 

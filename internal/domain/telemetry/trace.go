@@ -53,8 +53,8 @@ func OrNoop(t Tracer) Tracer {
 	return t
 }
 
-// Start 开启一个 span 并把它写入返回的 ctx：spanName 取自本包的 Span* /
-// LLMTurn 常量，attrs 为该 span 的业务属性。父子链完全由 ctx 决定，调用方
+// Start 开启一个 span 并把它写入返回的 ctx：spanName 取自本包的 Span*
+// 常量，attrs 为该 span 的业务属性。父子链完全由 ctx 决定，调用方
 // 无需接触 OTel 的 SpanStartOption。tracer 为 nil 时自动退化为 noop，
 // 因而本函数可安全用于未装配追踪的路径。
 func Start(ctx context.Context, tracer Tracer, spanName string, attrs ...KeyValue) (context.Context, Span) {
@@ -66,8 +66,10 @@ func Start(ctx context.Context, tracer Tracer, spanName string, attrs ...KeyValu
 // 故以 ctx value 显式传播。
 type sessionIDKey struct{}
 
+type turnSeqKey struct{}
+
 // ContextWithSessionID 把 session_id 写入 ctx，供下游埋点读取。
-// ReActService 在每次 Run 开始时调用，使嵌套子树中的工具 span 归属会话。
+// ReActService 在每次 Chat 开始时调用，使嵌套子树中的工具 span 归属会话。
 func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, sessionIDKey{}, sessionID)
 }
@@ -76,6 +78,18 @@ func ContextWithSessionID(ctx context.Context, sessionID string) context.Context
 func SessionIDFromContext(ctx context.Context) string {
 	sid, _ := ctx.Value(sessionIDKey{}).(string)
 	return sid
+}
+
+// ContextWithTurnSeq 把当前 ReAct 循环轮次写入 ctx，使扁平的 llm-generate
+// 与 tool-exec span 仍可通过 laxcode.loop_seq 关联。
+func ContextWithTurnSeq(ctx context.Context, turnSeq int) context.Context {
+	return context.WithValue(ctx, turnSeqKey{}, turnSeq)
+}
+
+// TurnSeqFromContext 读取当前 ReAct 循环轮次；未携带时返回 0。
+func TurnSeqFromContext(ctx context.Context) int {
+	turnSeq, _ := ctx.Value(turnSeqKey{}).(int)
+	return turnSeq
 }
 
 // CloseSpan 统一 span 收尾：按需落耗时属性、记录错误状态，最后 End。

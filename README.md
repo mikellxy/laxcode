@@ -152,6 +152,21 @@ Agent 不挂载任何工具，终端也不会输出 reasoning content。
 | `-workdir` | cwd   | 工作目录及 `kb/` 所在目录    |
 | `-session` | 空    | 续聊指定 QA 会话             |
 
+### 1.8 OTLP 调用链上报
+
+配置标准 OpenTelemetry OTLP/HTTP endpoint 后，LaxCode 会把以 `chat` 为根、
+`query-embedding`、`vector-retrieval`、`llm-generate` 和 `tool-exec` 为直接子节点的
+调用链批量上报到 SigNoz、Grafana Tempo 等兼容后端。普通对话不产生两个 QA 检索 span：
+
+```shell
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_SERVICE_NAME=laxcode
+./bin/laxcode
+```
+
+未配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 时，调用链仍写入会话目录下的本地
+`tracing.log`。
+
 ## 2. session 管理
 支持通过指定 session id 进行断点续聊
 ```shell

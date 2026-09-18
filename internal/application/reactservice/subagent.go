@@ -132,7 +132,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	defer childReg.Close()
 
 	// 事件静默：子 Agent 中间过程不外发（consumer 直接丢弃）。
-	// NewSubAgentService 使子会话 ReAct span 的 agent_role=sub。
+	// NewSubAgentService 使子会话 chat span 的 agent_role=sub。
 	childSvc := NewSubAgentService(childSess, s.parent.SessRepo, s.parent.LLMClient,
 		s.parent.ContextSummaryLLMClient, childReg, func(*ReactEvent) {}, s.parent.tracer, s.parent.Artifacts)
 	if err := childSvc.InitSession(ctx); err != nil {

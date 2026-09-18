@@ -112,7 +112,7 @@ func Run() {
 			case <-ctx.Done():
 				return
 			case input := <-outChan:
-				if _, err := assembled.Service.Answer(ctx, input); err != nil {
+				if _, err := assembled.Service.Chat(ctx, input); err != nil {
 					sendIn(formatRuntimeError(err))
 				}
 				sendIn(cliprinter.StreamEnd)

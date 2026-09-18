@@ -74,6 +74,9 @@ func (d *DefaultRegistry) Execute(ctx context.Context, toolCall *sharedkernel.To
 	if sid := telemetry.SessionIDFromContext(ctx); sid != "" {
 		attrs = append(attrs, telemetry.AttrSessionID.String(sid))
 	}
+	if turnSeq := telemetry.TurnSeqFromContext(ctx); turnSeq > 0 {
+		attrs = append(attrs, telemetry.AttrTurnSeq.Int(turnSeq))
+	}
 	ctx, span := telemetry.Start(ctx, d.tracer, telemetry.SpanToolExec, attrs...)
 	defer func() {
 		telemetry.CloseSpan(span,

@@ -45,7 +45,7 @@ func TestNewWithNilUsesNoop(t *testing.T) {
 		t.Fatal("New(nil) 应提供可用 Tracer")
 	}
 	// noop tracer 可正常 Start/End，零开销
-	_, span := h.Tracer.Start(context.Background(), telemetry.SpanReAct)
+	_, span := h.Tracer.Start(context.Background(), telemetry.SpanChat)
 	span.End()
 	if err := h.Shutdown(context.Background()); err != nil {
 		t.Fatalf("noop Shutdown 不应报错：%v", err)

@@ -25,7 +25,7 @@ type QAInput struct {
 }
 
 type QAAssembled struct {
-	Service *qaservice.Service
+	Service *reactservice.ReActService
 	Session *session.Session
 	Cleanup func()
 }
@@ -40,7 +40,11 @@ func AssembleQA(ctx context.Context, in QAInput) (*QAAssembled, error) {
 		return nil, err
 	}
 	sess := session.NewSession(in.SessionID)
-	traceHandle := newTraceHandle(layout.TracingLog(in.WorkDir, sess.ID))
+	traceHandle, err := newTraceHandle(ctx, layout.TracingLog(in.WorkDir, sess.ID))
+	if err != nil {
+		_ = sessRepo.Close()
+		return nil, err
+	}
 	tracer := traceHandle.Tracer
 	toolReg := newQAToolRegistry(tracer)
 
@@ -63,6 +67,7 @@ func AssembleQA(ctx context.Context, in QAInput) (*QAAssembled, error) {
 	}
 	embedder := infraembedding.NewOpenAIClient(
 		c.EmbedOpenaiApiKey, c.EmbedOpenaiBaseUrl, c.EmbedOpenaiModel)
+	react.SetPromptEnricher(qaservice.New(embedder, retriever, tracer))
 
 	var once sync.Once
 	cleanup := func() {
@@ -84,7 +89,7 @@ func AssembleQA(ctx context.Context, in QAInput) (*QAAssembled, error) {
 	}
 
 	return &QAAssembled{
-		Service: qaservice.New(embedder, retriever, react),
+		Service: react,
 		Session: sess,
 		Cleanup: cleanup,
 	}, nil

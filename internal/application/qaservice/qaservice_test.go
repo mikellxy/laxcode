@@ -2,12 +2,17 @@ package qaservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/domain/knowledgebase"
-	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 )
 
 type fakeEmbedder struct {
@@ -23,82 +28,147 @@ type fakeRetriever struct {
 	chunks   []knowledgebase.Chunk
 	err      error
 	gotLimit int
+	calls    int
 }
 
 func (f *fakeRetriever) Search(_ context.Context, _ []float32, limit int) ([]knowledgebase.Chunk, error) {
+	f.calls++
 	f.gotLimit = limit
 	return f.chunks, f.err
 }
 
-type fakeAnswerer struct {
-	prompt string
-	calls  int
-}
-
-func (f *fakeAnswerer) Chat(_ context.Context, prompt string) (*sharedkernel.Message, error) {
-	f.calls++
-	f.prompt = prompt
-	return &sharedkernel.Message{Content: "answer"}, nil
-}
-
-func TestAnswerBuildsRetrievedPrompt(t *testing.T) {
+func TestEnrichBuildsRetrievedPrompt(t *testing.T) {
 	embedder := &fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)}
 	retriever := &fakeRetriever{chunks: []knowledgebase.Chunk{{Content: "chunk one"}, {Content: "chunk two\n"}}}
-	answerer := &fakeAnswerer{}
-	svc := New(embedder, retriever, answerer)
+	svc := New(embedder, retriever, nil)
 
-	msg, err := svc.Answer(context.Background(), "  question  ")
+	prompt, err := svc.Enrich(context.Background(), "  question  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Content != "answer" || retriever.gotLimit != 10 {
-		t.Fatalf("unexpected result: msg=%+v limit=%d", msg, retriever.gotLimit)
+	if retriever.gotLimit != 10 {
+		t.Fatalf("retrieval limit = %d, want 10", retriever.gotLimit)
 	}
 	want := "question\n相关文档:\nchunk one\nchunk two"
-	if answerer.prompt != want {
-		t.Fatalf("prompt = %q, want %q", answerer.prompt, want)
+	if prompt != want {
+		t.Fatalf("prompt = %q, want %q", prompt, want)
 	}
 }
 
-func TestAnswerRejectsWrongEmbeddingDimensionBeforeRetrieval(t *testing.T) {
-	answerer := &fakeAnswerer{}
-	svc := New(&fakeEmbedder{vector: []float32{1}}, &fakeRetriever{}, answerer)
-	_, err := svc.Answer(context.Background(), "question")
+func TestEnrichRejectsWrongEmbeddingDimensionBeforeRetrieval(t *testing.T) {
+	retriever := &fakeRetriever{}
+	svc := New(&fakeEmbedder{vector: []float32{1}}, retriever, nil)
+	_, err := svc.Enrich(context.Background(), "question")
 	if err == nil || !strings.Contains(err.Error(), "got 1, want 1024") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if answerer.calls != 0 {
-		t.Fatal("answerer must not run after dimension mismatch")
+	if retriever.calls != 0 {
+		t.Fatal("retriever must not run after dimension mismatch")
 	}
 }
 
-func TestAnswerStopsOnRetrievalError(t *testing.T) {
-	answerer := &fakeAnswerer{}
+func TestEnrichStopsOnRetrievalError(t *testing.T) {
 	svc := New(
 		&fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)},
 		&fakeRetriever{err: errors.New("db unavailable")},
-		answerer,
+		nil,
 	)
-	_, err := svc.Answer(context.Background(), "question")
+	_, err := svc.Enrich(context.Background(), "question")
 	if err == nil || !strings.Contains(err.Error(), "db unavailable") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if answerer.calls != 0 {
-		t.Fatal("answerer must not run after retrieval failure")
-	}
 }
 
-func TestAnswerWithNoChunksStillCallsAnswerer(t *testing.T) {
-	answerer := &fakeAnswerer{}
+func TestEnrichWithNoChunksIncludesMarker(t *testing.T) {
 	svc := New(
 		&fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)},
 		&fakeRetriever{},
-		answerer,
+		nil,
 	)
-	if _, err := svc.Answer(context.Background(), "question"); err != nil {
+	prompt, err := svc.Enrich(context.Background(), "question")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(answerer.prompt, "未召回到相关文档") {
-		t.Fatalf("missing empty retrieval marker: %q", answerer.prompt)
+	if !strings.Contains(prompt, "未召回到相关文档") {
+		t.Fatalf("missing empty retrieval marker: %q", prompt)
+	}
+}
+
+func TestEnrichTraceSpansAreDirectChatChildren(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tracing.log")
+	provider, err := filetrace.New(logPath)
+	if err != nil {
+		t.Fatalf("filetrace.New: %v", err)
+	}
+	handle := tracing.New(provider)
+	svc := New(
+		&fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)},
+		&fakeRetriever{chunks: []knowledgebase.Chunk{{Content: "chunk"}}},
+		handle.Tracer,
+	)
+
+	ctx, chatSpan := telemetry.Start(context.Background(), handle.Tracer, telemetry.SpanChat)
+	if _, err := svc.Enrich(ctx, "question"); err != nil {
+		t.Fatalf("Enrich: %v", err)
+	}
+	telemetry.CloseSpan(chatSpan)
+	if err := handle.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	type traceRecord struct {
+		TraceID      string         `json:"trace_id"`
+		SpanID       string         `json:"span_id"`
+		ParentSpanID string         `json:"parent_span_id"`
+		Name         string         `json:"name"`
+		Attributes   map[string]any `json:"attributes"`
+	}
+	var records []traceRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var record traceRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("Unmarshal trace record: %v", err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 3 {
+		t.Fatalf("want 3 spans, got %d: %+v", len(records), records)
+	}
+
+	var root traceRecord
+	for _, record := range records {
+		if record.Name == telemetry.SpanChat {
+			root = record
+		}
+	}
+	if root.SpanID == "" || root.ParentSpanID != "" {
+		t.Fatalf("chat must be the root span: %+v", root)
+	}
+	for _, record := range records {
+		if record.Name == telemetry.SpanChat {
+			continue
+		}
+		if record.TraceID != root.TraceID || record.ParentSpanID != root.SpanID {
+			t.Errorf("span %s is not a direct chat child: %+v", record.Name, record)
+		}
+		switch record.Name {
+		case telemetry.SpanQueryEmbedding:
+			if got := record.Attributes["laxcode.embedding.dimensions"]; got != float64(knowledgebase.EmbeddingDimensions) {
+				t.Errorf("embedding dimensions = %v", got)
+			}
+		case telemetry.SpanVectorRetrieval:
+			if got := record.Attributes["laxcode.retrieval.limit"]; got != float64(retrievalLimit) {
+				t.Errorf("retrieval limit = %v", got)
+			}
+			if got := record.Attributes["laxcode.retrieval.result_count"]; got != float64(1) {
+				t.Errorf("retrieval result count = %v", got)
+			}
+		default:
+			t.Errorf("unexpected child span %q", record.Name)
+		}
 	}
 }

@@ -66,7 +66,7 @@ func TestNoopTracer(t *testing.T) {
 	if tr == nil {
 		t.Fatal("NoopTracer 不应返回 nil")
 	}
-	ctx, span := tr.Start(context.Background(), SpanReAct)
+	ctx, span := tr.Start(context.Background(), SpanChat)
 	if ctx == nil || span == nil {
 		t.Fatal("noop tracer Start 不应返回 nil ctx/span")
 	}
@@ -108,7 +108,7 @@ func TestStartKeepsSessionID(t *testing.T) {
 }
 
 func TestStartNilTracerFallsBackToNoop(t *testing.T) {
-	ctx, span := Start(context.Background(), nil, SpanReAct)
+	ctx, span := Start(context.Background(), nil, SpanChat)
 	if span == nil || ctx == nil {
 		t.Fatal("nil tracer 应退化为 noop，而非 panic 或返回 nil")
 	}
@@ -120,7 +120,7 @@ func TestOrNoop(t *testing.T) {
 		t.Fatal("OrNoop(nil) 不应返回 nil")
 	}
 	// nil 归一后仍可正常 Start，不 panic
-	ctx, span := OrNoop(nil).Start(context.Background(), SpanReAct)
+	ctx, span := OrNoop(nil).Start(context.Background(), SpanChat)
 	if span == nil {
 		t.Fatal("noop tracer Start 不应返回 nil span")
 	}
@@ -144,6 +144,18 @@ func TestSessionIDContextPropagation(t *testing.T) {
 	ctx = ContextWithSessionID(ctx, "sess-42")
 	if got := SessionIDFromContext(ctx); got != "sess-42" {
 		t.Errorf("应取回 sess-42，实际 %q", got)
+	}
+}
+
+func TestTurnSeqContextPropagation(t *testing.T) {
+	ctx := context.Background()
+	if got := TurnSeqFromContext(ctx); got != 0 {
+		t.Errorf("未携带 loop_seq 时应返回 0，实际 %d", got)
+	}
+
+	ctx = ContextWithTurnSeq(ctx, 2)
+	if got := TurnSeqFromContext(ctx); got != 2 {
+		t.Errorf("应取回 loop_seq=2，实际 %d", got)
 	}
 }
 
@@ -216,7 +228,7 @@ func TestCloseSpanWithErrorAndTimeCost(t *testing.T) {
 
 func TestStartWithRecordingTracer(t *testing.T) {
 	tr := &recordingTracer{}
-	_, span := tr.Start(context.Background(), SpanReAct)
+	_, span := tr.Start(context.Background(), SpanChat)
 	if _, ok := span.(*recordingSpan); !ok {
 		t.Fatalf("recordingTracer.Start 应返回 recordingSpan，实际 %T", span)
 	}

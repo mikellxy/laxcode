@@ -9,7 +9,7 @@
 // 观测词汇包」就是空话，换观测方案时仍要回头改领域代码。全仓对 OTel 的
 // import 因此只落在本包与 infrastructure/tracing 两处，可被 grep 直接校验。
 //
-// 观测语义约定（ReAct/llm-turn/tool-exec 调用树、laxcode.* 业务属性、
+// 观测语义约定（chat 根调用树、laxcode.* 业务属性、
 // gen_ai.* token 属性）沉淀于此。真正的装配——TracerProvider/上报后端的
 // 选择与进程退出 Shutdown——由 internal/infrastructure/tracing（含 filetrace）
 // 负责，那是唯一允许同时依赖 OTel API 与具体实现的层。
@@ -17,25 +17,28 @@ package telemetry
 
 import "go.opentelemetry.io/otel/attribute"
 
-// span 名。DDD 架构调用树：ReAct → llm-turn → {llm-generate, tool-exec}。
-// ReAct/llm-turn 由 application 层 ReActService 负责，tool-exec 由
-// domain/tools 注册表负责，llm-generate 由基础设施 provider 层负责。
+// span 名。所有用户入口统一以 chat 为根；QA 检索、LLM 生成与工具执行均为
+// chat 的直接子 span，以开始时间在 Trace UI 中呈现真实执行顺序。
 const (
-	SpanReAct       = "ReAct"
-	LLMTurn         = "llm-turn"
-	SpanLLMGenerate = "llm-generate"
-	SpanToolExec    = "tool-exec"
+	SpanChat            = "chat"
+	SpanQueryEmbedding  = "query-embedding"
+	SpanVectorRetrieval = "vector-retrieval"
+	SpanLLMGenerate     = "llm-generate"
+	SpanToolExec        = "tool-exec"
 )
 
 // laxcode 自有概念的业务属性键
 const (
-	AttrSessionID     attribute.Key = "laxcode.session_id"
-	AttrToolName      attribute.Key = "laxcode.tool_name"
-	AttrAgentRole     attribute.Key = "laxcode.agent_role"
-	AttrTurnSeq       attribute.Key = "laxcode.loop_seq"
-	AttrToolCallCount attribute.Key = "laxcode.tool_call_count"
-	AttrTimeCostMs    attribute.Key = "laxcode.time_cost_ms"
-	AttrFinishReason  attribute.Key = "laxcode.finish_reason"
+	AttrSessionID      attribute.Key = "laxcode.session_id"
+	AttrToolName       attribute.Key = "laxcode.tool_name"
+	AttrAgentRole      attribute.Key = "laxcode.agent_role"
+	AttrTurnSeq        attribute.Key = "laxcode.loop_seq"
+	AttrToolCallCount  attribute.Key = "laxcode.tool_call_count"
+	AttrTimeCostMs     attribute.Key = "laxcode.time_cost_ms"
+	AttrFinishReason   attribute.Key = "laxcode.finish_reason"
+	AttrEmbeddingDims  attribute.Key = "laxcode.embedding.dimensions"
+	AttrRetrievalLimit attribute.Key = "laxcode.retrieval.limit"
+	AttrRetrievalCount attribute.Key = "laxcode.retrieval.result_count"
 )
 
 // AttrAgentRole 的取值

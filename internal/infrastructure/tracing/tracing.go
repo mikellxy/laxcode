@@ -5,11 +5,8 @@
 // ctx 传播、span 收尾）已下沉到 internal/domain/telemetry，供 domain/
 // application 层引用；本包不承载任何埋点语义，只保留装配职责。
 //
-// 产品只依赖 OTel API 模块，不提供任何真实上报后端的实现。用户接入方式：
-// 在 infrastructure/tracing/custom 下自行实现 trace.TracerProvider（其
-// Span.End 即上报触发点）并在 init 中经 Register 注入 HandleDB；主程序
-// 启动时遍历 HandleDB 选用，或在使用方进程装配官方 SDK 后把
-// otel.GetTracerProvider() 传入 New。批量与导出策略由实现方决定。
+// 内置 OTLP/HTTP 上报由 NewOTLP 装配；未配置远端时，组合根使用 filetrace
+// 本地落盘。两种实现都通过 Handle 暴露同一 Tracer 与 Shutdown 生命周期。
 //
 // 注意：OTel API 的 TracerProvider / Tracer / Span 均为密封接口（内嵌未导出
 // 方法），自定义实现须按官方 "API Implementations" 约定内嵌

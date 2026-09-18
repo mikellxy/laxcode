@@ -27,7 +27,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
-	_ "github.com/mikellxy/laxcode/internal/infrastructure/tracing/custom"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 )
@@ -82,16 +81,11 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	}
 	sysPrompt := prompt.GetSysPrompt(in.WorkDir, skills, plan)
 
-	// tracer：HandleDB 命中（custom 包 init 注册）优先，否则 filetrace 落盘到
-	// layout.TracingLog(workDir, sessID)；无法创建回退 noop。
-	// 先查 HandleDB 再决定是否创建 filetrace，避免命中注册项时仍打开日志文件造成句柄泄漏。
-	var traceHandle *tracing.Handle
-	for _, h := range tracing.HandleDB {
-		traceHandle = h
-		break
-	}
-	if traceHandle == nil {
-		traceHandle = newTraceHandle(layout.TracingLog(in.WorkDir, sess.ID))
+	// tracer：配置 OTLP endpoint 时上报远端，否则维持 filetrace 本地落盘。
+	traceHandle, err := newTraceHandle(ctx, layout.TracingLog(in.WorkDir, sess.ID))
+	if err != nil {
+		_ = sessRepo.Close()
+		return nil, fmt.Errorf("init tracing: %w", err)
 	}
 	tracer := traceHandle.Tracer
 
@@ -168,15 +162,16 @@ func warnSkillSkip(msg string) {
 	fmt.Fprintf(os.Stderr, "laxcode: %s\n", msg)
 }
 
-// newTraceHandle 按 logPath 构造默认 filetrace Provider；日志文件无法创建（如目录
-// 无写权限）时传 nil 让 tracing 回退官方 noop 并在 stderr 提示，不中断装配。
-// 分支返回而非先存进一个 TracerProvider 变量，是为了让本文件不必 import OTel——
-// 「OTel 只出现在 domain/telemetry 与 infrastructure/tracing」因此可被 grep 校验。
-func newTraceHandle(logPath string) *tracing.Handle {
+// newTraceHandle 在配置标准 OTLP endpoint 时使用批量 HTTP exporter，否则按
+// logPath 构造默认 filetrace Provider；本地日志无法创建时回退 noop。
+func newTraceHandle(ctx context.Context, logPath string) (*tracing.Handle, error) {
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
+		return tracing.NewOTLP(ctx)
+	}
+
 	f, err := filetrace.New(logPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "filetrace: %v; tracing disabled\n", err)
-		return tracing.New(nil)
+		return tracing.New(nil), nil
 	}
-	return tracing.New(f)
+	return tracing.New(f), nil
 }

@@ -157,6 +157,22 @@ no tools and does not print reasoning content to the terminal.
 | `-workdir` | cwd     | Working directory containing `kb/`       |
 | `-session` | empty   | Resume a QA conversation                 |
 
+### 1.8 OTLP Trace Export
+
+When a standard OpenTelemetry OTLP/HTTP endpoint is configured, LaxCode batches
+a trace tree rooted at `chat`, with `query-embedding`, `vector-retrieval`,
+`llm-generate`, and `tool-exec` as direct children, to compatible backends such
+as SigNoz or Grafana Tempo. Regular chat omits the two QA retrieval spans:
+
+```shell
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_SERVICE_NAME=laxcode
+./bin/laxcode
+```
+
+Without `OTEL_EXPORTER_OTLP_ENDPOINT`, traces continue to be written to the
+session-local `tracing.log` file.
+
 ## 2. Session Management
 Resuming a conversation from a previous run is supported by specifying a session id
 ```shell

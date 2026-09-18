@@ -1,7 +1,7 @@
 package tracing
 
-// HandleDB 是全局 tracer 句柄注册表：使用方在 custom 包的 init 中经
-// Register 注入自己实现的 Handle，主程序启动时遍历选用第一个注册项。
+// HandleDB 保留给需要自行管理 provider 注册表的嵌入方。内置组合根不读取它，
+// 而是根据 OTEL_EXPORTER_OTLP_ENDPOINT 显式选择 OTLP/HTTP 或 filetrace。
 var HandleDB = map[string]*Handle{}
 
 // Register 把命名 Handle 注入 HandleDB，通常由 custom 实现的 init 调用。

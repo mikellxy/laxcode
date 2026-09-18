@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,7 +15,10 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 )
 
 func TestNewReActService(t *testing.T) {
@@ -26,6 +31,32 @@ func TestNewReActService(t *testing.T) {
 	}
 	if svc.Session != sess || svc.ToolRegistry != reg || svc.SessRepo != repo {
 		t.Error("构造参数未装配到服务")
+	}
+}
+
+type promptEnricherFunc func(context.Context, string) (string, error)
+
+func (f promptEnricherFunc) Enrich(ctx context.Context, query string) (string, error) {
+	return f(ctx, query)
+}
+
+func TestChatUsesEnrichedPrompt(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("s-enriched", repo)
+	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("answer")}}}
+	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
+	svc.SetPromptEnricher(promptEnricherFunc(func(_ context.Context, query string) (string, error) {
+		return query + "\nretrieved context", nil
+	}))
+
+	if _, err := svc.Chat(context.Background(), "question"); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if len(llm.lastMsgs) != 2 {
+		t.Fatalf("LLM messages = %+v", llm.lastMsgs)
+	}
+	if got := llm.lastMsgs[1].Content; got != "question\nretrieved context" {
+		t.Fatalf("user prompt = %q", got)
 	}
 }
 
@@ -137,6 +168,107 @@ func TestRunToolCallLoop(t *testing.T) {
 			Kind: sharedkernel.ChunkToolCall, ToolCall: &llm.responses[0].msg.ToolCalls[0],
 		}) || rec.events[1].Type != ReActEventTypeToolCall {
 		t.Errorf("完整工具调用 chunk 应先于执行提示，且正文不得重复推送：%+v", rec.events)
+	}
+}
+
+func TestRunToolCallTraceHierarchy(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tracing.log")
+	provider, err := filetrace.New(logPath)
+	if err != nil {
+		t.Fatalf("filetrace.New: %v", err)
+	}
+	handle := tracing.New(provider)
+
+	repo := newMemRepo()
+	sess := newTestSession("s-trace-tree", repo)
+	llm := &scriptedLLM{responses: []scriptedResp{
+		{msg: assistantMsgWithTool(sharedkernel.ToolCall{
+			ID:        "tc-1",
+			Name:      "echo_tool",
+			Arguments: []byte(`{"msg":"hi"}`),
+		})},
+		{msg: assistantMsg("done")},
+	}}
+	reg := tools.NewDefaultRegistry(handle.Tracer)
+	reg.Register(echoTool{})
+	svc := NewReActService(sess, repo, llm, nil, reg, nil, handle.Tracer)
+
+	if _, _, err := svc.ChatWithStats(context.Background(), "question"); err != nil {
+		t.Fatalf("ChatWithStats: %v", err)
+	}
+	if err := handle.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	type traceRecord struct {
+		TraceID      string         `json:"trace_id"`
+		SpanID       string         `json:"span_id"`
+		ParentSpanID string         `json:"parent_span_id"`
+		Name         string         `json:"name"`
+		Attributes   map[string]any `json:"attributes"`
+	}
+	var records []traceRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var record traceRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("Unmarshal trace record: %v", err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 4 {
+		t.Fatalf("want 4 spans, got %d: %+v", len(records), records)
+	}
+
+	var root traceRecord
+	for _, record := range records {
+		if record.Name == telemetry.SpanChat {
+			root = record
+		}
+	}
+	if root.SpanID == "" || root.ParentSpanID != "" {
+		t.Fatalf("chat must be the root span: %+v", root)
+	}
+
+	llmGenerateCount := 0
+	toolExecCount := 0
+	llmTurns := make(map[float64]int)
+	for _, record := range records {
+		if record.TraceID != root.TraceID {
+			t.Errorf("span %s is outside chat trace", record.Name)
+		}
+		switch record.Name {
+		case telemetry.SpanLLMGenerate:
+			llmGenerateCount++
+			if record.ParentSpanID != root.SpanID {
+				t.Errorf("llm-generate parent = %s, want chat %s", record.ParentSpanID, root.SpanID)
+			}
+			turn, ok := record.Attributes["laxcode.loop_seq"].(float64)
+			if !ok {
+				t.Errorf("llm-generate loop_seq = %v", record.Attributes["laxcode.loop_seq"])
+			}
+			llmTurns[turn]++
+		case telemetry.SpanToolExec:
+			toolExecCount++
+			if record.ParentSpanID != root.SpanID {
+				t.Errorf("tool-exec parent = %s, want chat %s", record.ParentSpanID, root.SpanID)
+			}
+			if got := record.Attributes["laxcode.tool_name"]; got != "echo_tool" {
+				t.Errorf("tool name = %v, want echo_tool", got)
+			}
+			if got := record.Attributes["laxcode.loop_seq"]; got != float64(1) {
+				t.Errorf("tool loop_seq = %v, want 1", got)
+			}
+		}
+	}
+	if llmGenerateCount != 2 || toolExecCount != 1 {
+		t.Fatalf("llm-generate=%d tool-exec=%d", llmGenerateCount, toolExecCount)
+	}
+	if llmTurns[1] != 1 || llmTurns[2] != 1 {
+		t.Fatalf("llm loop sequence counts = %+v", llmTurns)
 	}
 }
 
