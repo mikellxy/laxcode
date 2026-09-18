@@ -44,8 +44,9 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// newEventConsumer 将流式边界和增量转换为 TUI 文本；每段只输出一次前缀。
-func newEventConsumer(sendIn func(string)) func(*reactservice.ReactEvent) {
+// newEventConsumer 将流式边界和增量转换为 TUI 展示事件；每段只输出一次前缀。
+func newEventConsumer(sendEvent func(cliprinter.StreamEvent)) func(*reactservice.ReactEvent) {
+	sendIn := func(text string) { sendEvent(cliprinter.StreamEvent{Text: text}) }
 	return func(e *reactservice.ReactEvent) {
 		switch e.Type {
 		case reactservice.ReActEventTypeChunk:
@@ -55,14 +56,16 @@ func newEventConsumer(sendIn func(string)) func(*reactservice.ReactEvent) {
 			}
 			switch chunk.Kind {
 			case sharedkernel.ChunkReasoningStart:
-				sendIn(ColorGray + "[LaxCode] thinking: ")
+				sendEvent(cliprinter.StreamEvent{Kind: cliprinter.ThinkingStart})
 			case sharedkernel.ChunkTextStart:
 				sendIn(ColorGreen + "[LaxCode] LLM generates: ")
 			case sharedkernel.ChunkReasoningDelta:
-				sendIn(ColorGray + chunk.Delta + ColorReset)
+				sendEvent(cliprinter.StreamEvent{Kind: cliprinter.ThinkingDelta, Text: chunk.Delta})
 			case sharedkernel.ChunkTextDelta:
 				sendIn(ColorGreen + chunk.Delta + ColorReset)
-			case sharedkernel.ChunkReasoningEnd, sharedkernel.ChunkTextEnd:
+			case sharedkernel.ChunkReasoningEnd:
+				sendEvent(cliprinter.StreamEvent{Kind: cliprinter.ThinkingEnd})
+			case sharedkernel.ChunkTextEnd:
 				sendIn(ColorReset + "\n")
 			case sharedkernel.ChunkToolCall:
 				// 参数已就绪；执行提示由后续 tool_call 事件在执行前显示。
@@ -101,11 +104,11 @@ func Run() {
 	// 用户输入经 outChan 上行，对端事件 / 回复经 inChan 下行。均为无缓冲通道，靠
 	// 收发双方 rendezvous 同步；两侧的阻塞收发都用 select{ctx.Done()} 兜底。
 	outChan := make(chan string)
-	inChan := make(chan string)
+	inChan := make(chan cliprinter.StreamEvent)
 
 	// sendIn 把一段内容写入 inChan；ctx 取消（TUI 已退出）时立即放弃，否则会因
 	// 无人消费而永久阻塞。
-	sendIn := func(s string) {
+	sendIn := func(s cliprinter.StreamEvent) {
 		select {
 		case inChan <- s:
 		case <-ctx.Done():
@@ -135,7 +138,7 @@ func Run() {
 	fmt.Printf(">>> Agent ready, input your question\n")
 
 	// 消费 goroutine：outChan 取用户输入 → 调 Chat（其间 rcf 把事件写入 inChan）→
-	// Chat 返回后写入终止符 StreamEnd，通知 TUI 结束本轮、进入下一轮用户输入。
+	// Chat 返回后写入 StreamEnd 事件，通知 TUI 结束本轮、进入下一轮用户输入。
 	// ctx 取消即退出，避免 TUI 退出后仍阻塞在 outChan / inChan 上。
 	go func() {
 		for {
@@ -144,10 +147,10 @@ func Run() {
 				return
 			case input := <-outChan:
 				if _, err := assembled.Service.Chat(ctx, input); err != nil {
-					// 运行期错误经 inChan 回流到 TUI 呈现，本轮仍以终止符收尾
-					sendIn(formatRuntimeError(err))
+					// 运行期错误经 inChan 回流到 TUI 呈现，本轮仍以 StreamEnd 事件收尾
+					sendIn(cliprinter.StreamEvent{Text: formatRuntimeError(err)})
 				}
-				sendIn(cliprinter.StreamEnd)
+				sendIn(cliprinter.StreamEvent{Kind: cliprinter.StreamEnd})
 			}
 		}
 	}()

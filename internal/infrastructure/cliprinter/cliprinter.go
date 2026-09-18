@@ -2,7 +2,7 @@
 // 多行输入框 + 流式回复渲染。用户输入经 OutChan 交给上层调用 Chat，上层的
 // ReAct 事件与每轮结束标志经 InChan 回流。已完成的历史（用户输入回显、对端整行）
 // 用 tea.Println 打印到终端 scrollback（受管视图上方、可上翻且持久保留），受管视图
-// 只保留正在流式的半行与输入区，行数恒定：既避免超屏每帧重绘闪烁，又保留完整可翻历史。
+// 只保留正在流式的半行、单行思考状态与输入区，行数恒定：既避免超屏每帧重绘闪烁，又保留完整可翻历史。
 // 输入光标由终端硬件光标（View.Cursor）呈现，不在内容里画反色块：inline 模式的单元格
 // 差分渲染在含宽字符的行上清除反色易打偏，按住方向键会留下成片残留高亮。
 package cliprinter
@@ -16,9 +16,23 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// StreamEnd 是 InChan 的流式终止符（EOT，U+0004），不会出现在正常文本中。
-// 上层在一轮回复结束后必须单独发送它一次，TUI 收到后回到用户输入阶段。
-const StreamEnd = "\x04"
+// StreamEvent 是终端展示事件，由 cmd 将应用事件映射到此类型。
+// cliprinter 不依赖 application；展示状态也不进入 domain。
+type StreamEvent struct {
+	Kind StreamEventKind
+	Text string
+}
+
+// StreamEventKind 区分持久输出、临时思考状态和本轮结束。
+type StreamEventKind int
+
+const (
+	StreamText    StreamEventKind = iota // 正文、工具提示和错误，保留在终端历史
+	ThinkingStart                        // 开始原位显示思考状态
+	ThinkingDelta                        // Text 是思考增量，不写入终端历史
+	ThinkingEnd                          // 将思考状态收为一行完成提示，保留在终端历史
+	StreamEnd                            // 本轮结束，回到用户输入阶段
+)
 
 // phase 表示交互阶段，用于控制何时接受用户输入编辑。
 type phase int
@@ -33,7 +47,7 @@ const (
 type outFlushedMsg struct{}
 
 // inChunkMsg 表示从 InChan 读到的一段回复内容。
-type inChunkMsg struct{ text string }
+type inChunkMsg struct{ event StreamEvent }
 
 // inClosedMsg 表示 InChan 已关闭（上层结束）。
 type inClosedMsg struct{}
@@ -48,13 +62,13 @@ func sendOut(out chan<- string, text string) tea.Cmd {
 }
 
 // readIn 在后台从 in 阻塞读取一段内容；读到返回 inChunkMsg，通道关闭返回 inClosedMsg。
-func readIn(in <-chan string) tea.Cmd {
+func readIn(in <-chan StreamEvent) tea.Cmd {
 	return func() tea.Msg {
-		text, ok := <-in
+		event, ok := <-in
 		if !ok {
 			return inClosedMsg{}
 		}
-		return inChunkMsg{text: text}
+		return inChunkMsg{event: event}
 	}
 }
 
@@ -69,7 +83,11 @@ type model struct {
 	phase     phase    // 当前交互阶段
 	streamBuf string   // 正在流式接收、尚未遇到换行的尾部：完整行即时打印到 scrollback，尾部半行由 View 实时显示
 	outChan   chan<- string
-	inChan    <-chan string
+	inChan    <-chan StreamEvent
+
+	thinking        bool
+	thinkingLine    string // 最近一行思考，仅用于原位展示
+	thinkingNewline bool   // 换行后先保留上一行，直到下一行内容到达
 }
 
 // Init 实现 tea.Model：启动时无需执行命令。
@@ -144,18 +162,37 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = phaseStreaming
 		return m, readIn(m.inChan)
 	case inChunkMsg:
-		if msg.text == StreamEnd {
-			// 收到终止符：本轮回复结束，flush 残留半行后回到用户输入阶段
+		if msg.event.Kind == StreamEnd {
+			m.clearThinking()
+			// 收到结束事件：本轮回复结束，flush 残留半行后回到用户输入阶段
 			m.phase = phaseInput
 			return m, m.flushStream()
 		}
 		// 累积到 streamBuf：切出的完整行即时打印到 scrollback（可上翻），尾部半行留在
 		// View 实时显示；随后继续读取下一段。用 Sequence 保证多行按序打印且先于下一次
 		// 读取，避免 Batch 的并发乱序。
-		cmds := m.appendStream(msg.text)
+		var cmds []tea.Cmd
+		switch msg.event.Kind {
+		case ThinkingStart:
+			m.clearThinking()
+			m.thinking = true
+		case ThinkingDelta:
+			m.thinking = true
+			m.appendThinking(msg.event.Text)
+		case ThinkingEnd:
+			if m.thinking {
+				cmds = append(cmds, tea.Println("\x1b[90m[laxcode thinking] done\x1b[0m"))
+			}
+			m.clearThinking()
+		case StreamText:
+			// 错误、工具提示或正文到达时也清理状态，兼容缺失的结束事件。
+			m.clearThinking()
+			cmds = m.appendStream(msg.event.Text)
+		}
 		cmds = append(cmds, readIn(m.inChan))
 		return m, tea.Sequence(cmds...)
 	case inClosedMsg:
+		m.clearThinking()
 		// InChan 已关闭：flush 残留半行，回到用户输入阶段
 		m.phase = phaseInput
 		return m, m.flushStream()
@@ -300,6 +337,59 @@ func (m *model) flushStream() tea.Cmd {
 	return cmd
 }
 
+func (m *model) clearThinking() {
+	m.thinking = false
+	m.thinkingLine = ""
+	m.thinkingNewline = false
+}
+
+// appendThinking 只保留最近一行；行尾换行不会让状态短暂变空。
+func (m *model) appendThinking(delta string) {
+	delta = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\u2028', '\u2029':
+			return '\n'
+		case '\t':
+			return ' '
+		case '\n':
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, ansi.Strip(delta))
+	for i, line := range strings.Split(delta, "\n") {
+		if i > 0 {
+			m.thinkingNewline = true
+		}
+		if line == "" {
+			continue
+		}
+		if m.thinkingNewline {
+			m.thinkingLine = ""
+			m.thinkingNewline = false
+		}
+		m.thinkingLine += line
+	}
+}
+
+// thinkingView 固定标签，正文向左滚动露出尾部；按终端列宽裁剪，保留完整字素。
+func (m *model) thinkingView() string {
+	prefix := ansi.Truncate("[laxcode thinking] ", m.termWidth(), "")
+	available := m.termWidth() - ansi.StringWidth(prefix)
+	text := ""
+	if available > 0 {
+		text = ansi.TruncateLeft(m.thinkingLine, max(0, ansi.StringWidth(m.thinkingLine)-available), "")
+		// 左边界落在宽字素中间时，TruncateLeft 会保留整个字素。
+		if ansi.StringWidth(text) > available {
+			cluster, _ := ansi.FirstGraphemeCluster(text, ansi.GraphemeWidth)
+			text = text[len(cluster):]
+		}
+	}
+	return "\x1b[90m" + prefix + text + "\x1b[0m"
+}
+
 // userMessageView 把用户输入渲染成浅灰背景+黑字，并按显示宽度补空格让背景铺满整行（多行逐行处理）。
 func (m *model) userMessageView(text string) string {
 	w := m.termWidth()
@@ -360,17 +450,20 @@ func (m *model) cursorCell(inputStart int) (x, y int, ok bool) {
 	return promptWidth + ansi.StringWidth(string(runes[:col])), inputStart + row, true
 }
 
-// View 组装流式缓冲行与输入区（上下各一条等宽分隔线），并把光标位置交给终端硬件光标。
+// View 组装流式缓冲行、单行思考状态与输入区（上下各一条等宽分隔线），并把光标位置交给终端硬件光标。
 //
-// 帧布局（行号自 0 起）：[流式半行?] [分隔线] [输入区 len(m.lines) 行] [分隔线]，
+// 帧布局（行号自 0 起）：[流式半行?] [思考状态?] [分隔线] [输入区 len(m.lines) 行] [分隔线]，
 // 故光标行号 = 输入区起始行 + 当前行；内容超高被裁剪时再按丢弃行数下移。
 func (m *model) View() tea.View {
-	lines := make([]string, 0, len(m.lines)+3)
+	lines := make([]string, 0, len(m.lines)+4)
 	// 已完成的历史（用户输入回显、对端整行）都已打印到 scrollback，可上翻；View 只保留
-	// 正在流式的半行 + 输入区，行数恒定不超屏，从根本上避免渲染器每帧全量重绘闪烁。
+	// 正在流式的半行 + 单行思考状态 + 输入区，行数恒定不超屏，从根本上避免渲染器每帧全量重绘闪烁。
 	if m.streamBuf != "" {
 		// 正在流式接收、尚未换行的尾部：实时显示在输入区上方（完整后即滚入 scrollback）
 		lines = append(lines, m.streamBuf)
+	}
+	if m.thinking {
+		lines = append(lines, m.thinkingView())
 	}
 	// 输入区上下各画一条与屏幕等宽的实线分隔符
 	lines = append(lines, m.hline())
@@ -399,8 +492,8 @@ type TUI struct {
 }
 
 // NewTUI 创建一个 TUI：用户输入写入 outChan，对端回复从 inChan 流式读入，
-// 读到 StreamEnd 结束一轮并回到用户输入。
-func NewTUI(outChan chan<- string, inChan <-chan string) *TUI {
+// 读到 Kind 为 StreamEnd 的事件结束一轮并回到用户输入。
+func NewTUI(outChan chan<- string, inChan <-chan StreamEvent) *TUI {
 	m := &model{lines: []string{""}, outChan: outChan, inChan: inChan}
 	return &TUI{program: tea.NewProgram(m)}
 }

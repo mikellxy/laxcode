@@ -10,9 +10,9 @@ import (
 )
 
 // newTestModel 构造一个带缓冲通道的 model，便于测试中直接调用 Cmd 而不阻塞。
-func newTestModel() (*model, chan string, chan string) {
+func newTestModel() (*model, chan string, chan StreamEvent) {
 	out := make(chan string, 8)
-	in := make(chan string, 8)
+	in := make(chan StreamEvent, 8)
 	m := &model{lines: []string{""}, outChan: out, inChan: in}
 	return m, out, in
 }
@@ -24,12 +24,6 @@ func keyCtrlE() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'e', Mod: tea.Mod
 func keyText(s string) tea.KeyPressMsg {
 	r := []rune(s)[0]
 	return tea.KeyPressMsg{Code: r, Text: s}
-}
-
-func TestStreamEndIsControlChar(t *testing.T) {
-	if StreamEnd != "\x04" {
-		t.Errorf("StreamEnd = %q，期望 EOT \\x04", StreamEnd)
-	}
 }
 
 func TestInsertMovesCursor(t *testing.T) {
@@ -239,10 +233,10 @@ func TestSendOutWritesInputAndReturnsFlushed(t *testing.T) {
 
 // TestReadInReturnsChunkThenClosed 验证读取命令：有内容返回 inChunkMsg，通道关闭返回 inClosedMsg。
 func TestReadInReturnsChunkThenClosed(t *testing.T) {
-	in := make(chan string, 1)
-	in <- "x"
+	in := make(chan StreamEvent, 1)
+	in <- StreamEvent{Text: "x"}
 	close(in)
-	if cm, ok := readIn(in)().(inChunkMsg); !ok || cm.text != "x" {
+	if cm, ok := readIn(in)().(inChunkMsg); !ok || cm.event != (StreamEvent{Text: "x"}) {
 		t.Errorf("readIn 应先返回 inChunkMsg{x}，got %#v", cm)
 	}
 	if _, ok := readIn(in)().(inClosedMsg); !ok {
@@ -348,7 +342,7 @@ func TestFlushStreamClearsBuffer(t *testing.T) {
 func TestUpdateInChunkBuffersPartialLine(t *testing.T) {
 	m, _, _ := newTestModel()
 	m.phase = phaseStreaming
-	_, cmd := m.Update(inChunkMsg{text: "hel"})
+	_, cmd := m.Update(inChunkMsg{event: StreamEvent{Text: "hel"}})
 	if m.streamBuf != "hel" {
 		t.Errorf("未遇换行的 chunk 应留在 streamBuf，got %q", m.streamBuf)
 	}
@@ -361,7 +355,7 @@ func TestUpdateInChunkStreamEndFlushesAndReturnsToInput(t *testing.T) {
 	m, _, _ := newTestModel()
 	m.phase = phaseStreaming
 	m.streamBuf = "partial"
-	_, cmd := m.Update(inChunkMsg{text: StreamEnd})
+	_, cmd := m.Update(inChunkMsg{event: StreamEvent{Kind: StreamEnd}})
 	if m.phase != phaseInput {
 		t.Errorf("收到终止符应回到 phaseInput，got %v", m.phase)
 	}
@@ -376,7 +370,7 @@ func TestUpdateInChunkStreamEndFlushesAndReturnsToInput(t *testing.T) {
 func TestUpdateStreamEndWithoutBufferReturnsNilCmd(t *testing.T) {
 	m, _, _ := newTestModel()
 	m.phase = phaseStreaming
-	_, cmd := m.Update(inChunkMsg{text: StreamEnd})
+	_, cmd := m.Update(inChunkMsg{event: StreamEvent{Kind: StreamEnd}})
 	if m.phase != phaseInput {
 		t.Errorf("收到终止符应回到 phaseInput，got %v", m.phase)
 	}
@@ -720,7 +714,7 @@ func TestViewStaysSmallAsHistoryGrows(t *testing.T) {
 	m.height = 6
 	m.phase = phaseStreaming
 	for i := 0; i < 50; i++ {
-		m.Update(inChunkMsg{text: "assistant line\n"})
+		m.Update(inChunkMsg{event: StreamEvent{Text: "assistant line\n"}})
 	}
 	content := m.View().Content
 	if h := strings.Count(content, "\n") + 1; h > m.height {
@@ -731,5 +725,137 @@ func TestViewStaysSmallAsHistoryGrows(t *testing.T) {
 	}
 	if m.streamBuf != "" {
 		t.Errorf("每个 chunk 都以 \\n 结束，streamBuf 应始终为空，got %q", m.streamBuf)
+	}
+}
+
+func TestThinkingOnlyShowsLatestLineWithoutScrollback(t *testing.T) {
+	m, _, in := newTestModel()
+	m.width, m.phase = 60, phaseStreaming
+	close(in)
+	steps := []struct {
+		event StreamEvent
+		want  string
+	}{
+		{StreamEvent{Kind: ThinkingStart}, ""},
+		{StreamEvent{Kind: ThinkingDelta, Text: "第一行\n第二"}, "第二"},
+		{StreamEvent{Kind: ThinkingDelta, Text: "行\r"}, "第二行"},
+		{StreamEvent{Kind: ThinkingDelta, Text: "\n"}, "第二行"},
+		{StreamEvent{Kind: ThinkingDelta, Text: "新的思考"}, "新的思考"},
+		{StreamEvent{Kind: ThinkingDelta, Text: "\t\x1b[31m内容\x1b[0m\x07"}, "新的思考 内容"},
+		{StreamEvent{Kind: ThinkingStart}, ""},
+	}
+	for _, step := range steps {
+		_, cmd := m.Update(inChunkMsg{event: step.event})
+		// 思考事件只能继续读取，不能产生任何 scrollback 打印命令。
+		if cmd == nil {
+			t.Fatal("思考事件应继续读取")
+		}
+		if _, ok := cmd().(inClosedMsg); !ok {
+			t.Fatal("思考事件不应生成历史打印命令")
+		}
+		if !m.thinking || m.thinkingLine != step.want || m.streamBuf != "" {
+			t.Fatalf("event=%#v: thinking=%v line=%q stream=%q", step.event, m.thinking, m.thinkingLine, m.streamBuf)
+		}
+		v := m.View()
+		lines := strings.Split(ansi.Strip(v.Content), "\n")
+		if len(lines) != 4 || lines[0] != "[laxcode thinking] "+step.want {
+			t.Fatalf("思考应只占一行：%q", v.Content)
+		}
+		if v.Cursor == nil || v.Cursor.Y != 2 {
+			t.Fatalf("思考状态不能扰乱输入区光标：%#v", v.Cursor)
+		}
+	}
+}
+
+func TestThinkingViewScrollsTailAndResizes(t *testing.T) {
+	m, _, _ := newTestModel()
+	m.Update(inChunkMsg{event: StreamEvent{Kind: ThinkingDelta, Text: "abcdefghijklmnopqrstuvwxyz"}})
+	prefix := "[laxcode thinking] "
+	for _, capacity := range []int{8, 3, 15, 26} {
+		m.Update(tea.WindowSizeMsg{Width: ansi.StringWidth(prefix) + capacity, Height: 10})
+		want := prefix + "abcdefghijklmnopqrstuvwxyz"[26-capacity:]
+		if got := ansi.Strip(m.thinkingView()); got != want {
+			t.Fatalf("capacity=%d: got %q, want %q", capacity, got, want)
+		}
+	}
+	for _, text := range []string{"甲乙丙丁", "甲👩‍💻乙🙂", "e\u0301e\u0301e\u0301"} {
+		m.thinkingLine = text
+		for width := 1; width < 40; width++ {
+			m.width = width
+			got := ansi.Strip(m.thinkingView())
+			if ansi.StringWidth(got) > width || strings.ContainsAny(got, "\r\n") {
+				t.Fatalf("width=%d: 思考行不应折行：%q", width, got)
+			}
+			if width > ansi.StringWidth(prefix) {
+				tail := strings.TrimPrefix(got, prefix)
+				if !strings.HasSuffix(text, tail) {
+					t.Fatalf("应显示完整尾部：text=%q got=%q", text, tail)
+				}
+			}
+		}
+	}
+	m.width = ansi.StringWidth(prefix) + 2
+	m.thinkingLine = "abc👩‍💻"
+	if got := ansi.Strip(m.thinkingView()); got != prefix+"👩‍💻" {
+		t.Fatalf("不能拆开 emoji 字素：%q", got)
+	}
+}
+
+func TestThinkingClearsAtBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		msg       tea.Msg
+		wantPhase phase
+	}{
+		{"thinking end", inChunkMsg{event: StreamEvent{Kind: ThinkingEnd}}, phaseStreaming},
+		{"turn end", inChunkMsg{event: StreamEvent{Kind: StreamEnd}}, phaseInput},
+		{"channel closed", inClosedMsg{}, phaseInput},
+		{"answer or error", inChunkMsg{event: StreamEvent{Text: "answer"}}, phaseStreaming},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _ := newTestModel()
+			m.phase = phaseStreaming
+			m.Update(inChunkMsg{event: StreamEvent{Kind: ThinkingDelta, Text: "old thought\n"}})
+			m.Update(tc.msg)
+			if m.thinking || m.thinkingLine != "" || m.thinkingNewline || m.phase != tc.wantPhase {
+				t.Fatalf("边界后仍残留思考状态或阶段不符：%#v", m)
+			}
+			if content := m.View().Content; strings.Contains(content, "old thought") || strings.Contains(content, "[laxcode thinking]") {
+				t.Fatalf("思考状态应消失：%q", content)
+			}
+			if tc.name == "answer or error" && m.streamBuf != "answer" {
+				t.Fatal("正常正文或错误不能被当作思考吞掉")
+			}
+		})
+	}
+}
+
+func TestThinkingEndPrintsDoneOnceBeforeReadingNextEvent(t *testing.T) {
+	m, _, in := newTestModel()
+	close(in)
+	for round := 0; round < 2; round++ {
+		m.Update(inChunkMsg{event: StreamEvent{Kind: ThinkingStart}})
+		m.Update(inChunkMsg{event: StreamEvent{Kind: ThinkingDelta, Text: "temporary thought"}})
+		_, cmd := m.Update(inChunkMsg{event: StreamEvent{Kind: ThinkingEnd}})
+		// Bubble Tea 的 Sequence 消息包含有序命令；先打印完成提示，再读取。
+		sequence := reflect.ValueOf(cmd())
+		if sequence.Kind() != reflect.Slice || sequence.Len() != 2 {
+			t.Fatalf("应依次打印完成提示并继续读取，got %v", sequence)
+		}
+		print := sequence.Index(0).Interface().(tea.Cmd)
+		if got, want := print(), tea.Println("\x1b[90m[laxcode thinking] done\x1b[0m")(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("历史应只保留完成提示，got %#v, want %#v", got, want)
+		}
+		read := sequence.Index(1).Interface().(tea.Cmd)
+		if _, ok := read().(inClosedMsg); !ok {
+			t.Fatal("打印完成后应继续读取下一事件")
+		}
+		if m.thinking || strings.Contains(m.View().Content, "temporary thought") {
+			t.Fatal("完成后应移除临时思考内容")
+		}
+		_, cmd = m.Update(inChunkMsg{event: StreamEvent{Kind: ThinkingEnd}})
+		if _, ok := cmd().(inClosedMsg); !ok {
+			t.Fatal("重复结束事件不应再次打印完成提示")
+		}
 	}
 }

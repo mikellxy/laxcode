@@ -85,8 +85,8 @@ func Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	outChan := make(chan string)
-	inChan := make(chan string)
-	sendIn := func(s string) {
+	inChan := make(chan cliprinter.StreamEvent)
+	sendIn := func(s cliprinter.StreamEvent) {
 		select {
 		case inChan <- s:
 		case <-ctx.Done():
@@ -96,7 +96,7 @@ func Run() {
 	assembled, err := agentasm.AssembleQA(ctx, agentasm.QAInput{
 		WorkDir:   workDir,
 		SessionID: config.CliConf.Session,
-		Consumer:  newEventConsumer(sendIn),
+		Consumer:  newEventConsumer(func(text string) { sendIn(cliprinter.StreamEvent{Text: text}) }),
 	})
 	if err != nil {
 		fatal(err)
@@ -113,9 +113,9 @@ func Run() {
 				return
 			case input := <-outChan:
 				if _, err := assembled.Service.Chat(ctx, input); err != nil {
-					sendIn(formatRuntimeError(err))
+					sendIn(cliprinter.StreamEvent{Text: formatRuntimeError(err)})
 				}
-				sendIn(cliprinter.StreamEnd)
+				sendIn(cliprinter.StreamEvent{Kind: cliprinter.StreamEnd})
 			}
 		}
 	}()
