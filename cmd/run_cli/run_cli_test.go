@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
+	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/cliprinter"
 )
@@ -91,5 +92,59 @@ func TestFormatRuntimeErrorAddsPersistRetryHint(t *testing.T) {
 	plain := formatRuntimeError(errors.New("provider error"))
 	if strings.Contains(plain, "下次对话开始前先恢复上一轮") {
 		t.Fatalf("普通错误不应显示持久化恢复提示：%q", plain)
+	}
+}
+
+func TestParseModelCommand(t *testing.T) {
+	tests := []struct {
+		input       string
+		wantRef     string
+		wantMatched bool
+		wantErr     bool
+	}{
+		{"/model openai:gpt-4.1", "openai:gpt-4.1", true, false},
+		{"  /model   deepseek:chat  ", "deepseek:chat", true, false},
+		{"/model", "", true, true},
+		{"/model openai:a extra", "", true, true},
+		{"/model\nopenai:a", "", true, true},
+		{"/modelx openai:a", "", false, false},
+		{"ordinary question", "", false, false},
+	}
+	for _, tt := range tests {
+		ref, matched, err := parseModelCommand(tt.input)
+		if ref != tt.wantRef || matched != tt.wantMatched || (err != nil) != tt.wantErr {
+			t.Errorf("parseModelCommand(%q) = (%q,%v,%v)", tt.input, ref, matched, err)
+		}
+	}
+}
+
+func TestExpandSkillInput(t *testing.T) {
+	skills := skillIndex([]prompt.Skill{{
+		Name: "pdf-tools", Definition: "# PDF\nFollow the instructions.\n",
+	}})
+	got, ok := expandSkillInput("/pdf-tools 生成报告", skills)
+	if !ok {
+		t.Fatal("已知技能应被展开")
+	}
+	for _, want := range []string{"生成报告", `<invoked_skill name="pdf-tools">`, "# PDF", "</invoked_skill>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("展开结果缺少 %q：%q", want, got)
+		}
+	}
+	if got, ok := expandSkillInput("/unknown keep me", skills); ok || got != "/unknown keep me" {
+		t.Fatalf("未知 slash 输入不应展开：%q, %v", got, ok)
+	}
+}
+
+func TestSlashCompletionsBuildsModelChildrenAndSkillRoots(t *testing.T) {
+	items := slashCompletions(
+		[]prompt.Skill{{Name: "pdf-tools", Description: "PDF tools"}},
+		[]string{"openai:gpt-4o", "deepseek:chat"},
+	)
+	if len(items) != 2 || items[0].Value != "/model" || items[1].Value != "/pdf-tools" {
+		t.Fatalf("root completions = %+v", items)
+	}
+	if got := items[0].Children; len(got) != 2 || got[0].Label != "openai-gpt-4o" || !got[0].Submit {
+		t.Fatalf("model completions = %+v", got)
 	}
 }

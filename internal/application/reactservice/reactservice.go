@@ -98,6 +98,12 @@ func (r *ReActService) SetPromptEnricher(enricher PromptEnricher) {
 	r.promptEnricher = enricher
 }
 
+// ReplaceLLMClient replaces the main generation client between Chat calls.
+// Callers must not invoke it while a Chat is in progress.
+func (r *ReActService) ReplaceLLMClient(client llmprovider.LLMClient) {
+	r.LLMClient = client
+}
+
 // requestHumanConfirmation 向交互前端发出一次人工确认请求，并等待回复或取消。
 // channel 由 ReActService 创建并持有；前端只获得发送端，不应关闭。容量为 1，
 // 避免取消与用户提交同时发生时让前端发送 goroutine 永久阻塞。

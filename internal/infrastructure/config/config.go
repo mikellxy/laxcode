@@ -3,28 +3,57 @@ package config
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/spf13/viper"
 )
 
+type ModelConfig struct {
+	ModelName     string `mapstructure:"MODEL_NAME"`
+	UpstreamModel string `mapstructure:"-"`
+}
+
+type ProviderConfig struct {
+	OpenaiApiKey  string        `mapstructure:"OPENAI_API_KEY"`
+	OpenaiBaseUrl string        `mapstructure:"OPENAI_BASE_URL"`
+	ProviderName  string        `mapstructure:"PROVIDER_NAME"`
+	ModelList     []ModelConfig `mapstructure:"MODEL_LIST"`
+}
+
+type ResolvedModel struct {
+	Ref           string
+	ProviderName  string
+	ModelName     string
+	UpstreamModel string
+	OpenaiApiKey  string
+	OpenaiBaseUrl string
+}
+
 type envAndFileConf struct {
-	OpenaiApiKey                    string `mapstructure:"openai_api_key"`
-	OpenaiBaseUrl                   string `mapstructure:"openai_base_url"`
-	OpenaiModel                     string `mapstructure:"openai_model"`
-	EmbedOpenaiApiKey               string `mapstructure:"embbed_openai_api_key"`
-	EmbedOpenaiBaseUrl              string `mapstructure:"embbed_openai_base_url"`
-	EmbedOpenaiModel                string `mapstructure:"embbed_openai_model"`
-	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
-	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
-	CompactionOpenaiApiKey          string `mapstructure:"compaction_openai_api_key"`
-	CompactionOpenaiBaseUrl         string `mapstructure:"compaction_openai_base_url"`
-	CompactionOpenaiModel           string `mapstructure:"compaction_openai_model"`
-	CompactionOpenaiContextWindow   int    `mapstructure:"compaction_openai_context_window"`
-	CompactionOpenaiMaxOutputTokens int    `mapstructure:"compaction_openai_max_output_tokens"`
-	LlmRouterAddr                   string `mapstructure:"llm_router_addr"`
+	Model        string           `mapstructure:"MODEL"`
+	ProviderList []ProviderConfig `mapstructure:"PROVIDER_LIST"`
+
+	// Openai* 是由 Model 解析出的当前运行时有效配置，不直接从配置文件反序列化。
+	OpenaiApiKey  string `mapstructure:"-"`
+	OpenaiBaseUrl string `mapstructure:"-"`
+	OpenaiModel   string `mapstructure:"-"`
+
+	EmbedOpenaiApiKey               string `mapstructure:"EMBBED_OPENAI_API_KEY"`
+	EmbedOpenaiBaseUrl              string `mapstructure:"EMBBED_OPENAI_BASE_URL"`
+	EmbedOpenaiModel                string `mapstructure:"EMBBED_OPENAI_MODEL"`
+	OpenaiContextWindow             int    `mapstructure:"OPENAI_CONTEXT_WINDOW"`
+	OpenaiMaxOutputTokens           int    `mapstructure:"OPENAI_MAX_OUTPUT_TOKENS"`
+	CompactionOpenaiApiKey          string `mapstructure:"COMPACTION_OPENAI_API_KEY"`
+	CompactionOpenaiBaseUrl         string `mapstructure:"COMPACTION_OPENAI_BASE_URL"`
+	CompactionOpenaiModel           string `mapstructure:"COMPACTION_OPENAI_MODEL"`
+	CompactionOpenaiContextWindow   int    `mapstructure:"COMPACTION_OPENAI_CONTEXT_WINDOW"`
+	CompactionOpenaiMaxOutputTokens int    `mapstructure:"COMPACTION_OPENAI_MAX_OUTPUT_TOKENS"`
+	LlmRouterAddr                   string `mapstructure:"LLM_ROUTER_ADDR"`
 	// LlmRouterURL 是进程启动后写入的实际本地端点，不从环境或配置文件读取。
 	LlmRouterURL string `mapstructure:"-"`
 }
@@ -42,6 +71,120 @@ const (
 var EnvAndFileConf envAndFileConf
 
 var EnvOrFile = viper.New()
+
+const (
+	envProviderName = "env_provider"
+	envModelName    = "env_model"
+)
+
+func modelRef(providerName, modelName string) string {
+	return providerName + ":" + modelName
+}
+
+func validCatalogName(name string) bool {
+	return name != "" && !strings.ContainsRune(name, ':') &&
+		strings.IndexFunc(name, unicode.IsSpace) < 0
+}
+
+func (c *envAndFileConf) resolveModel(ref string) (ResolvedModel, error) {
+	providerName, modelName, ok := strings.Cut(ref, ":")
+	if !ok || !validCatalogName(providerName) || !validCatalogName(modelName) {
+		return ResolvedModel{}, fmt.Errorf("invalid model reference %q; expected provider:model", ref)
+	}
+	for _, provider := range c.ProviderList {
+		if provider.ProviderName != providerName {
+			continue
+		}
+		for _, model := range provider.ModelList {
+			if model.ModelName != modelName {
+				continue
+			}
+			upstreamModel := model.UpstreamModel
+			if upstreamModel == "" {
+				upstreamModel = model.ModelName
+			}
+			return ResolvedModel{
+				Ref:           ref,
+				ProviderName:  providerName,
+				ModelName:     modelName,
+				UpstreamModel: upstreamModel,
+				OpenaiApiKey:  provider.OpenaiApiKey,
+				OpenaiBaseUrl: provider.OpenaiBaseUrl,
+			}, nil
+		}
+		return ResolvedModel{}, fmt.Errorf("model %q is not configured for provider %q", modelName, providerName)
+	}
+	return ResolvedModel{}, fmt.Errorf("provider %q is not configured", providerName)
+}
+
+func (c *envAndFileConf) validateModelCatalog() error {
+	providers := make(map[string]struct{}, len(c.ProviderList))
+	for _, provider := range c.ProviderList {
+		if !validCatalogName(provider.ProviderName) {
+			return fmt.Errorf("invalid PROVIDER_NAME %q", provider.ProviderName)
+		}
+		if provider.ProviderName == envProviderName &&
+			(len(provider.ModelList) != 1 || provider.ModelList[0].ModelName != envModelName ||
+				provider.ModelList[0].UpstreamModel == "") {
+			return fmt.Errorf("PROVIDER_NAME %q is reserved for environment configuration", envProviderName)
+		}
+		if _, exists := providers[provider.ProviderName]; exists {
+			return fmt.Errorf("duplicate PROVIDER_NAME %q", provider.ProviderName)
+		}
+		providers[provider.ProviderName] = struct{}{}
+		if strings.TrimSpace(provider.OpenaiApiKey) == "" || strings.TrimSpace(provider.OpenaiBaseUrl) == "" {
+			return fmt.Errorf("provider %q requires OPENAI_API_KEY and OPENAI_BASE_URL", provider.ProviderName)
+		}
+		if len(provider.ModelList) == 0 {
+			return fmt.Errorf("provider %q requires at least one model", provider.ProviderName)
+		}
+		models := make(map[string]struct{}, len(provider.ModelList))
+		for _, model := range provider.ModelList {
+			if !validCatalogName(model.ModelName) {
+				return fmt.Errorf("invalid MODEL_NAME %q for provider %q", model.ModelName, provider.ProviderName)
+			}
+			if _, exists := models[model.ModelName]; exists {
+				return fmt.Errorf("duplicate MODEL_NAME %q for provider %q", model.ModelName, provider.ProviderName)
+			}
+			models[model.ModelName] = struct{}{}
+		}
+	}
+	if len(c.ProviderList) == 0 {
+		return errors.New("PROVIDER_LIST must contain at least one provider")
+	}
+	_, err := c.resolveModel(c.Model)
+	return err
+}
+
+func (c *envAndFileConf) setActiveModel(ref string) error {
+	resolved, err := c.resolveModel(ref)
+	if err != nil {
+		return err
+	}
+	c.Model = resolved.Ref
+	c.OpenaiApiKey = resolved.OpenaiApiKey
+	c.OpenaiBaseUrl = resolved.OpenaiBaseUrl
+	c.OpenaiModel = resolved.UpstreamModel
+	return nil
+}
+
+// ResolveModel 将 provider:model 引用解析为创建 provider/client 所需的运行时配置。
+func ResolveModel(ref string) (ResolvedModel, error) { return EnvAndFileConf.resolveModel(ref) }
+
+// ModelRefs 返回按 provider、model 名排序的全部合法引用，供 CLI 补全使用。
+func ModelRefs() []string {
+	refs := make([]string, 0)
+	for _, provider := range EnvAndFileConf.ProviderList {
+		for _, model := range provider.ModelList {
+			refs = append(refs, modelRef(provider.ProviderName, model.ModelName))
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+// SetActiveModel 更新当前进程使用的模型引用及其派生连接参数，不写回配置文件。
+func SetActiveModel(ref string) error { return EnvAndFileConf.setActiveModel(ref) }
 
 type cliConf struct {
 	Oneshot  bool   `mapstructure:"oneshot"`
@@ -82,26 +225,61 @@ func ParseEnvAndFile() error {
 		}
 	}
 
-	EnvOrFile.SetDefault("openai_context_window", DefaultContextWindow)
-	EnvOrFile.SetDefault("openai_max_output_tokens", DefaultMaxOutputTokens)
-	EnvOrFile.SetDefault("llm_router_addr", DefaultLLMRouterAddr)
-	EnvOrFile.BindEnv("openai_api_key", "OPENAI_API_KEY")
-	EnvOrFile.BindEnv("openai_base_url", "OPENAI_BASE_URL")
-	EnvOrFile.BindEnv("openai_model", "OPENAI_MODEL")
-	EnvOrFile.BindEnv("embbed_openai_api_key", "EMBBED_OPENAI_API_KEY")
-	EnvOrFile.BindEnv("embbed_openai_base_url", "EMBBED_OPENAI_BASE_URL")
-	EnvOrFile.BindEnv("embbed_openai_model", "EMBBED_OPENAI_MODEL")
-	EnvOrFile.BindEnv("openai_context_window", "OPENAI_CONTEXT_WINDOW")
-	EnvOrFile.BindEnv("openai_max_output_tokens", "OPENAI_MAX_OUTPUT_TOKENS")
-	EnvOrFile.BindEnv("compaction_openai_api_key", "COMPACTION_OPENAI_API_KEY")
-	EnvOrFile.BindEnv("compaction_openai_base_url", "COMPACTION_OPENAI_BASE_URL")
-	EnvOrFile.BindEnv("compaction_openai_model", "COMPACTION_OPENAI_MODEL")
-	EnvOrFile.BindEnv("compaction_openai_context_window", "COMPACTION_OPENAI_CONTEXT_WINDOW")
-	EnvOrFile.BindEnv("compaction_openai_max_output_tokens", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
-	EnvOrFile.BindEnv("llm_router_addr", "LLM_ROUTER_ADDR")
+	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", DefaultContextWindow)
+	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", DefaultMaxOutputTokens)
+	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
+	EnvOrFile.BindEnv("EMBBED_OPENAI_API_KEY", "EMBBED_OPENAI_API_KEY")
+	EnvOrFile.BindEnv("EMBBED_OPENAI_BASE_URL", "EMBBED_OPENAI_BASE_URL")
+	EnvOrFile.BindEnv("EMBBED_OPENAI_MODEL", "EMBBED_OPENAI_MODEL")
+	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
+	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
+	EnvOrFile.BindEnv("COMPACTION_OPENAI_API_KEY", "COMPACTION_OPENAI_API_KEY")
+	EnvOrFile.BindEnv("COMPACTION_OPENAI_BASE_URL", "COMPACTION_OPENAI_BASE_URL")
+	EnvOrFile.BindEnv("COMPACTION_OPENAI_MODEL", "COMPACTION_OPENAI_MODEL")
+	EnvOrFile.BindEnv("COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_CONTEXT_WINDOW")
+	EnvOrFile.BindEnv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
+	EnvOrFile.BindEnv("LLM_ROUTER_ADDR", "LLM_ROUTER_ADDR")
 	EnvOrFile.SetEnvKeyReplacer(strings.NewReplacer("_", "_"))
 
 	if err = EnvOrFile.Unmarshal(&EnvAndFileConf); err != nil {
+		return err
+	}
+
+	// 完整的 OPENAI_* 三元组作为一个保留别名的临时 provider 追加到目录，并
+	// 覆盖当前选择。部分设置不与文件配置拼接，避免凭据、端点和模型错配。
+	envAPIKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	envBaseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+	envUpstreamModel := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	envValues := 0
+	for _, value := range []string{envAPIKey, envBaseURL, envUpstreamModel} {
+		if value != "" {
+			envValues++
+		}
+	}
+	if envValues != 0 && envValues != 3 {
+		return errors.New("OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL must be set together")
+	}
+	if envValues == 3 {
+		for _, provider := range EnvAndFileConf.ProviderList {
+			if provider.ProviderName == envProviderName {
+				return fmt.Errorf("PROVIDER_NAME %q is reserved for environment configuration", envProviderName)
+			}
+		}
+		EnvAndFileConf.ProviderList = append(EnvAndFileConf.ProviderList, ProviderConfig{
+			ProviderName:  envProviderName,
+			OpenaiApiKey:  envAPIKey,
+			OpenaiBaseUrl: envBaseURL,
+			ModelList: []ModelConfig{{
+				ModelName:     envModelName,
+				UpstreamModel: envUpstreamModel,
+			}},
+		})
+		EnvAndFileConf.Model = modelRef(envProviderName, envModelName)
+	}
+	if err := EnvAndFileConf.validateModelCatalog(); err != nil {
+		return err
+	}
+	if err := EnvAndFileConf.setActiveModel(EnvAndFileConf.Model); err != nil {
 		return err
 	}
 	// 压缩 provider 默认继承主 provider；通常只需配置一个更便宜的模型。

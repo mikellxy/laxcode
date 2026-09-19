@@ -21,9 +21,101 @@ func keyEnter() tea.KeyPressMsg { return tea.KeyPressMsg{Code: tea.KeyEnter} }
 func keyCtrlC() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl} }
 func keyCtrlA() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl} }
 func keyCtrlE() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl} }
+func keyEsc() tea.KeyPressMsg   { return tea.KeyPressMsg{Code: tea.KeyEscape} }
 func keyText(s string) tea.KeyPressMsg {
 	r := []rune(s)[0]
 	return tea.KeyPressMsg{Code: r, Text: s}
+}
+
+func completionTestModel() *model {
+	m, _, _ := newTestModel()
+	m.completions = []CompletionItem{
+		{Value: "/model", Children: []CompletionItem{
+			{Value: "openai:gpt-4o", Label: "openai-gpt-4o", Submit: true},
+			{Value: "deepseek:chat", Label: "deepseek-chat", Submit: true},
+		}},
+		{Value: "/pdf-tools", Description: "PDF tools"},
+	}
+	return m
+}
+
+func TestSlashCompletionMovesFromRootToModelChildren(t *testing.T) {
+	m := completionTestModel()
+	m.insert("/mo")
+	items := m.activeCompletions()
+	if len(items) != 1 || items[0].Value != "/model" {
+		t.Fatalf("/mo candidates = %+v", items)
+	}
+	if _, cmd := m.Update(keyEnter()); cmd != nil {
+		t.Fatal("选择 /model 根项只应补全输入，不应发送")
+	}
+	if got := m.inputText(); got != "/model " {
+		t.Fatalf("root selection input = %q", got)
+	}
+	items = m.activeCompletions()
+	if len(items) != 2 || items[0].Value != "openai:gpt-4o" {
+		t.Fatalf("model candidates = %+v", items)
+	}
+
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.completionSelected != 1 {
+		t.Fatalf("down selected = %d", m.completionSelected)
+	}
+	if _, cmd := m.Update(keyEnter()); cmd == nil || m.phase != phaseSending {
+		t.Fatal("选择具体模型后应立即发送 /model 命令")
+	}
+}
+
+func TestSkillCompletionFillsThenSubmitsOnNextEnter(t *testing.T) {
+	m := completionTestModel()
+	m.insert("/pd")
+	if _, cmd := m.Update(keyEnter()); cmd != nil {
+		t.Fatal("选择技能时不应立即发送")
+	}
+	if got := m.inputText(); got != "/pdf-tools " {
+		t.Fatalf("skill selection input = %q", got)
+	}
+	m.insert("生成报告")
+	if _, cmd := m.Update(keyEnter()); cmd == nil || m.phase != phaseSending {
+		t.Fatal("补全技能后的下一次 Enter 应发送给 CLI")
+	}
+}
+
+func TestSlashCompletionEscDismissesUntilInputChanges(t *testing.T) {
+	m := completionTestModel()
+	m.insert("/mo")
+	if len(m.activeCompletions()) == 0 {
+		t.Fatal("/mo 应显示补全")
+	}
+	m.Update(keyEsc())
+	if len(m.activeCompletions()) != 0 || m.inputText() != "/mo" {
+		t.Fatal("Esc 应隐藏补全且不修改输入")
+	}
+	m.insert("d")
+	if len(m.activeCompletions()) == 0 {
+		t.Fatal("输入变化后应重新启用补全")
+	}
+}
+
+func TestModelCompletionRequiresOnlyTrailingWhitespace(t *testing.T) {
+	m := completionTestModel()
+	m.insert("/model   ")
+	if len(m.activeCompletions()) != 2 {
+		t.Fatal("/model 后只有空白时应显示模型列表")
+	}
+	m.insert("x")
+	if len(m.activeCompletions()) != 0 {
+		t.Fatal("/model 后出现非空白字符时应隐藏模型列表")
+	}
+}
+
+func TestSlashCompletionDisabledDuringHumanConfirmation(t *testing.T) {
+	m := completionTestModel()
+	m.insert("/mo")
+	m.humanConfirmChan = make(chan string, 1)
+	if len(m.activeCompletions()) != 0 {
+		t.Fatal("HITL 输入不得显示 slash 补全")
+	}
 }
 
 func TestInsertMovesCursor(t *testing.T) {
@@ -669,6 +761,20 @@ func TestViewCursorAccountsForStreamLine(t *testing.T) {
 	}
 	if c.X != promptWidth+5 || c.Y != 2 {
 		t.Fatalf("光标=(%d,%d)，期望 (%d,2)", c.X, c.Y, promptWidth+5)
+	}
+}
+
+func TestViewCursorAccountsForCompletionLines(t *testing.T) {
+	m := completionTestModel()
+	m.width, m.height = 40, 20
+	m.insert("/model")
+	c := m.View().Cursor
+	if c == nil {
+		t.Fatal("应设置硬件光标")
+	}
+	// 两条模型候选 + 上分隔线，输入位于第 3 行。
+	if c.Y != 3 {
+		t.Fatalf("候选框下的光标行=%d，期望 3", c.Y)
 	}
 }
 

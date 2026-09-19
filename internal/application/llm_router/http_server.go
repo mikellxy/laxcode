@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
@@ -23,6 +24,7 @@ const (
 // HTTPServer 把 OpenAI Responses 请求转交给配置好的上游 StreamClient，并将
 // SDK 收到的事件恢复为标准 SSE 帧。实际监听端口和配置读取留在 cmd 组合根。
 type HTTPServer struct {
+	mu     sync.RWMutex
 	client domainrouter.StreamClient
 	logger *slog.Logger
 }
@@ -33,6 +35,20 @@ func NewHTTPServer(client domainrouter.StreamClient, loggers ...*slog.Logger) *H
 		logger = loggers[0]
 	}
 	return &HTTPServer{client: client, logger: logger}
+}
+
+// ReplaceClient 原子替换后续请求使用的上游 client。已经进入处理流程的请求
+// 持有替换前的快照并继续完成，不会在流中途切换 provider/model。
+func (s *HTTPServer) ReplaceClient(client domainrouter.StreamClient) {
+	s.mu.Lock()
+	s.client = client
+	s.mu.Unlock()
+}
+
+func (s *HTTPServer) currentClient() domainrouter.StreamClient {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.client
 }
 
 // RegisterRoutes 将模型网关端点挂到调用方提供的 mux。
@@ -104,7 +120,8 @@ func (s *HTTPServer) handleGenerateStream(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
-	if s.client == nil {
+	client := s.currentClient()
+	if client == nil {
 		statusCode = http.StatusServiceUnavailable
 		writeJSONError(w, http.StatusServiceUnavailable, "LLM upstream is not configured")
 		return
@@ -124,7 +141,7 @@ func (s *HTTPServer) handleGenerateStream(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	stream, err := s.client.GenerateStream(r.Context(), body)
+	stream, err := client.GenerateStream(r.Context(), body)
 	if err != nil {
 		var invalidRequest *domainrouter.InvalidRequestError
 		if errors.As(err, &invalidRequest) {

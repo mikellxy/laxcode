@@ -24,6 +24,17 @@ type StreamEvent struct {
 	HumanConfirmChan chan<- string
 }
 
+// CompletionItem 描述一个 slash 补全项。Value 是写入输入框或发送给 CLI 的
+// 真实值；Label 仅用于展示；带 Children 的项进入二级列表；Submit 表示选中后
+// 立即发送，而不是只写入输入框。
+type CompletionItem struct {
+	Value       string
+	Label       string
+	Description string
+	Children    []CompletionItem
+	Submit      bool
+}
+
 // StreamEventKind 区分持久输出、临时思考状态和本轮结束。
 type StreamEventKind int
 
@@ -90,6 +101,10 @@ type model struct {
 	// model 只发送一次回复，不负责关闭。
 	humanConfirmChan chan<- string
 
+	completions         []CompletionItem
+	completionSelected  int
+	completionDismissed bool
+
 	thinking        bool
 	thinkingLine    string // 最近一行思考，仅用于原位展示
 	thinkingNewline bool   // 换行后先保留上一行，直到下一行内容到达
@@ -104,6 +119,8 @@ func (m *model) insert(text string) {
 	runes = append(runes[:m.col], append([]rune(text), runes[m.col:]...)...)
 	m.lines[m.row] = string(runes)
 	m.col += len([]rune(text))
+	m.completionSelected = 0
+	m.completionDismissed = false
 }
 
 // paste 在光标处插入整段文本；换行只拆分输入行，不触发发送。
@@ -130,6 +147,8 @@ func (m *model) deleteBackspace() {
 		runes := []rune(m.lines[m.row])
 		m.lines[m.row] = string(runes[:m.col-1]) + string(runes[m.col:])
 		m.col--
+		m.completionSelected = 0
+		m.completionDismissed = false
 		return
 	}
 	if m.row > 0 {
@@ -137,6 +156,8 @@ func (m *model) deleteBackspace() {
 		m.lines[m.row-1] += m.lines[m.row]
 		m.lines = append(m.lines[:m.row], m.lines[m.row+1:]...)
 		m.row--
+		m.completionSelected = 0
+		m.completionDismissed = false
 	}
 }
 
@@ -148,6 +169,8 @@ func (m *model) newline() {
 	m.lines = append(m.lines[:m.row+1], append([]string{tail}, m.lines[m.row+1:]...)...)
 	m.row++
 	m.col = 0
+	m.completionSelected = 0
+	m.completionDismissed = false
 }
 
 // startOfLine 把光标移到当前行行首（row 不变，col=0）。
@@ -165,6 +188,89 @@ func (m *model) takeInputTarget() chan<- string {
 	out := m.humanConfirmChan
 	m.humanConfirmChan = nil
 	return out
+}
+
+func (m *model) inputText() string { return strings.Join(m.lines, "\n") }
+
+// activeCompletions derives the visible completion list from the current input.
+// /model with only trailing horizontal whitespace has priority over root prefix
+// matching and opens its children. HITL input is deliberately never completed.
+func (m *model) activeCompletions() []CompletionItem {
+	if m.phase != phaseInput || m.humanConfirmChan != nil || m.completionDismissed {
+		return nil
+	}
+	input := m.inputText()
+	if strings.ContainsAny(input, "\r\n") {
+		return nil
+	}
+	for _, item := range m.completions {
+		if item.Value == "/model" && strings.HasPrefix(input, "/model") &&
+			strings.Trim(input[len("/model"):], " \t") == "" {
+			return item.Children
+		}
+	}
+	if !strings.HasPrefix(input, "/") || strings.IndexFunc(input, unicode.IsSpace) >= 0 {
+		return nil
+	}
+	var matches []CompletionItem
+	for _, item := range m.completions {
+		if strings.HasPrefix(item.Value, input) {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
+func (m *model) setInput(text string) {
+	m.lines = strings.Split(text, "\n")
+	m.row = len(m.lines) - 1
+	m.col = len([]rune(m.lines[m.row]))
+	m.completionSelected = 0
+	m.completionDismissed = false
+}
+
+// submitInput performs the common echo + asynchronous send transition.
+func (m *model) submitInput(input string) tea.Cmd {
+	if strings.TrimSpace(input) == "" {
+		m.setInput("")
+		return nil
+	}
+	m.setInput("")
+	m.phase = phaseSending
+	out := m.takeInputTarget()
+	echo := tea.Println(strings.TrimSuffix(m.userMessageView(input), "\n"))
+	return tea.Sequence(echo, sendOut(out, input))
+}
+
+func completionLabel(item CompletionItem) string {
+	if item.Label != "" {
+		return item.Label
+	}
+	return item.Value
+}
+
+func (m *model) completionView(items []CompletionItem) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	const maxVisible = 8
+	selected := min(max(m.completionSelected, 0), len(items)-1)
+	start := max(0, selected-maxVisible+1)
+	end := min(len(items), start+maxVisible)
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		prefix := "  "
+		if i == selected {
+			prefix = "> "
+		}
+		line := prefix + completionLabel(items[i])
+		if items[i].Description != "" {
+			line += "  " + items[i].Description
+		}
+		line = ansi.Truncate(line, m.termWidth(), "")
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -247,7 +353,32 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase != phaseInput {
 			return m, nil
 		}
+		if items := m.activeCompletions(); len(items) > 0 {
+			switch msg.String() {
+			case "esc":
+				m.completionDismissed = true
+				m.completionSelected = 0
+				return m, nil
+			case "up":
+				m.completionSelected = (m.completionSelected - 1 + len(items)) % len(items)
+				return m, nil
+			case "down":
+				m.completionSelected = (m.completionSelected + 1) % len(items)
+				return m, nil
+			case "enter":
+				selected := min(max(m.completionSelected, 0), len(items)-1)
+				item := items[selected]
+				if item.Submit {
+					return m, m.submitInput("/model " + item.Value)
+				}
+				m.setInput(item.Value + " ")
+				return m, nil
+			}
+		}
 		switch msg.String() {
+		case "esc":
+			m.completionDismissed = true
+			m.completionSelected = 0
 		case "super+c":
 			// 支持将 Command 键直接上报的终端；输入框没有内部选区，复制整个草稿。
 			// 普通终端的鼠标选择 + Cmd+C 由终端自身处理。
@@ -255,21 +386,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.SetClipboard(input)
 			}
 		case "enter":
-			input := strings.Join(m.lines, "\n")
-			if strings.TrimSpace(input) == "" {
-				// 空输入不发送，仅清空输入区（对齐原 CLI 跳过空行的行为）
-				m.lines = []string{""}
-				m.row, m.col = 0, 0
-				return m, nil
-			}
-			m.lines = []string{""}
-			m.row, m.col = 0, 0
-			m.phase = phaseSending
-			out := m.takeInputTarget()
-			// 用户输入以浅灰背景+黑字回显到 scrollback（可上翻），随后阻塞写入 OutChan
-			// 等待上层消费。用 Sequence 保证“先回显、后发送”的顺序。
-			echo := tea.Println(strings.TrimSuffix(m.userMessageView(input), "\n"))
-			return m, tea.Sequence(echo, sendOut(out, input))
+			return m, m.submitInput(m.inputText())
 		case "alt+enter":
 			m.newline()
 		case "up":
@@ -491,10 +608,11 @@ func (m *model) cursorCell(inputStart int) (x, y int, ok bool) {
 
 // View 组装流式缓冲行、单行思考状态与输入区（上下各一条等宽分隔线），并把光标位置交给终端硬件光标。
 //
-// 帧布局（行号自 0 起）：[流式半行?] [思考状态?] [分隔线] [输入区 len(m.lines) 行] [分隔线]，
+// 帧布局（行号自 0 起）：[流式半行?] [思考状态?] [补全候选?] [分隔线]
+// [输入区 len(m.lines) 行] [分隔线]，
 // 故光标行号 = 输入区起始行 + 当前行；内容超高被裁剪时再按丢弃行数下移。
 func (m *model) View() tea.View {
-	lines := make([]string, 0, len(m.lines)+4)
+	lines := make([]string, 0, len(m.lines)+12)
 	// 已完成的历史（用户输入回显、对端整行）都已打印到 scrollback，可上翻；View 只保留
 	// 正在流式的半行 + 单行思考状态 + 输入区，行数恒定不超屏，从根本上避免渲染器每帧全量重绘闪烁。
 	if m.streamBuf != "" {
@@ -504,6 +622,7 @@ func (m *model) View() tea.View {
 	if m.thinking {
 		lines = append(lines, m.thinkingView())
 	}
+	lines = append(lines, m.completionView(m.activeCompletions())...)
 	// 输入区上下各画一条与屏幕等宽的实线分隔符
 	lines = append(lines, m.hline())
 	inputStart := len(lines)
@@ -530,10 +649,15 @@ type TUI struct {
 	program *tea.Program
 }
 
-// NewTUI 创建一个 TUI：用户输入写入 outChan，对端回复从 inChan 流式读入，
-// 读到 Kind 为 StreamEnd 的事件结束一轮并回到用户输入。
-func NewTUI(outChan chan<- string, inChan <-chan StreamEvent) *TUI {
-	m := &model{lines: []string{""}, outChan: outChan, inChan: inChan}
+// NewTUI 创建一个 TUI：用户输入写入 outChan，对端回复从 inChan 流式读入；
+// completions 是可选的 slash 补全树。
+func NewTUI(outChan chan<- string, inChan <-chan StreamEvent, completions ...CompletionItem) *TUI {
+	m := &model{
+		lines:       []string{""},
+		outChan:     outChan,
+		inChan:      inChan,
+		completions: append([]CompletionItem(nil), completions...),
+	}
 	return &TUI{program: tea.NewProgram(m)}
 }
 

@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"unicode"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
+	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/cliprinter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -92,7 +95,88 @@ func formatRuntimeError(err error) string {
 	return message + ColorReset + "\n"
 }
 
-func Run() {
+func parseModelCommand(input string) (ref string, matched bool, err error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 || fields[0] != "/model" {
+		return "", false, nil
+	}
+	if strings.ContainsAny(trimmed, "\r\n") || len(fields) != 2 {
+		return "", true, errors.New("usage: /model provider:model")
+	}
+	return fields[1], true, nil
+}
+
+func skillIndex(skills []prompt.Skill) map[string]prompt.Skill {
+	index := make(map[string]prompt.Skill, len(skills))
+	for _, skill := range skills {
+		if skill.Name == "model" {
+			continue // /model is reserved for the built-in runtime command.
+		}
+		index[skill.Name] = skill
+	}
+	return index
+}
+
+func slashCompletions(skills []prompt.Skill, modelRefs []string) []cliprinter.CompletionItem {
+	modelItems := make([]cliprinter.CompletionItem, 0, len(modelRefs))
+	for _, ref := range modelRefs {
+		modelItems = append(modelItems, cliprinter.CompletionItem{
+			Value:  ref,
+			Label:  strings.Replace(ref, ":", "-", 1),
+			Submit: true,
+		})
+	}
+	items := make([]cliprinter.CompletionItem, 0, len(skills)+1)
+	items = append(items, cliprinter.CompletionItem{
+		Value:       "/model",
+		Description: "Switch model",
+		Children:    modelItems,
+	})
+	for _, skill := range skills {
+		if skill.Name == "model" {
+			continue
+		}
+		items = append(items, cliprinter.CompletionItem{
+			Value:       "/" + skill.Name,
+			Description: strings.Join(strings.Fields(skill.Description), " "),
+		})
+	}
+	return items
+}
+
+func expandSkillInput(input string, skills map[string]prompt.Skill) (string, bool) {
+	if !strings.HasPrefix(input, "/") {
+		return input, false
+	}
+	tokenEnd := strings.IndexFunc(input, unicode.IsSpace)
+	token := input
+	remainder := ""
+	if tokenEnd >= 0 {
+		token, remainder = input[:tokenEnd], input[tokenEnd:]
+	}
+	skill, ok := skills[strings.TrimPrefix(token, "/")]
+	if !ok {
+		return input, false
+	}
+	query := strings.TrimLeftFunc(remainder, unicode.IsSpace)
+	var b strings.Builder
+	b.WriteString(query)
+	if query != "" {
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "<invoked_skill name=%q>\n%s", skill.Name, skill.Definition)
+	if !strings.HasSuffix(skill.Definition, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString("</invoked_skill>")
+	return b.String(), true
+}
+
+func Run(router agentasm.RouterClientReplacer) {
 	if err := checkConfig(); err != nil {
 		fatal(err)
 	}
@@ -133,6 +217,7 @@ func Run() {
 		SessionID: config.CliConf.Session,
 		PlanMode:  config.CliConf.Plan,
 		Consumer:  rcf,
+		Router:    router,
 	})
 	if err != nil {
 		fatal(err)
@@ -142,6 +227,7 @@ func Run() {
 	// 会话标识与就绪提示在 TUI 接管终端前打印，固定显示在交互区上方。
 	fmt.Printf("session_id: %s\n", assembled.Session.ID)
 	fmt.Printf(">>> Agent ready, input your question\n")
+	skills := skillIndex(assembled.Skills)
 
 	// 消费 goroutine：outChan 取用户输入 → 调 Chat（其间 rcf 把事件写入 inChan）→
 	// Chat 返回后写入 StreamEnd 事件，通知 TUI 结束本轮、进入下一轮用户输入。
@@ -152,6 +238,23 @@ func Run() {
 			case <-ctx.Done():
 				return
 			case input := <-outChan:
+				if ref, matched, parseErr := parseModelCommand(input); matched {
+					if parseErr == nil {
+						parseErr = assembled.SwitchModel(ref)
+					}
+					if parseErr != nil {
+						sendIn(cliprinter.StreamEvent{Text: fmt.Sprintf(
+							"%s[LaxCode] model switch failed: %v%s\n", ColorRed, parseErr, ColorReset)})
+					} else {
+						sendIn(cliprinter.StreamEvent{Text: fmt.Sprintf(
+							"%s[LaxCode] model switched to %s%s\n", ColorYellow, ref, ColorReset)})
+					}
+					sendIn(cliprinter.StreamEvent{Kind: cliprinter.StreamEnd})
+					continue
+				}
+				if expanded, ok := expandSkillInput(input, skills); ok {
+					input = expanded
+				}
 				if _, err := assembled.Service.Chat(ctx, input); err != nil {
 					// 运行期错误经 inChan 回流到 TUI 呈现，本轮仍以 StreamEnd 事件收尾
 					sendIn(cliprinter.StreamEvent{Text: formatRuntimeError(err)})
@@ -164,7 +267,8 @@ func Run() {
 	// 启动 TUI（阻塞）。用户 ctrl+c / SIGINT / SIGTERM 都会让 Run 返回，且终端已由
 	// bubbletea 恢复正常模式。随后显式 cancel() 让上面的消费 goroutine 与在途 Chat
 	// 先行收敛（早于 deferred Cleanup 回收工具 / tracer），最后 Run 返回、进程退出。
-	if err := cliprinter.NewTUI(outChan, inChan).Run(); err != nil {
+	completions := slashCompletions(assembled.Skills, config.ModelRefs())
+	if err := cliprinter.NewTUI(outChan, inChan, completions...).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "运行出错:", err)
 	}
 	cancel()

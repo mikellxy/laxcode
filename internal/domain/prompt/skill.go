@@ -22,6 +22,7 @@ import (
 type Skill struct {
 	Name        string
 	Description string
+	Definition  string
 }
 
 // frontmatterYAML 是 SKILL.md frontmatter 的最小解析目标，未知字段忽略（向前兼容）。
@@ -124,7 +125,7 @@ func parseSkill(content, dirName string) (Skill, string) {
 			"name %q 不符合命名规则（%s）", fm.Name, skillNameRule))
 	}
 
-	return Skill{Name: fm.Name, Description: fm.Description}, ""
+	return Skill{Name: fm.Name, Description: fm.Description, Definition: content}, ""
 }
 
 // skillNameRule 是命名规则的人类可读说明，用于跳过警告。它须与

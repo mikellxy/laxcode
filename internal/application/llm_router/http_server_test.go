@@ -100,6 +100,23 @@ func TestGenerateStreamForwardsSSEEvents(t *testing.T) {
 	}
 }
 
+func TestReplaceClientAffectsSubsequentRequests(t *testing.T) {
+	oldClient := &fakeClient{stream: &fakeStream{events: []domainrouter.StreamEvent{{Type: "response.completed", Data: []byte(`{}`)}}}}
+	newClient := &fakeClient{stream: &fakeStream{events: []domainrouter.StreamEvent{{Type: "response.completed", Data: []byte(`{}`)}}}}
+	server := NewHTTPServer(oldClient)
+	server.ReplaceClient(newClient)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, GenerateStreamPath, strings.NewReader(`{"input":"hello"}`))
+	mux.ServeHTTP(rec, req)
+
+	if oldClient.calls != 0 || newClient.calls != 1 {
+		t.Fatalf("calls old/new = %d/%d, want 0/1", oldClient.calls, newClient.calls)
+	}
+}
+
 func TestGenerateStreamWritesRequestMetricsLog(t *testing.T) {
 	var logBuffer bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuffer, nil))

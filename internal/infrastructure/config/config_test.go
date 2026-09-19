@@ -2,8 +2,10 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -16,10 +18,32 @@ func swapConfigGlobals(t *testing.T) {
 	prevConf := EnvAndFileConf
 	EnvOrFile = viper.New()
 	EnvAndFileConf = envAndFileConf{}
+	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"} {
+		t.Setenv(key, "")
+	}
 	t.Cleanup(func() {
 		EnvOrFile = prevViper
 		EnvAndFileConf = prevConf
 	})
+}
+
+func setEnvModel(t *testing.T, model string) {
+	t.Helper()
+	t.Setenv("OPENAI_API_KEY", "sk-env-key")
+	t.Setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
+	t.Setenv("OPENAI_MODEL", model)
+}
+
+func modelSettings(provider, model string) string {
+	return fmt.Sprintf(`{
+		"MODEL": %q,
+		"PROVIDER_LIST": [{
+			"PROVIDER_NAME": %q,
+			"OPENAI_API_KEY": "sk-file-key",
+			"OPENAI_BASE_URL": "https://file.example.com/v1",
+			"MODEL_LIST": [{"MODEL_NAME": %q}]
+		}]
+	}`, provider+":"+model, provider, model)
 }
 
 func writeSettings(t *testing.T, home string, content string) {
@@ -37,9 +61,7 @@ func TestParseEnvAndFileFromEnv(t *testing.T) {
 	swapConfigGlobals(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("OPENAI_API_KEY", "sk-env-key")
-	t.Setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
-	t.Setenv("OPENAI_MODEL", "gpt-env")
+	setEnvModel(t, "gpt-env")
 	t.Setenv("EMBBED_OPENAI_API_KEY", "embed-key")
 	t.Setenv("EMBBED_OPENAI_BASE_URL", "https://embed.example.com/v1")
 	t.Setenv("EMBBED_OPENAI_MODEL", "embed-model")
@@ -66,11 +88,68 @@ func TestParseEnvAndFileFromEnv(t *testing.T) {
 	if EnvAndFileConf.LlmRouterAddr != DefaultLLMRouterAddr {
 		t.Errorf("llm router default addr = %q", EnvAndFileConf.LlmRouterAddr)
 	}
+	if EnvAndFileConf.Model != "env_provider:env_model" {
+		t.Errorf("环境模型引用=%q", EnvAndFileConf.Model)
+	}
+	resolved, err := ResolveModel("env_provider:env_model")
+	if err != nil || resolved.UpstreamModel != "gpt-env" {
+		t.Fatalf("环境模型解析=%+v, %v", resolved, err)
+	}
+}
+
+func TestParseProviderModelCatalog(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"MODEL": "openai:gpt-4.1",
+		"PROVIDER_LIST": [
+			{"PROVIDER_NAME":"openai","OPENAI_API_KEY":"sk-o","OPENAI_BASE_URL":"https://o.example/v1","MODEL_LIST":[{"MODEL_NAME":"gpt-4o"},{"MODEL_NAME":"gpt-4.1"}]},
+			{"PROVIDER_NAME":"deepseek","OPENAI_API_KEY":"sk-d","OPENAI_BASE_URL":"https://d.example/v1","MODEL_LIST":[{"MODEL_NAME":"chat"}]}
+		]
+	}`)
+
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if EnvAndFileConf.OpenaiApiKey != "sk-o" || EnvAndFileConf.OpenaiModel != "gpt-4.1" {
+		t.Fatalf("当前模型派生配置错误：%+v", EnvAndFileConf)
+	}
+	wantRefs := []string{"deepseek:chat", "openai:gpt-4.1", "openai:gpt-4o"}
+	if got := ModelRefs(); !reflect.DeepEqual(got, wantRefs) {
+		t.Fatalf("ModelRefs=%v, want %v", got, wantRefs)
+	}
+	if err := SetActiveModel("deepseek:chat"); err != nil {
+		t.Fatal(err)
+	}
+	if EnvAndFileConf.OpenaiBaseUrl != "https://d.example/v1" || EnvAndFileConf.OpenaiModel != "chat" {
+		t.Fatalf("切换后配置错误：%+v", EnvAndFileConf)
+	}
+	if _, err := ResolveModel("deepseek:gpt-4.1"); err == nil {
+		t.Fatal("不得跨 provider 组合模型")
+	}
+}
+
+func TestParseProviderModelCatalogRejectsDuplicateNames(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"MODEL":"p:m",
+		"PROVIDER_LIST":[
+			{"PROVIDER_NAME":"p","OPENAI_API_KEY":"k","OPENAI_BASE_URL":"https://a","MODEL_LIST":[{"MODEL_NAME":"m"}]},
+			{"PROVIDER_NAME":"p","OPENAI_API_KEY":"k","OPENAI_BASE_URL":"https://b","MODEL_LIST":[{"MODEL_NAME":"m"}]}
+		]
+	}`)
+	if err := ParseEnvAndFile(); err == nil {
+		t.Fatal("重复 PROVIDER_NAME 应报错")
+	}
 }
 
 func TestParseEnvAndFileLLMRouterAddrFromEnv(t *testing.T) {
 	swapConfigGlobals(t)
 	t.Setenv("HOME", t.TempDir())
+	setEnvModel(t, "gpt-env")
 	t.Setenv("LLM_ROUTER_ADDR", "127.0.0.1:18080")
 
 	if err := ParseEnvAndFile(); err != nil {
@@ -85,13 +164,8 @@ func TestParseEnvAndFileEnvOverridesFile(t *testing.T) {
 	swapConfigGlobals(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	writeSettings(t, home, `{"openai_api_key":"sk-file-key","openai_base_url":"https://file.example.com/v1","openai_model":"gpt-file"}`)
-
-	// 环境变量优先于 settings.json；base url 刻意置空（viper 忽略空环境变量），
-	// 以便验证未设置环境变量的项回落配置文件
-	t.Setenv("OPENAI_API_KEY", "sk-env-key")
-	t.Setenv("OPENAI_MODEL", "gpt-env")
-	t.Setenv("OPENAI_BASE_URL", "")
+	writeSettings(t, home, modelSettings("file-provider", "file-model"))
+	setEnvModel(t, "gpt-env")
 
 	if err := ParseEnvAndFile(); err != nil {
 		t.Fatalf("ParseEnvAndFile: %v", err)
@@ -99,22 +173,19 @@ func TestParseEnvAndFileEnvOverridesFile(t *testing.T) {
 	if EnvAndFileConf.OpenaiApiKey != "sk-env-key" || EnvAndFileConf.OpenaiModel != "gpt-env" {
 		t.Errorf("环境变量应覆盖文件配置，实际 %+v", EnvAndFileConf)
 	}
-	// 未设置环境变量的项保留文件值
-	if EnvAndFileConf.OpenaiBaseUrl != "https://file.example.com/v1" {
-		t.Errorf("base url 应回落到文件值，实际 %q", EnvAndFileConf.OpenaiBaseUrl)
+	if EnvAndFileConf.Model != "env_provider:env_model" || len(EnvAndFileConf.ProviderList) != 2 {
+		t.Errorf("环境 provider 应追加并成为当前模型，实际 %+v", EnvAndFileConf)
 	}
 }
 
-func TestParseEnvAndFileNoHomeNoError(t *testing.T) {
+func TestParseEnvAndFileRejectsPartialEnvProvider(t *testing.T) {
 	swapConfigGlobals(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	writeSettings(t, home, modelSettings("file-provider", "file-model"))
 	t.Setenv("OPENAI_API_KEY", "sk-1")
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("无 settings.json 时不应报错：%v", err)
-	}
-	if EnvAndFileConf.OpenaiApiKey != "sk-1" {
-		t.Errorf("无配置文件时应从环境读取，实际 %q", EnvAndFileConf.OpenaiApiKey)
+	if err := ParseEnvAndFile(); err == nil {
+		t.Fatal("部分 OPENAI_* 环境变量应报错")
 	}
 }
 
@@ -132,6 +203,7 @@ func TestParseEnvAndFileCorruptFileReturnsError(t *testing.T) {
 func TestParseEnvAndFileContextBudgetFromEnv(t *testing.T) {
 	swapConfigGlobals(t)
 	t.Setenv("HOME", t.TempDir())
+	setEnvModel(t, "gpt-env")
 	t.Setenv("OPENAI_CONTEXT_WINDOW", "1000000")
 	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "32768")
 	if err := ParseEnvAndFile(); err != nil {
@@ -145,9 +217,7 @@ func TestParseEnvAndFileContextBudgetFromEnv(t *testing.T) {
 func TestParseEnvAndFileCompactionProviderOverridesAndFallbacks(t *testing.T) {
 	swapConfigGlobals(t)
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("OPENAI_API_KEY", "main-key")
-	t.Setenv("OPENAI_BASE_URL", "https://main.example/v1")
-	t.Setenv("OPENAI_MODEL", "main-model")
+	setEnvModel(t, "main-model")
 	t.Setenv("OPENAI_CONTEXT_WINDOW", "100000")
 	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "10000")
 	t.Setenv("COMPACTION_OPENAI_MODEL", "summary-model")
@@ -156,8 +226,8 @@ func TestParseEnvAndFileCompactionProviderOverridesAndFallbacks(t *testing.T) {
 	if err := ParseEnvAndFile(); err != nil {
 		t.Fatal(err)
 	}
-	if EnvAndFileConf.CompactionOpenaiApiKey != "main-key" ||
-		EnvAndFileConf.CompactionOpenaiBaseUrl != "https://main.example/v1" ||
+	if EnvAndFileConf.CompactionOpenaiApiKey != "sk-env-key" ||
+		EnvAndFileConf.CompactionOpenaiBaseUrl != "https://env.example.com/v1" ||
 		EnvAndFileConf.CompactionOpenaiModel != "summary-model" ||
 		EnvAndFileConf.CompactionOpenaiContextWindow != 100000 ||
 		EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 2000 {
@@ -168,6 +238,7 @@ func TestParseEnvAndFileCompactionProviderOverridesAndFallbacks(t *testing.T) {
 func TestParseEnvAndFileRejectsInvalidContextBudget(t *testing.T) {
 	swapConfigGlobals(t)
 	t.Setenv("HOME", t.TempDir())
+	setEnvModel(t, "gpt-env")
 	t.Setenv("OPENAI_CONTEXT_WINDOW", "1000")
 	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "1000")
 	if err := ParseEnvAndFile(); err == nil {

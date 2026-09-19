@@ -10,11 +10,13 @@ package agentasm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
+	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
@@ -22,6 +24,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
+	infrastructurerouter "github.com/mikellxy/laxcode/internal/infrastructure/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
@@ -41,6 +44,12 @@ type Input struct {
 	PlanMode bool
 	// Consumer 是 ReAct 事件回调：交互模式接 stdout 彩色打印，one-shot 接静默丢弃。
 	Consumer func(*reactservice.ReactEvent)
+	// Router 仅交互模式注入，用于 /model 在两轮 Chat 之间替换本地网关 client。
+	Router RouterClientReplacer
+}
+
+type RouterClientReplacer interface {
+	ReplaceClient(domainrouter.StreamClient)
 }
 
 // Assembled 是装配产物。
@@ -50,10 +59,23 @@ type Assembled struct {
 	Service *reactservice.ReActService
 	// Session 是 Service 持有的主会话，供前端读取 ID / token 统计。
 	Session *session.Session
+	// Skills 是启动时已校验的技能快照，供 CLI 补全与显式技能调用使用。
+	Skills []prompt.Skill
 	// Cleanup 回收带生命周期的资源，调用方 defer 一次；以 sync.Once 保证幂等，
 	// 使信号处理与正常退出路径可各自安全调用。顺序：先 Close 工具注册表（回收
 	// bash 后台进程与临时文件），再 Shutdown tracer（flush 关闭阶段产生的 span）。
 	Cleanup func()
+
+	switchModel func(string) error
+}
+
+// SwitchModel rebuilds both clients for subsequent Chat calls. It must be called
+// only while no Chat is in progress.
+func (a *Assembled) SwitchModel(ref string) error {
+	if a.switchModel == nil {
+		return errors.New("model switching is unavailable")
+	}
+	return a.switchModel(ref)
 }
 
 // Assemble 装配一个可直接运行的 ReActService：会话（含系统提示词）、tracer、
@@ -151,7 +173,34 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		return nil, err
 	}
 
-	return &Assembled{Service: svc, Session: sess, Cleanup: cleanup}, nil
+	switchModel := func(ref string) error {
+		if in.Router == nil {
+			return errors.New("model switching requires a running LLM router")
+		}
+		resolved, err := config.ResolveModel(ref)
+		if err != nil {
+			return err
+		}
+		routerClient := infrastructurerouter.NewOpenAIStreamClient(
+			resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel)
+		provider := llmprovider.NewOpenApiProviderWithStreamGateway(
+			resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel, c.LlmRouterURL,
+			c.OpenaiContextWindow, c.OpenaiMaxOutputTokens)
+
+		// TUI 只会在输入阶段执行切换，因此主 Service 没有进行中的 Chat。
+		// Router 自身按请求快照 client，外部并发请求也不会在流中途切换。
+		in.Router.ReplaceClient(routerClient)
+		svc.ReplaceLLMClient(provider)
+		return config.SetActiveModel(ref)
+	}
+
+	return &Assembled{
+		Service:     svc,
+		Session:     sess,
+		Skills:      append([]prompt.Skill(nil), skills...),
+		Cleanup:     cleanup,
+		switchModel: switchModel,
+	}, nil
 }
 
 // warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，使 one-shot 模式

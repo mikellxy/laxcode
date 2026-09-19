@@ -34,9 +34,18 @@ touch ~/.laxcode/settings.json
 配置文件写入
 ```json
 {
-  "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
-  "OPENAI_BASE_URL": "https://api.openai.com/v1", # 任意 OpenAI 兼容端点
-  "OPENAI_MODEL": "gpt-4o-mini",
+  "MODEL": "openai:gpt-4o-mini",
+  "PROVIDER_LIST": [
+    {
+      "PROVIDER_NAME": "openai",
+      "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
+      "OPENAI_BASE_URL": "https://api.openai.com/v1",
+      "MODEL_LIST": [
+        {"MODEL_NAME": "gpt-4o-mini"},
+        {"MODEL_NAME": "gpt-4.1"}
+      ]
+    }
+  ],
   "OPENAI_CONTEXT_WINDOW": 128000,
   "OPENAI_MAX_OUTPUT_TOKENS": 16384,
   "EMBBED_OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
@@ -64,6 +73,9 @@ export LLM_ROUTER_ADDR=127.0.0.1:18080
 # 压缩 provider 的未配置项会继承主 provider
 export COMPACTION_OPENAI_MODEL=gpt-4o-mini
 ```
+`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 必须同时设置。三者完整时会作为
+`env_provider:env_model` 追加到模型目录，并覆盖配置文件中的当前 `MODEL`；上游请求仍使用
+`OPENAI_MODEL` 的真实值。
 
 ### 1.3 终端交互模式
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 700px;">  
@@ -73,6 +85,10 @@ make build
 
 ./bin/laxcode
 ```
+
+交互输入以 `/` 开头时会显示技能和 `/model` 补全；使用方向键选择，`Esc` 关闭候选。
+选择技能后继续输入问题并再次回车即可显式附加该技能定义。输入 `/model` 会显示配置中的
+`provider:model` 列表，选择后立即切换后续请求使用的模型。
 命令行参数  
 
 | 参数 | 默认 | 说明                                          |

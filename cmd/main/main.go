@@ -81,6 +81,6 @@ func main() {
 	case config.CliConf.QA:
 		run_qa.Run()
 	default:
-		run_cli.Run()
+		run_cli.Run(routerServer)
 	}
 }

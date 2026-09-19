@@ -194,6 +194,13 @@ func TestLoadSkills(t *testing.T) {
 			var rec warnRecorder
 
 			got := LoadSkills(src, "/any/workdir", rec.fn())
+			for i := range tt.want {
+				for _, file := range tt.files {
+					if file.DirName == tt.want[i].Name {
+						tt.want[i].Definition = file.Content
+					}
+				}
+			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("LoadSkills() = %+v, want %+v", got, tt.want)
 			}
@@ -242,7 +249,7 @@ func TestLoadSkillsNilWarnStaysSilent(t *testing.T) {
 	}}
 
 	got := LoadSkills(src, "/any", nil)
-	want := []Skill{{Name: "good", Description: "好技能"}}
+	want := []Skill{{Name: "good", Description: "好技能", Definition: validSkillMD("good", "好技能")}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("LoadSkills() = %+v, want %+v", got, want)
 	}
@@ -254,7 +261,7 @@ func TestParseSkill(t *testing.T) {
 		if reason != "" {
 			t.Errorf("合法技能不应有跳过原因，实际 %q", reason)
 		}
-		if skill.Name != "commit" || skill.Description != "生成规范 commit message" {
+		if skill.Name != "commit" || skill.Description != "生成规范 commit message" || skill.Definition == "" {
 			t.Errorf("parseSkill() = %+v", skill)
 		}
 	})
