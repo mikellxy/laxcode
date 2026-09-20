@@ -147,7 +147,7 @@ curl -N http://127.0.0.1:18080/openai/generate_stream \
 
 QA mode reads `${workdir}/kb/kb.sqlite`. It embeds every question through the
 OpenAI-compatible API configured by `EMBBED_OPENAI_*`, retrieves the 10 closest
-chunks from `vec_chunks`, and sends them to the main LLM. Indexing and querying
+chunks from `chunk_vectors`, and sends them to the main LLM. Indexing and querying
 must use the same 1024-dimensional embedding model. The QA agent currently has
 no tools and does not print reasoning content to the terminal.
 

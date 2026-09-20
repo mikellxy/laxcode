@@ -8,7 +8,7 @@ const EmbeddingDimensions = 1024
 
 // Chunk is one knowledge-base passage returned by vector search.
 type Chunk struct {
-	ID       int64
+	ID       string
 	Content  string
 	Distance float64
 }

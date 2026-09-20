@@ -3,6 +3,7 @@ package knowledgebase
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,16 +12,18 @@ import (
 	domainkb "github.com/mikellxy/laxcode/internal/domain/knowledgebase"
 )
 
-func TestSQLiteVecRetrieverSearchesByCosineDistance(t *testing.T) {
+func TestSQLiteVecRetrieverSearchesByDistance(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kb.sqlite")
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	statements := []string{
-		`CREATE TABLE chunks (chunk_id INTEGER PRIMARY KEY, content TEXT NOT NULL)`,
-		`CREATE VIRTUAL TABLE vec_chunks USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[1024] DISTANCE_METRIC=cosine)`,
-		`INSERT INTO chunks(chunk_id, content) VALUES (1, 'nearest'), (2, 'farther')`,
+		`CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+		`CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, document_id INTEGER NOT NULL REFERENCES documents(id), chunk_seq INTEGER NOT NULL, content TEXT NOT NULL, title TEXT NOT NULL DEFAULT '')`,
+		`CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id TEXT PRIMARY KEY, embedding FLOAT[1024])`,
+		`INSERT INTO documents(path) VALUES ('doc-a')`,
+		`INSERT INTO chunks(chunk_id, document_id, chunk_seq, content) VALUES ('chunk-1', 1, 0, 'nearest'), ('chunk-2', 1, 1, 'farther')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -36,7 +39,8 @@ func TestSQLiteVecRetrieverSearchesByCosineDistance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)`, id+1, encoded); err != nil {
+		chunkID := fmt.Sprintf("chunk-%d", id+1)
+		if _, err := db.Exec(`INSERT INTO chunk_vectors(chunk_id, embedding) VALUES (?, ?)`, chunkID, encoded); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -53,7 +57,7 @@ func TestSQLiteVecRetrieverSearchesByCosineDistance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chunks) != 2 || chunks[0].ID != 1 || chunks[0].Content != "nearest" || chunks[0].Distance != 0 {
+	if len(chunks) != 2 || chunks[0].ID != "chunk-1" || chunks[0].Content != "nearest" || chunks[0].Distance != 0 {
 		t.Fatalf("unexpected search result: %+v", chunks)
 	}
 }

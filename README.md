@@ -158,7 +158,7 @@ curl -N http://127.0.0.1:18080/openai/generate_stream \
 ```
 
 QA 模式读取 `${workdir}/kb/kb.sqlite`，将每个问题通过 `EMBBED_OPENAI_*` 配置的
-OpenAI 兼容 Embeddings API 转为 1024 维向量，从 `vec_chunks` 召回最相关的 10 个
+OpenAI 兼容 Embeddings API 转为 1024 维向量，从 `chunk_vectors` 召回最相关的 10 个
 chunk，再交给主 LLM 回答。建库和查询必须使用同一个 embedding 模型。当前 QA
 Agent 不挂载任何工具，终端也不会输出 reasoning content。
 

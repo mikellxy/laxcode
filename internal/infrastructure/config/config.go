@@ -43,9 +43,9 @@ type envAndFileConf struct {
 	OpenaiBaseUrl string `mapstructure:"-"`
 	OpenaiModel   string `mapstructure:"-"`
 
-	EmbedOpenaiApiKey               string `mapstructure:"EMBBED_OPENAI_API_KEY"`
-	EmbedOpenaiBaseUrl              string `mapstructure:"EMBBED_OPENAI_BASE_URL"`
-	EmbedOpenaiModel                string `mapstructure:"EMBBED_OPENAI_MODEL"`
+	EmbedOpenaiApiKey               string `mapstructure:"OPENAI_EMBEDDING_API_KEY"`
+	EmbedOpenaiBaseUrl              string `mapstructure:"OPENAI_EMBEDDING_BASE_URL"`
+	EmbedOpenaiModel                string `mapstructure:"OPENAI_EMBEDDING_MODEL_NAME"`
 	OpenaiContextWindow             int    `mapstructure:"OPENAI_CONTEXT_WINDOW"`
 	OpenaiMaxOutputTokens           int    `mapstructure:"OPENAI_MAX_OUTPUT_TOKENS"`
 	CompactionOpenaiApiKey          string `mapstructure:"COMPACTION_OPENAI_API_KEY"`
@@ -228,9 +228,9 @@ func ParseEnvAndFile() error {
 	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", DefaultContextWindow)
 	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", DefaultMaxOutputTokens)
 	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
-	EnvOrFile.BindEnv("EMBBED_OPENAI_API_KEY", "EMBBED_OPENAI_API_KEY")
-	EnvOrFile.BindEnv("EMBBED_OPENAI_BASE_URL", "EMBBED_OPENAI_BASE_URL")
-	EnvOrFile.BindEnv("EMBBED_OPENAI_MODEL", "EMBBED_OPENAI_MODEL")
+	EnvOrFile.BindEnv("OPENAI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_API_KEY")
+	EnvOrFile.BindEnv("OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_BASE_URL")
+	EnvOrFile.BindEnv("OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_MODEL_NAME")
 	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_API_KEY", "COMPACTION_OPENAI_API_KEY")
@@ -249,7 +249,7 @@ func ParseEnvAndFile() error {
 	// 覆盖当前选择。部分设置不与文件配置拼接，避免凭据、端点和模型错配。
 	envAPIKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	envBaseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
-	envUpstreamModel := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	envUpstreamModel := strings.TrimSpace(os.Getenv("OPENAI_MODEL_NAME"))
 	envValues := 0
 	for _, value := range []string{envAPIKey, envBaseURL, envUpstreamModel} {
 		if value != "" {

@@ -69,7 +69,7 @@ func (r *SQLiteVecRetriever) Search(ctx context.Context, vector []float32, limit
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT v.chunk_id, c.content, v.distance
-		FROM vec_chunks AS v
+		FROM chunk_vectors AS v
 		JOIN chunks AS c ON c.chunk_id = v.chunk_id
 		WHERE v.embedding MATCH ? AND k = ?
 		ORDER BY v.distance`, serialized, limit)
