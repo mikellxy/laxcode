@@ -36,6 +36,9 @@ type Message struct {
 	Artifact    *ArtifactRef `json:"artifact,omitempty"`
 	Role        string       `json:"role"`
 	Content     string       `json:"content"`
+	// DisplayContent 是面向用户界面的安全展示文本。目前仅用于 tool 消息保存
+	// 执行前摘要；完整工具输出仍只存放在 Content 中并回送模型。
+	DisplayContent string `json:"-"`
 	// CompactContent 是工具提供的简短结果，压缩器无需解释具体工具字段。
 	CompactContent string `json:"compact_content,omitempty"`
 	// ReasoningID and ReasoningContent carry the model's chain-of-thought

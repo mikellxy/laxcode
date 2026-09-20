@@ -306,6 +306,7 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 
 			result := r.ToolRegistry.Execute(toolCtx, &tc)
 			toolMsg := tools.ToolResultAsMsg(result)
+			toolMsg.DisplayContent = info
 			if err := r.handleTurnMsg(ctx, toolMsg); err != nil {
 				return nil, err
 			}

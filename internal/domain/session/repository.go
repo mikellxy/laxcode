@@ -2,9 +2,54 @@ package session
 
 import (
 	"context"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
+
+// HistoryMessage 是会话历史的只读投影，只包含允许交给 UI 的字段。
+type HistoryMessage struct {
+	Seq              uint64
+	Role             string
+	Content          string
+	ReasoningContent string
+	ToolSummary      string
+	CreatedAt        time.Time
+}
+
+type HistoryPage struct {
+	Messages []HistoryMessage
+	HasMore  bool
+}
+
+// SessionHistoryRepository 是面向历史消息接口的独立读端口，避免把分页查询职责
+// 强加给 ReActService 使用的写仓储测试替身。
+type SessionHistoryRepository interface {
+	// ListOriginalHistory 返回 seq < beforeSeq 的最近一页可展示原始消息。
+	// beforeSeq=0 表示从最新消息开始；返回结果按 seq 正序排列。
+	ListOriginalHistory(ctx context.Context, sessionID string, beforeSeq uint64, limit int) (HistoryPage, bool, error)
+}
+
+type Summary struct {
+	ID        string
+	UserID    string
+	Title     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type SummaryPage struct {
+	Sessions []Summary
+	HasMore  bool
+}
+
+// SessionCatalogRepository 管理显式创建的空会话及按用户隔离的会话列表。
+type SessionCatalogRepository interface {
+	CreateSession(ctx context.Context, sessionID, userID, title string) (Summary, error)
+	// ListSessions 返回指定用户在 beforeSessionID 之前的一页会话，按更新时间倒序。
+	// beforeSessionID 为空表示第一页。
+	ListSessions(ctx context.Context, userID, beforeSessionID string, limit int) (SummaryPage, error)
+}
 
 // SessionRepository 是会话持久化端口：domain 只声明“要存什么、要读回什么”，
 // 数据库表、事务和本地冷备由 infrastructure/sessionrepo 决定。

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
+	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
 // shutdownTimeout 是优雅关闭等待在途 SSE 流结束的上限。一次完整 ReAct 生成可能
@@ -60,10 +62,21 @@ func Run() {
 	}
 
 	s := newServer(workDir, config.CliConf.Plan)
+	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
+		layout.SessionDB(workDir), layout.SessionRoot(workDir))
+	if err != nil {
+		fatal(fmt.Errorf("init session history repository: %w", err))
+	}
+	defer historyRepo.Close()
+	s.history = historyRepo
+	s.catalog = historyRepo
 	mux := http.NewServeMux()
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
+	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。

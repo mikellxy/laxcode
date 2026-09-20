@@ -27,10 +27,13 @@ var (
 	ErrContextConflict = errors.New("sessionrepo: request context revision conflict")
 	ErrStaleSequence   = errors.New("sessionrepo: stale message sequence")
 	ErrStaleGeneration = errors.New("sessionrepo: stale memory generation")
+	ErrSessionNotFound = errors.New("sessionrepo: session not found")
 )
 
 type requestContextModel struct {
 	SessionID         string    `gorm:"column:session_id;type:varchar(128);primaryKey"`
+	UserID            string    `gorm:"column:user_id;type:varchar(128);not null;default:''"`
+	Title             string    `gorm:"column:title;type:text;not null;default:''"`
 	Revision          uint64    `gorm:"column:revision;not null"`
 	MemoryGeneration  uint64    `gorm:"column:memory_generation;not null"`
 	LastSeq           uint64    `gorm:"column:last_seq;not null"`
@@ -55,6 +58,7 @@ type messageModel struct {
 	Role             string    `gorm:"column:role;type:varchar(32);not null"`
 	ToolCallID       string    `gorm:"column:tool_call_id;type:varchar(128);not null"`
 	Content          string    `gorm:"column:content;type:text;not null"`
+	DisplayContent   string    `gorm:"column:display_content;type:text;not null;default:''"`
 	CompactContent   string    `gorm:"column:compact_content;type:text;not null;default:''"`
 	ReasoningID      string    `gorm:"column:reasoning_id;type:varchar(255);not null"`
 	ReasoningContent string    `gorm:"column:reasoning_content;type:text;not null"`
@@ -109,6 +113,8 @@ func (r *SqliteSessionRepo) migrate() error {
 		statements := []string{
 			`CREATE TABLE IF NOT EXISTS request_contexts (
 				session_id VARCHAR(128) PRIMARY KEY NOT NULL,
+				user_id VARCHAR(128) NOT NULL DEFAULT '',
+				title TEXT NOT NULL DEFAULT '',
 				revision BIGINT NOT NULL CHECK (revision >= 0),
 				memory_generation BIGINT NOT NULL CHECK (memory_generation >= 1),
 				last_seq BIGINT NOT NULL CHECK (last_seq >= 0),
@@ -128,6 +134,7 @@ func (r *SqliteSessionRepo) migrate() error {
 					role VARCHAR(32) NOT NULL,
 					tool_call_id VARCHAR(128) NOT NULL DEFAULT '',
 					content TEXT NOT NULL,
+					display_content TEXT NOT NULL DEFAULT '',
 					compact_content TEXT NOT NULL DEFAULT '',
 					reasoning_id VARCHAR(255) NOT NULL DEFAULT '',
 					reasoning_content TEXT NOT NULL DEFAULT '',
@@ -157,8 +164,148 @@ func (r *SqliteSessionRepo) migrate() error {
 				return fmt.Errorf("add compact content column: %w", err)
 			}
 		}
+		if !tx.Migrator().HasColumn(&messageModel{}, "display_content") {
+			if err := tx.Exec("ALTER TABLE messages ADD COLUMN display_content TEXT NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add display content column: %w", err)
+			}
+		}
+		if !tx.Migrator().HasColumn(&requestContextModel{}, "user_id") {
+			if err := tx.Exec("ALTER TABLE request_contexts ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add session user id column: %w", err)
+			}
+		}
+		if !tx.Migrator().HasColumn(&requestContextModel{}, "title") {
+			if err := tx.Exec("ALTER TABLE request_contexts ADD COLUMN title TEXT NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add session title column: %w", err)
+			}
+		}
+		if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_request_contexts_user_updated
+			ON request_contexts(user_id, updated_at DESC, session_id DESC)`).Error; err != nil {
+			return fmt.Errorf("create session list index: %w", err)
+		}
 		return nil
 	})
+}
+
+func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, title string) (session.Summary, error) {
+	if err := validSessionID(id); err != nil {
+		return session.Summary{}, err
+	}
+	if strings.TrimSpace(userID) == "" {
+		return session.Summary{}, fmt.Errorf("user ID is required")
+	}
+	now := time.Now().UTC()
+	row := requestContextModel{
+		SessionID: id, UserID: userID, Title: title,
+		MemoryGeneration: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+		return session.Summary{}, fmt.Errorf("create session: %w", err)
+	}
+	return summaryFromModel(row), nil
+}
+
+func (r *SqliteSessionRepo) ListSessions(ctx context.Context, userID, beforeSessionID string, limit int) (session.SummaryPage, error) {
+	if strings.TrimSpace(userID) == "" {
+		return session.SummaryPage{}, fmt.Errorf("user ID is required")
+	}
+	if limit <= 0 {
+		return session.SummaryPage{}, fmt.Errorf("session list limit must be positive")
+	}
+	query := r.db.WithContext(ctx).Model(&requestContextModel{}).Where("user_id = ?", userID)
+	if beforeSessionID != "" {
+		if err := validSessionID(beforeSessionID); err != nil {
+			return session.SummaryPage{}, err
+		}
+		var cursor requestContextModel
+		err := r.db.WithContext(ctx).Select("session_id", "updated_at").
+			Where("session_id = ? AND user_id = ?", beforeSessionID, userID).Take(&cursor).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return session.SummaryPage{}, ErrSessionNotFound
+		}
+		if err != nil {
+			return session.SummaryPage{}, fmt.Errorf("load session cursor: %w", err)
+		}
+		query = query.Where("updated_at < ? OR (updated_at = ? AND session_id < ?)",
+			cursor.UpdatedAt, cursor.UpdatedAt, cursor.SessionID)
+	}
+	var rows []requestContextModel
+	if err := query.Order("updated_at DESC, session_id DESC").Limit(limit + 1).Find(&rows).Error; err != nil {
+		return session.SummaryPage{}, fmt.Errorf("list sessions: %w", err)
+	}
+	page := session.SummaryPage{Sessions: make([]session.Summary, min(len(rows), limit))}
+	if len(rows) > limit {
+		page.HasMore = true
+		rows = rows[:limit]
+	}
+	for i := range rows {
+		page.Sessions[i] = summaryFromModel(rows[i])
+	}
+	return page, nil
+}
+
+func summaryFromModel(row requestContextModel) session.Summary {
+	return session.Summary{
+		ID: row.SessionID, UserID: row.UserID, Title: row.Title,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+// ListOriginalHistory 读取不可变 original 历史，并在仓储边界完成行级过滤和
+// 字段白名单投影。多取一条用于判断是否还有更早数据。
+func (r *SqliteSessionRepo) ListOriginalHistory(ctx context.Context, id string, beforeSeq uint64, limit int) (session.HistoryPage, bool, error) {
+	if err := validSessionID(id); err != nil {
+		return session.HistoryPage{}, false, err
+	}
+	if limit <= 0 {
+		return session.HistoryPage{}, false, fmt.Errorf("history limit must be positive")
+	}
+
+	var page session.HistoryPage
+	found := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&requestContextModel{}).Where("session_id = ?", id).Count(&count).Error; err != nil {
+			return fmt.Errorf("check session existence: %w", err)
+		}
+		if count == 0 {
+			return nil
+		}
+		found = true
+
+		query := tx.Model(&messageModel{}).
+			Select("seq", "role", "content", "reasoning_content", "display_content", "created_at").
+			Where("session_id = ? AND message_type = ? AND memory_generation = 0 AND role <> ?",
+				id, messageTypeOriginal, sharedkernel.RoleSystem)
+		if beforeSeq != 0 {
+			query = query.Where("seq < ?", beforeSeq)
+		}
+		var rows []messageModel
+		if err := query.Order("seq DESC").Limit(limit + 1).Find(&rows).Error; err != nil {
+			return fmt.Errorf("list original history: %w", err)
+		}
+		if len(rows) > limit {
+			page.HasMore = true
+			rows = rows[:limit]
+		}
+		page.Messages = make([]session.HistoryMessage, len(rows))
+		for i := range rows {
+			row := rows[len(rows)-1-i]
+			msg := session.HistoryMessage{Seq: row.Seq, Role: row.Role, CreatedAt: row.CreatedAt}
+			switch row.Role {
+			case sharedkernel.RoleUser:
+				msg.Content = row.Content
+			case sharedkernel.RoleAssistant:
+				msg.Content = row.Content
+				msg.ReasoningContent = row.ReasoningContent
+			case sharedkernel.RoleTool:
+				msg.ToolSummary = row.DisplayContent
+			}
+			page.Messages[i] = msg
+		}
+		return nil
+	})
+	return page, found, err
 }
 
 func (r *SqliteSessionRepo) Close() error {
@@ -459,7 +606,7 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 	row := messageModel{
 		SessionID: id, MessageType: messageType, MemoryGeneration: generation,
 		Seq: msg.Seq, OriginalSeqJSON: originalSeq, Role: msg.Role,
-		ToolCallID: msg.ToolCallID, Content: msg.Content, ReasoningID: msg.ReasoningID,
+		ToolCallID: msg.ToolCallID, Content: msg.Content, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
 		CompactContent:   msg.CompactContent,
 		ReasoningContent: msg.ReasoningContent, ToolCallsJSON: toolCalls,
 		FinishReason: msg.FinishReason,
@@ -477,7 +624,7 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 func messagePayload(row messageModel) map[string]any {
 	return map[string]any{
 		"original_seq_json": row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
-		"content": row.Content, "reasoning_id": row.ReasoningID,
+		"content": row.Content, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
 		"compact_content":   row.CompactContent,
 		"reasoning_content": row.ReasoningContent, "tool_calls_json": row.ToolCallsJSON,
 		"finish_reason": row.FinishReason,
@@ -498,7 +645,7 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 		}
 	}
 	msg := sharedkernel.Message{
-		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content,
+		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content, DisplayContent: row.DisplayContent,
 		CompactContent: row.CompactContent,
 		ReasoningID:    row.ReasoningID, ReasoningContent: row.ReasoningContent,
 		ToolCalls: calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,
@@ -525,7 +672,9 @@ func snapshotContains(messages []sharedkernel.Message, target sharedkernel.Messa
 func equalMessage(a, b sharedkernel.Message) bool {
 	aJSON, errA := json.Marshal(a)
 	bJSON, errB := json.Marshal(b)
-	return errA == nil && errB == nil && string(aJSON) == string(bJSON)
+	return errA == nil && errB == nil && string(aJSON) == string(bJSON) && a.DisplayContent == b.DisplayContent
 }
 
 var _ session.SessionRepository = (*SqliteSessionRepo)(nil)
+var _ session.SessionHistoryRepository = (*SqliteSessionRepo)(nil)
+var _ session.SessionCatalogRepository = (*SqliteSessionRepo)(nil)

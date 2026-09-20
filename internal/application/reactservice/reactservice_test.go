@@ -187,7 +187,8 @@ func TestRunToolCallLoop(t *testing.T) {
 		t.Fatalf("会话应 4 条消息，实际 %d：%+v", len(sess.Messages), sess.Messages)
 	}
 	toolMsg := sess.Messages[2]
-	if toolMsg.Role != sharedkernel.RoleTool || toolMsg.ToolCallID != "tc-1" || toolMsg.Content != "echo:hi" {
+	if toolMsg.Role != sharedkernel.RoleTool || toolMsg.ToolCallID != "tc-1" || toolMsg.Content != "echo:hi" ||
+		toolMsg.DisplayContent != `echo_tool({"msg":"hi"})` {
 		t.Errorf("工具结果消息不符：%+v", toolMsg)
 	}
 	// 事件流：tool_call 事件 + 最终正文

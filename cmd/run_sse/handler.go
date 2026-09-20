@@ -3,11 +3,17 @@ package run_sse
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
+	"github.com/mikellxy/laxcode/internal/domain/session"
+	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
 // chatRequest 是 POST /chat 的请求体：session_id 为空则新建会话，task 必填非空。
@@ -26,6 +32,187 @@ type server struct {
 	planMode bool
 	assemble func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
 	locks    *sessionLocks
+	history  session.SessionHistoryRepository
+	catalog  session.SessionCatalogRepository
+}
+
+const (
+	defaultHistoryLimit = 50
+	maxHistoryLimit     = 100
+	defaultSessionLimit = 20
+	maxSessionLimit     = 100
+)
+
+type createSessionRequest struct {
+	UserID string `json:"user_id"`
+}
+
+type sessionDTO struct {
+	SessionID string    `json:"session_id"`
+	UserID    string    `json:"user_id"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type sessionPageDTO struct {
+	Sessions            []sessionDTO `json:"sessions"`
+	NextBeforeSessionID string       `json:"next_before_session_id,omitempty"`
+	HasMore             bool         `json:"has_more"`
+}
+
+func parseUserID(raw string) (string, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	return id.String(), nil
+}
+
+func sessionToDTO(item session.Summary) sessionDTO {
+	return sessionDTO{
+		SessionID: item.ID, UserID: item.UserID, Title: item.Title,
+		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+	}
+}
+
+func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	if s.catalog == nil {
+		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
+		return
+	}
+	var req createSessionRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	userID, err := parseUserID(req.UserID)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
+		return
+	}
+	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, "")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "create session failed: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(sessionToDTO(created))
+}
+
+func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	if s.catalog == nil {
+		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
+		return
+	}
+	userID, err := parseUserID(r.URL.Query().Get("user_id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
+		return
+	}
+	limit := defaultSessionLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > maxSessionLimit {
+			writeJSONError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = value
+	}
+	beforeSessionID := r.URL.Query().Get("before_session_id")
+	page, err := s.catalog.ListSessions(r.Context(), userID, beforeSessionID, limit)
+	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		writeJSONError(w, http.StatusBadRequest, "invalid session cursor")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list sessions failed: "+err.Error())
+		return
+	}
+	response := sessionPageDTO{Sessions: make([]sessionDTO, len(page.Sessions)), HasMore: page.HasMore}
+	for i := range page.Sessions {
+		response.Sessions[i] = sessionToDTO(page.Sessions[i])
+	}
+	if page.HasMore && len(page.Sessions) > 0 {
+		response.NextBeforeSessionID = page.Sessions[len(page.Sessions)-1].ID
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+type historyMessageDTO struct {
+	Seq              uint64    `json:"seq"`
+	Role             string    `json:"role"`
+	Content          string    `json:"content,omitempty"`
+	ReasoningContent string    `json:"reasoning_content,omitempty"`
+	ToolSummary      string    `json:"tool_summary,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type historyPageDTO struct {
+	Messages      []historyMessageDTO `json:"messages"`
+	NextBeforeSeq uint64              `json:"next_before_seq,omitempty"`
+	HasMore       bool                `json:"has_more"`
+}
+
+// handleHistory 处理 GET /api/sessions/{session_id}/messages。
+// before_seq 是排他的消息游标，省略时从最新消息开始；响应消息始终按 seq 正序。
+func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeJSONError(w, http.StatusInternalServerError, "history repository is unavailable")
+		return
+	}
+	sessionID := r.PathValue("session_id")
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	limit := defaultHistoryLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > maxHistoryLimit {
+			writeJSONError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = value
+	}
+	var beforeSeq uint64
+	if raw := r.URL.Query().Get("before_seq"); raw != "" {
+		value, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil || value == 0 {
+			writeJSONError(w, http.StatusBadRequest, "before_seq must be a positive integer")
+			return
+		}
+		beforeSeq = value
+	}
+
+	page, found, err := s.history.ListOriginalHistory(r.Context(), sessionID, beforeSeq, limit)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "load history failed: "+err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "session not found: "+sessionID)
+		return
+	}
+
+	response := historyPageDTO{Messages: make([]historyMessageDTO, len(page.Messages)), HasMore: page.HasMore}
+	for i, msg := range page.Messages {
+		response.Messages[i] = historyMessageDTO{
+			Seq: msg.Seq, Role: msg.Role, Content: msg.Content,
+			ReasoningContent: msg.ReasoningContent, ToolSummary: msg.ToolSummary,
+			CreatedAt: msg.CreatedAt,
+		}
+	}
+	if page.HasMore && len(page.Messages) > 0 {
+		response.NextBeforeSeq = page.Messages[0].Seq
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func newServer(workDir string, planMode bool) *server {

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/compactor"
 	"github.com/mikellxy/laxcode/internal/domain/session"
@@ -50,6 +51,116 @@ func appendMessage(t *testing.T, repo *SqliteSessionRepo, s *session.Session, ms
 	}
 	candidate.Revision = revision
 	*s = *candidate
+}
+
+func TestListOriginalHistoryFiltersProjectsAndPaginates(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	s := createSystem(t, repo, "history-page", "secret system prompt")
+
+	user := s.BuildUserMessage("question")
+	appendMessage(t, repo, s, &user)
+	assistant := sharedkernel.Message{
+		Role: sharedkernel.RoleAssistant, Content: "working", ReasoningContent: "thinking",
+		ToolCalls: []sharedkernel.ToolCall{{ID: "call-1", Name: "bash"}},
+	}
+	appendMessage(t, repo, s, &assistant)
+	tool := sharedkernel.Message{
+		Role: sharedkernel.RoleTool, ToolCallID: "call-1", Content: "private tool output",
+		DisplayContent: "bash(go test ./...)",
+	}
+	appendMessage(t, repo, s, &tool)
+	final := sharedkernel.Message{Role: sharedkernel.RoleAssistant, Content: "answer", ReasoningContent: "done"}
+	appendMessage(t, repo, s, &final)
+
+	page, found, err := repo.ListOriginalHistory(context.Background(), s.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || !page.HasMore || len(page.Messages) != 2 {
+		t.Fatalf("unexpected first page: found=%v page=%+v", found, page)
+	}
+	if page.Messages[0].Role != sharedkernel.RoleTool || page.Messages[0].ToolSummary != "bash(go test ./...)" || page.Messages[0].Content != "" {
+		t.Fatalf("tool projection leaked or lost fields: %+v", page.Messages[0])
+	}
+	if page.Messages[1].Content != "answer" || page.Messages[1].ReasoningContent != "done" {
+		t.Fatalf("assistant projection mismatch: %+v", page.Messages[1])
+	}
+
+	older, found, err := repo.ListOriginalHistory(context.Background(), s.ID, page.Messages[0].Seq, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || older.HasMore || len(older.Messages) != 2 {
+		t.Fatalf("unexpected older page: found=%v page=%+v", found, older)
+	}
+	if older.Messages[0].Role != sharedkernel.RoleUser || older.Messages[0].Content != "question" {
+		t.Fatalf("user projection mismatch: %+v", older.Messages[0])
+	}
+	if older.Messages[1].Role != sharedkernel.RoleAssistant || older.Messages[1].ReasoningContent != "thinking" {
+		t.Fatalf("intermediate assistant projection mismatch: %+v", older.Messages[1])
+	}
+
+	_, found, err = repo.ListOriginalHistory(context.Background(), "missing", 0, 10)
+	if err != nil || found {
+		t.Fatalf("missing session: found=%v err=%v", found, err)
+	}
+}
+
+func TestCreateAndListSessionsByUser(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	ctx := context.Background()
+	userID := "11111111-1111-4111-8111-111111111111"
+	otherUserID := "22222222-2222-4222-8222-222222222222"
+
+	for _, id := range []string{"session-a", "session-b", "session-c"} {
+		if _, err := repo.CreateSession(ctx, id, userID, ""); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := repo.CreateSession(ctx, "other-session", otherUserID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := repo.ListSessions(ctx, userID, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.HasMore || len(page.Sessions) != 2 || page.Sessions[0].ID != "session-c" || page.Sessions[1].ID != "session-b" {
+		t.Fatalf("unexpected first session page: %+v", page)
+	}
+	older, err := repo.ListSessions(ctx, userID, page.Sessions[1].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if older.HasMore || len(older.Sessions) != 1 || older.Sessions[0].ID != "session-a" {
+		t.Fatalf("unexpected older session page: %+v", older)
+	}
+
+	// 显式创建的空 session 必须仍能走原有首次 system 消息提交路径。
+	s := session.NewSession("session-a")
+	snapshot, err := repo.GetRequestContext(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	sys := s.UpsertSysMessage("system")
+	revision, err := repo.CommitCreateMessage(ctx, s.ID, s.Snapshot(), sys, sys)
+	if err != nil {
+		t.Fatalf("append first system message to explicit session: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("first revision=%d, want 1", revision)
+	}
+	refreshed, err := repo.ListSessions(ctx, userID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed.Sessions) != 3 || refreshed.Sessions[0].ID != "session-a" {
+		t.Fatalf("chat update should move session to front without losing ownership: %+v", refreshed)
+	}
 }
 
 func TestTwoTableLifecycleAndGenerationHistory(t *testing.T) {
