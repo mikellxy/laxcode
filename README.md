@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  <img src="./laxcode.jpg" alt="LaxCode" width="360" height="360">
+  <img src="./laxcode.png" alt="LaxCode" width="400" height="180">
 </p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)

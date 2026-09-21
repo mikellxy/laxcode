@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  <img src="./laxcode.jpg" alt="LaxCode" width="360" height="360">
+  <img src="./laxcode.png" alt="LaxCode" width="360" height="180">
 </p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
@@ -15,6 +15,7 @@ LaxCode is a lightweight AI Agent implemented in Go.
 ## Feature Navigation
 
 - [**Coding Agent CLI**](#coding-agent-cli) — A terminal agent for file search, editing, and command execution
+- [**Agent Evaluation**](#agent-session-evaluation) — Evaluates a completed task from its full ReAct log using LLM-as-a-Judge
 - [**Agentic QA**](#agentic-memory-qa) — Supports RAG user-memory recall and an SSE interaction page
 - [**Agentic RAG QA**](#agentic-rag-qa) — Supports knowledge-base retrieval and an SSE interaction page
 
@@ -35,6 +36,33 @@ make build
 ./bin/laxcode
 ```
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
+
+<a id="agent-session-evaluation"></a>
+
+### Evaluate a Coding Agent Task
+
+After completing a task with LaxCode, you can evaluate its outcome in an independent LLM-as-a-Judge session by specifying the task's original `workdir` and `session_id`. The evaluator reads the following immutable ReAct message log:
+
+```text
+${workdir}/.laxcode/.session/${session_id}/history.jsonl
+```
+
+Run the evaluation with the target task's `session_id` passed through `-eval_session`:
+
+```shell
+./bin/laxcode \
+  -evaluate \
+  -workdir=/path/to/project \
+  -eval_session=88a74c78-a5c4-4602-bb1e-8e4a4ce0256b
+```
+
+The evaluation report is written to stdout as a single-line JSON object. Its fields include:
+
+- `eval_session_id`: the session ID of the task being evaluated.
+- `session_id`: the independent session ID created for the evaluator.
+- `result`: a Markdown report containing evidence-backed scores for tool-call appropriateness, tool-call robustness, task planning, user-goal completion, and other dimensions.
+
+The evaluator neither resumes nor modifies the target session. Its own messages and token statistics are stored in the independent evaluation session.
 
 <a id="agentic-memory-qa"></a>
 
