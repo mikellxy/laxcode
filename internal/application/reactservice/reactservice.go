@@ -193,10 +193,8 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 		return nil, err
 	}
 	original := userMsg.Clone()
-	for i := range candidate.Messages {
-		candidate.Messages[i].MemoryChunks = nil
-		candidate.Messages[i].RAGChunks = nil
-	}
+	// 两种召回 chunks 都不在此处剪枝：历史消息随会话 append-only，
+	// 保持模型前缀缓存命中；只在上下文压缩时由 compactor 统一清理。
 	if r.promptEnricher != nil {
 		chunks, enrichErr := r.promptEnricher.Enrich(ctx, p)
 		if enrichErr != nil {

@@ -107,6 +107,36 @@ func TestChatUsesEnrichedPrompt(t *testing.T) {
 	}
 }
 
+// Chat 不做每轮剪枝：历史消息上的 chunks append-only 保留，维持模型
+// 前缀缓存命中；剪枝收敛到上下文压缩（compactor）统一处理。
+func TestChatKeepsRecalledChunksAcrossTurns(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("s-rag-retained", repo)
+	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("a1")}, {msg: assistantMsg("a2")}}}
+	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
+	svc.SetPromptEnricher(promptEnricherFunc(func(_ context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
+		return []sharedkernel.MemoryChunk{{ID: "k-" + query, Content: "doc for " + query}}, nil
+	}))
+
+	if _, err := svc.Chat(context.Background(), "q1"); err != nil {
+		t.Fatalf("Chat q1: %v", err)
+	}
+	if _, err := svc.Chat(context.Background(), "q2"); err != nil {
+		t.Fatalf("Chat q2: %v", err)
+	}
+	if len(llm.lastMsgs) != 4 {
+		t.Fatalf("LLM messages = %+v", llm.lastMsgs)
+	}
+	first := llm.lastMsgs[1]
+	if len(first.RAGChunks) != 1 || first.RAGChunks[0].Content != "doc for q1" {
+		t.Fatalf("上一轮 chunks 应随历史保留：%+v", first.RAGChunks)
+	}
+	latest := llm.lastMsgs[3]
+	if len(latest.RAGChunks) != 1 || latest.RAGChunks[0].Content != "doc for q2" {
+		t.Fatalf("本轮 chunks 未挂载：%+v", latest.RAGChunks)
+	}
+}
+
 func TestRunReturnsImmediateAnswer(t *testing.T) {
 	repo := newMemRepo()
 	sess := newTestSession("s-main", repo)

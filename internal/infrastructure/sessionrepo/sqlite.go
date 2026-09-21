@@ -402,11 +402,9 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 		if err != nil {
 			return err
 		}
-		if original.Role == sharedkernel.RoleUser {
-			if err := tx.Model(&messageModel{}).Where("session_id=? AND message_type=? AND memory_generation=?", id, messageTypeMemory, snapshot.MemoryGeneration).Updates(map[string]any{"memory_chunks_json": nil, "rag_chunks_json": nil}).Error; err != nil {
-				return err
-			}
-		}
+		// 召回 chunks 随工作集消息 append-only 保留（不在新 user 消息提交时
+		// 清理旧 chunks），与 application 层一致；只在压缩推进 memory
+		// 代际时以裁剪后的快照封存。
 		if err := tx.Create(&[]messageModel{originalRow, memoryRow}).Error; err != nil {
 			return err
 		}

@@ -204,6 +204,60 @@ func TestCompressRejectsNegativeSavings(t *testing.T) {
 	}
 }
 
+func TestCompressPrunesRecalledChunksBeforeProtectedStart(t *testing.T) {
+	chunked := func(content string) sharedkernel.Message {
+		return sharedkernel.Message{
+			Role: sharedkernel.RoleUser, Content: content,
+			MemoryChunks: []sharedkernel.MemoryChunk{{ID: "m", Content: "user fact"}},
+			RAGChunks:    []sharedkernel.MemoryChunk{{ID: "r", Content: "retrieved doc"}},
+		}
+	}
+	msgs := []sharedkernel.Message{
+		{Role: sharedkernel.RoleSystem, Content: "system"},
+		chunked("old question"),
+		assistantToolTurn("g1"), {Role: sharedkernel.RoleTool, ToolCallID: "g1", Content: "r1"},
+		assistantToolTurn("g2"), {Role: sharedkernel.RoleTool, ToolCallID: "g2", Content: "r2"},
+		assistantToolTurn("g3"), {Role: sharedkernel.RoleTool, ToolCallID: "g3", Content: "r3"},
+		chunked("latest question"),
+	}
+	if protected := ProtectedStart(msgs); protected != 2 {
+		t.Fatalf("ProtectedStart = %d, want 2", protected)
+	}
+	out, saved, err := SimpleCompactor.Compress(msgs, 1)
+	if err != nil || saved <= 0 {
+		t.Fatalf("saved=%d err=%v", saved, err)
+	}
+	if len(out[1].MemoryChunks) != 0 || len(out[1].RAGChunks) != 0 {
+		t.Fatal("保护区之前的 chunks 应被回收")
+	}
+	latest := out[len(out)-1]
+	if len(latest.MemoryChunks) != 1 || len(latest.RAGChunks) != 1 {
+		t.Fatal("保护区内的当前轮 chunks 应保留")
+	}
+	if len(msgs[1].RAGChunks) != 1 {
+		t.Fatal("原始历史被修改")
+	}
+}
+
+func TestCompressKeepsLatestUserChunksWithoutToolSpans(t *testing.T) {
+	msgs := []sharedkernel.Message{
+		{Role: sharedkernel.RoleSystem, Content: "system"},
+		{Role: sharedkernel.RoleUser, Content: "q1", RAGChunks: []sharedkernel.MemoryChunk{{ID: "r", Content: "doc one"}}},
+		{Role: sharedkernel.RoleAssistant, Content: "a1"},
+		{Role: sharedkernel.RoleUser, Content: "q2", RAGChunks: []sharedkernel.MemoryChunk{{ID: "r", Content: "doc two"}}},
+	}
+	out, saved, err := SimpleCompactor.Compress(msgs, 1)
+	if err != nil || saved <= 0 {
+		t.Fatalf("saved=%d err=%v", saved, err)
+	}
+	if len(out[1].RAGChunks) != 0 {
+		t.Fatalf("无调用组时最后一条 user 消息之前的 chunks 应被回收：%+v", out[1].RAGChunks)
+	}
+	if len(out[3].RAGChunks) != 1 {
+		t.Fatal("最后一条 user 消息（当前轮）的 chunks 应保留")
+	}
+}
+
 func TestSatisfiesSessionCompactorPort(t *testing.T) {
 	var _ session.Compactor = SimpleCompactor
 }

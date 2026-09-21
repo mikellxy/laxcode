@@ -73,21 +73,6 @@ func (r *ReActService) compactContext(ctx context.Context, toolDefs []sharedkern
 		target:         target,
 		current:        current,
 	}
-	released := false
-	for i := range run.candidate.Messages {
-		if len(run.candidate.Messages[i].MemoryChunks) > 0 || len(run.candidate.Messages[i].RAGChunks) > 0 {
-			released = true
-			run.candidate.Messages[i].MemoryChunks = nil
-			run.candidate.Messages[i].RAGChunks = nil
-		}
-	}
-	if released {
-		count, err := r.LLMClient.CountInputTokens(ctx, run.candidate.Messages, toolDefs)
-		if err != nil {
-			return err
-		}
-		run.current = count
-	}
 	artifactCandidates := compactor.ArtifactCandidates(run.candidate.Messages)
 	slog.InfoContext(ctx, "context_compaction_triggered",
 		"session_id", r.Session.ID,

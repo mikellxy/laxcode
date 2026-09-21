@@ -134,7 +134,7 @@ func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
 	}
 	appendMessage(t, repo, s, &sharedkernel.Message{Role: "user", Content: "next"})
 	restored, _ = repo.GetRequestContext(ctx, s.ID)
-	if len(restored.Messages[1].MemoryChunks) != 0 || len(restored.Messages[1].RAGChunks) != 0 {
-		t.Fatal("old chunks retained")
+	if len(restored.Messages[1].MemoryChunks) != 1 || len(restored.Messages[1].RAGChunks) != 1 {
+		t.Fatal("old chunks should be retained append-only")
 	}
 }

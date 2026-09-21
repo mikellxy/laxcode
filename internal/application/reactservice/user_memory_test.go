@@ -36,11 +36,18 @@ func (m *memoryTestLLM) GenerateStream(_ context.Context, msgs []sharedkernel.Me
 	return &sharedkernel.Message{Role: "assistant", Content: "answer", FinishReason: m.reason}, nil
 }
 func (m *memoryTestLLM) CountInputTokens(_ context.Context, msgs []sharedkernel.Message, _ []sharedkernel.ToolDefinition) (int, error) {
+	// release=true 模拟“旧历史仍挂着 chunks 导致占用超高”：
+	// 当前轮（最后一条）保留 chunks 是新语义，只有两条以上消息带
+	// chunks 才算超预算；回收旧 chunks 后立即回到低占用。
 	if m.release {
+		chunked := 0
 		for _, msg := range msgs {
 			if len(msg.MemoryChunks) > 0 {
-				return 850, nil
+				chunked++
 			}
+		}
+		if chunked > 1 {
+			return 850, nil
 		}
 	}
 	return 100, nil
@@ -107,9 +114,15 @@ func TestUserMemoryChatResumeAndReclaim(t *testing.T) {
 	if service.Session.ReactTurnCount != 2 || service.Session.MemoryGeneration != 2 {
 		t.Fatal("chunk-only compaction failed")
 	}
-	for _, m := range llm.seen {
+	for i, m := range llm.seen {
+		if i == len(llm.seen)-1 {
+			if len(m.MemoryChunks) != 1 {
+				t.Fatal("current turn chunks must be kept")
+			}
+			continue
+		}
 		if len(m.MemoryChunks) > 0 {
-			t.Fatal("chunks not reclaimed")
+			t.Fatal("old chunks not reclaimed")
 		}
 	}
 	recall.fail = true
