@@ -27,10 +27,10 @@ make build
 
 ### see agentic 问答(支持 RAG 用户记忆召回)
 > [!TIP]
-> 默认不挂载工具
-> 异步从每三轮 ReAct 循环提取用户记忆，进行 chunk-vectorization 持久化
-> 用户 query 向量化召回记忆
-> 使用指定的 sqlite-vec db
+> - 默认不挂载工具
+> - 异步从每三轮 ReAct 循环提取用户记忆，进行 chunk-vectorization 持久化
+> - 用户 query 向量化召回记忆
+> - 使用指定的 sqlite-vec db
 
 ```shell
 # 指定向量化模型 & 初始化 chunk-vectorization python pipeline
@@ -69,9 +69,9 @@ npm --prefix web run dev
 
 ### agentic RAG 问答
 > [!TIP]
-> 默认不挂载工具
-> step-1: 使用项目的 knowledge-pipeline 工具进行知识文档 chunk-vectorization，并持久化到指定的 sqlite-vec db
-> step-2: 启动 laxcode agentic RAG QA，体验 RAG 知识库
+> - 默认不挂载工具
+> - step-1: 使用项目的 knowledge-pipeline 工具进行知识文档 chunk-vectorization，并持久化到指定的 sqlite-vec db
+> - step-2: 启动 laxcode agentic RAG QA，体验 RAG 知识库
 
 ```shell
 # 配置知识库使用的向量化模型

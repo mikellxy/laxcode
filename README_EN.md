@@ -27,10 +27,10 @@ make build
 
 ### SSE agentic QA (with RAG user-memory recall)
 > [!TIP]
-> No tools mounted by default
-> Asynchronously extracts user memory every three ReAct loops and persists it via chunk-vectorization
-> Vectorizes the user query to recall memories
-> Uses the specified sqlite-vec db
+> - No tools mounted by default
+> - Asynchronously extracts user memory every three ReAct loops and persists it via chunk-vectorization
+> - Vectorizes the user query to recall memories
+> - Uses the specified sqlite-vec db
 
 ```shell
 # Specify the embedding model & initialize the chunk-vectorization Python pipeline
@@ -69,9 +69,9 @@ npm --prefix web run dev
 
 ### agentic RAG QA
 > [!TIP]
-> No tools mounted by default
-> step-1: Use the project's knowledge-pipeline tool to chunk-vectorize knowledge documents and persist them into the specified sqlite-vec db
-> step-2: Start laxcode agentic RAG QA to experience the RAG knowledge base
+> - No tools mounted by default
+> - step-1: Use the project's knowledge-pipeline tool to chunk-vectorize knowledge documents and persist them into the specified sqlite-vec db
+> - step-2: Start laxcode agentic RAG QA to experience the RAG knowledge base
 
 ```shell
 # Configure the embedding model used by the knowledge base
