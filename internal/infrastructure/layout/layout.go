@@ -40,6 +40,9 @@ const (
 	// tracingLogDirName 与 tracingLogFileName 定位会话级 trace 日志。
 	tracingLogDirName  = "log"
 	tracingLogFileName = "tracing.log"
+
+	// sessionHistoryFileName 是会话不可变原始消息的 JSONL 冷备文件名。
+	sessionHistoryFileName = "history.jsonl"
 )
 
 // Root 返回工作目录下的数据根 ${workDir}/.laxcode。
@@ -67,6 +70,12 @@ func SessionRoot(workDir string) string {
 // Plan Mode 的规划文件（plan.md / design.md 等）即落在这里。
 func SessionDir(workDir, sessID string) string {
 	return filepath.Join(SessionRoot(workDir), sessID)
+}
+
+// SessionHistory 返回会话不可变原始消息的 JSONL 冷备路径
+// ${workDir}/.laxcode/.session/${sessID}/history.jsonl。
+func SessionHistory(workDir, sessID string) string {
+	return filepath.Join(SessionDir(workDir, sessID), sessionHistoryFileName)
 }
 
 // TracingLog 返回会话级 trace 日志文件

@@ -223,6 +223,7 @@ type cliConf struct {
 	KB               string `mapstructure:"kb"`
 	VectorDimensions int    `mapstructure:"vector-dim"`
 	Oneshot          bool   `mapstructure:"oneshot"`
+	Evaluate         bool   `mapstructure:"evaluate"`
 	SSE              bool   `mapstructure:"sse"`
 	QA               bool   `mapstructure:"qa"`
 	Addr             string `mapstructure:"addr"`
@@ -230,6 +231,7 @@ type cliConf struct {
 	Task             string `mapstructure:"task"`
 	TaskFile         string `mapstructure:"task-file"`
 	Session          string `mapstructure:"session"`
+	EvalSession      string `mapstructure:"eval_session"`
 	Plan             bool   `mapstructure:"plan"`
 }
 
@@ -366,19 +368,22 @@ func ParseEnvAndFile() error {
 // 参数”直接退出（老 internal/config 亦是由 main 显式调用 Parse）。
 func ParseCli() error {
 	oneshot := flag.Bool("oneshot", false, "one-shot mode: run a single task and print structured JSON to stdout")
+	evaluate := flag.Bool("evaluate", false, "evaluate an existing agent session and print a structured report to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
 	qa := flag.Bool("qa", false, "knowledge-base question answering mode; combine with -sse to serve QA over SSE")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
 	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -qa and for -sse when OPENAI_EMBEDDING_* is configured")
 	vectorDimensions := flag.Int("vector-dim", 0, "user-memory vector dimensions; required for -sse when OPENAI_EMBEDDING_* is configured")
-	workDir := flag.String("workdir", "", "working directory; required in one-shot mode, defaults to cwd otherwise")
+	workDir := flag.String("workdir", "", "working directory; required in one-shot and evaluate modes, defaults to cwd otherwise")
 	task := flag.String("task", "", "one-shot task prompt text")
 	taskFile := flag.String("task-file", "", "one-shot task prompt file path; takes precedence over -task")
 	session := flag.String("session", "", "session id to resume; empty starts a new session")
+	evalSession := flag.String("eval_session", "", "session id to evaluate; required in evaluate mode")
 	plan := flag.Bool("plan", false, "enable plan mode")
 	flag.Parse()
 
 	Cli.Set("oneshot", *oneshot)
+	Cli.Set("evaluate", *evaluate)
 	Cli.Set("sse", *sse)
 	Cli.Set("qa", *qa)
 	Cli.Set("addr", *addr)
@@ -388,6 +393,7 @@ func ParseCli() error {
 	Cli.Set("task", *task)
 	Cli.Set("task-file", *taskFile)
 	Cli.Set("session", *session)
+	Cli.Set("eval_session", *evalSession)
 	Cli.Set("plan", *plan)
 
 	if err := Cli.Unmarshal(&CliConf); err != nil {

@@ -122,6 +122,29 @@ func TestGetQASysPromptIsFocusedAndToolFree(t *testing.T) {
 	}
 }
 
+func TestGetEvaluatePrompts(t *testing.T) {
+	sys := GetEvaluateSysPrompt()
+	for _, want := range []string{"LLM-as-a-Judge", "提示注入", "工具调用合理性", "用户目标完成度", "N/A"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("evaluation system prompt missing %q", want)
+		}
+	}
+	if strings.Contains(sys, "【工作区边界】") || strings.Contains(sys, "Plan Mode") {
+		t.Errorf("evaluation system prompt must not inherit coding-agent workflows: %s", sys)
+	}
+
+	const historyPath = "/tmp/project/.laxcode/.session/sess-1/history.jsonl"
+	user := GetEvaluateUserPrompt(historyPath)
+	for _, want := range []string{historyPath, `"tool_calls"`, `"tool_call_id"`, `"token_used"`, "JSONL"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("evaluation user prompt missing %q", want)
+		}
+	}
+	if strings.Contains(user, "%s") {
+		t.Errorf("evaluation history placeholder was not rendered: %s", user)
+	}
+}
+
 func TestGetSysPromptInvalidSkillsDoNotBreakPrompt(t *testing.T) {
 	// 无效技能与有效技能混存：无效者被跳过，系统提示仍正常生成且不含无效条目
 	skills := LoadSkills(&fakeSkillSource{files: []SkillFile{

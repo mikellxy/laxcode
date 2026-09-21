@@ -15,6 +15,7 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
 ## 功能导航
 
 - [**Coding Agent CLI**](#coding-agent-cli) — 支持文件检索、编辑和命令执行的终端智能体
+- [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
 - [**Agentic 问答**](#agentic-memory-qa) — 支持 RAG 用户记忆召回与 SSE 交互页面
 - [**Agentic RAG 问答**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
 
@@ -35,6 +36,33 @@ make build
 ./bin/laxcode
 ```
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
+
+<a id="agent-session-evaluation"></a>
+
+### 评估 Coding Agent 任务
+
+当您使用 LaxCode 完成一个任务后，可以指定该任务原有的 `workdir` 和 `session_id`，让 LaxCode 以独立的 LLM-as-a-Judge 会话评估这次任务的完成效果。评估器会读取以下不可变 ReAct 消息日志：
+
+```text
+${workdir}/.laxcode/.session/${session_id}/history.jsonl
+```
+
+运行评估时，通过 `-eval_session` 传入待评估任务的 `session_id`：
+
+```shell
+./bin/laxcode \
+  -evaluate \
+  -workdir=/path/to/project \
+  -eval_session=88a74c78-a5c4-4602-bb1e-8e4a4ce0256b
+```
+
+评估报告会从 stdout 以单行 JSON 输出。其中：
+
+- `eval_session_id` 是被评估任务的 session ID。
+- `session_id` 是本次评估器新建的独立 session ID。
+- `result` 是 Markdown 格式的评估报告，包含工具调用合理性、工具调用健壮性、任务规划能力和用户目标完成度等维度的评分与证据。
+
+评估过程不会续聊或修改被评估任务的 session；评估器自己的消息和 token 统计保存在独立 session 中。
 
 <a id="agentic-memory-qa"></a>
 

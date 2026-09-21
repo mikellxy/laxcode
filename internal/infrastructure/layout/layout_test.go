@@ -64,6 +64,11 @@ func TestPaths(t *testing.T) {
 			want: filepath.Join(workDir, ".laxcode", ".session", "sess-1"),
 		},
 		{
+			name: "SessionHistory",
+			got:  SessionHistory(workDir, "sess-1"),
+			want: filepath.Join(workDir, ".laxcode", ".session", "sess-1", "history.jsonl"),
+		},
+		{
 			name: "TracingLog",
 			got:  TracingLog(workDir, "sess-1"),
 			want: filepath.Join(workDir, ".laxcode", ".session", "sess-1", "log", "tracing.log"),
@@ -108,6 +113,9 @@ func TestHierarchy(t *testing.T) {
 	}
 	if got := filepath.Dir(TracingLog(workDir, "sess-1")); got != filepath.Join(sessDir, "log") {
 		t.Errorf("TracingLog 的所在目录 = %q, want %q", got, filepath.Join(sessDir, "log"))
+	}
+	if got := filepath.Dir(SessionHistory(workDir, "sess-1")); got != sessDir {
+		t.Errorf("SessionHistory 的所在目录 = %q, want %q", got, sessDir)
 	}
 }
 

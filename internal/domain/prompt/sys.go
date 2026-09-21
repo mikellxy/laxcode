@@ -15,6 +15,12 @@ var planModePrompt string
 //go:embed tmpl/qa.md
 var qaPrompt string
 
+//go:embed tmpl/evaluate_sys.md
+var evaluateSysPrompt string
+
+//go:embed tmpl/evaluate_user.md
+var evaluateUserPrompt string
+
 // PlanMode 是 Plan Mode 段的渲染入参。SessionDir 是本次会话规划文件
 // （plan.md / design.md 等）的落盘目录，由组合根按磁盘布局算好后注入
 // （见 infrastructure/layout.SessionDir），领域层不再自行拼路径。
@@ -52,4 +58,17 @@ func GetSysPrompt(workDir string, skills []Skill, plan *PlanMode) string {
 // not include coding-agent, skill or plan-mode instructions.
 func GetQASysPrompt() string {
 	return strings.TrimSpace(qaPrompt)
+}
+
+// GetEvaluateSysPrompt returns the dedicated LLM-as-a-judge system prompt. It
+// deliberately does not inherit the coding-agent personality, skills or plan
+// workflow: the evaluator must inspect an existing run rather than continue it.
+func GetEvaluateSysPrompt() string {
+	return strings.TrimSpace(evaluateSysPrompt)
+}
+
+// GetEvaluateUserPrompt renders the evaluation request with the immutable
+// JSONL history path selected by the CLI.
+func GetEvaluateUserPrompt(historyPath string) string {
+	return strings.TrimSpace(fmt.Sprintf(evaluateUserPrompt, historyPath))
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/cmd/run_cli"
+	"github.com/mikellxy/laxcode/cmd/run_evaluate"
 	"github.com/mikellxy/laxcode/cmd/run_oneshot"
 	"github.com/mikellxy/laxcode/cmd/run_qa"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
@@ -63,10 +64,15 @@ func main() {
 	}
 	defer shutdownRouter()
 
-	// 模式分发，优先级 oneshot > sse > qa > cli：oneshot 保留原有 os.Exit 契约，
-	// sse 起阻塞式 HTTP 服务（同时指定 qa 时由 run_sse 装配知识库 QA），
-	// 单独 qa 进入终端知识库问答，其余进入默认 TUI 交互模式。
+	// 模式分发，优先级 evaluate > oneshot > sse > qa > cli：两个单次运行模式
+	// 保留 os.Exit 契约；sse 起阻塞式 HTTP 服务（同时指定 qa 时由 run_sse
+	// 装配知识库 QA），单独 qa 进入终端知识库问答，其余进入默认 TUI 交互模式。
 	switch {
+	case config.CliConf.Evaluate:
+		exitCode := run_evaluate.Run()
+		shutdownRouter()
+		_ = logFile.Close() // os.Exit 不执行 defer，显式关闭。
+		os.Exit(exitCode)
 	case config.CliConf.Oneshot:
 		// one-shot：跑单个任务、结果 JSON 直写 stdout，Run 返回进程 exit code
 		// （0 成功 / 1 运行失败 / 2 用法错误）。经 os.Exit 映射；Run 内部的

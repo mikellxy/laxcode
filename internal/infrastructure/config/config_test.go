@@ -273,6 +273,7 @@ func swapCliGlobals(t *testing.T, args ...string) {
 func TestParseCli(t *testing.T) {
 	swapCliGlobals(t,
 		"-oneshot=true",
+		"-evaluate=true",
 		"-sse=true",
 		"-qa=true",
 		"-kb", filepath.Join(t.TempDir(), "vectors.sqlite"),
@@ -282,6 +283,7 @@ func TestParseCli(t *testing.T) {
 		"-task", "do something",
 		"-task-file", "/tmp/t.txt",
 		"-session", "sess-9",
+		"-eval_session", "sess-eval",
 		"-plan=true",
 	)
 
@@ -291,8 +293,12 @@ func TestParseCli(t *testing.T) {
 	if !CliConf.Oneshot {
 		t.Error("oneshot 应为 true")
 	}
+	if !CliConf.Evaluate {
+		t.Error("evaluate 应为 true")
+	}
 	if CliConf.WorkDir != "/tmp/proj" || CliConf.Task != "do something" ||
-		CliConf.TaskFile != "/tmp/t.txt" || CliConf.Session != "sess-9" {
+		CliConf.TaskFile != "/tmp/t.txt" || CliConf.Session != "sess-9" ||
+		CliConf.EvalSession != "sess-eval" {
 		t.Errorf("字符串参数解析不符：%+v", CliConf)
 	}
 	if !CliConf.Plan {
@@ -317,10 +323,10 @@ func TestParseCliDefaults(t *testing.T) {
 	if err := ParseCli(); err != nil {
 		t.Fatalf("ParseCli with no args: %v", err)
 	}
-	if CliConf.Oneshot || CliConf.Plan || CliConf.SSE || CliConf.QA {
+	if CliConf.Oneshot || CliConf.Evaluate || CliConf.Plan || CliConf.SSE || CliConf.QA {
 		t.Errorf("缺省布尔参数应全为 false，实际 %+v", CliConf)
 	}
-	if CliConf.WorkDir != "" || CliConf.Task != "" || CliConf.Session != "" {
+	if CliConf.WorkDir != "" || CliConf.Task != "" || CliConf.Session != "" || CliConf.EvalSession != "" {
 		t.Errorf("缺省字符串参数应为空，实际 %+v", CliConf)
 	}
 	if CliConf.Addr != DefaultSSEAddr {
