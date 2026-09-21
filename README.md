@@ -4,14 +4,25 @@
 
 </div>
 
-# LaxCode
+<p align="center">
+  <img src="./laxcode.jpg" alt="LaxCode" width="360" height="360">
+</p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
 
 LaxCode 是一个用 Go 实现的轻量 AI Agent。
 
+## 功能导航
+
+- [**Coding Agent CLI**](#coding-agent-cli) — 支持文件检索、编辑和命令执行的终端智能体
+- [**Agentic 问答**](#agentic-memory-qa) — 支持 RAG 用户记忆召回与 SSE 交互页面
+- [**Agentic RAG 问答**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
+
 ## 快速开始
-### coding agent cli
+
+<a id="coding-agent-cli"></a>
+
+### Coding Agent CLI
 > [!TIP]
 > 默认挂载工具：`grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
 
@@ -25,7 +36,9 @@ make build
 ```
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
 
-### see agentic 问答(支持 RAG 用户记忆召回)
+<a id="agentic-memory-qa"></a>
+
+### Agentic 问答(支持 RAG 用户记忆召回,提供SSE页面)
 > [!TIP]
 > - 默认不挂载工具
 > - 异步从每三轮 ReAct 循环提取用户记忆，进行 chunk-vectorization 持久化
@@ -67,7 +80,9 @@ npm --prefix web install
 npm --prefix web run dev
 ```
 
-### agentic RAG 问答
+<a id="agentic-rag-qa"></a>
+
+### Agentic RAG 问答(提供SSE页面)
 > [!TIP]
 > - 默认不挂载工具
 > - step-1: 使用项目的 knowledge-pipeline 工具进行知识文档 chunk-vectorization，并持久化到指定的 sqlite-vec db
@@ -103,5 +118,15 @@ mkdir -p /tmp/laxcode-qa/workdir
   -qa \
   -kb=/tmp/laxcode-qa/kb.sqlite \
   -workdir=/tmp/laxcode-qa/workdir \
+  -vector-dim=1024 \
   -addr=127.0.0.1:8080
+```
+```shell
+# 另开一个终端，启动 React 前端（http://127.0.0.1:5173）
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web dev
+
+# 或使用 npm
+npm --prefix web install
+npm --prefix web run dev
 ```

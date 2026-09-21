@@ -4,14 +4,25 @@
 
 </div>
 
-# LaxCode
+<p align="center">
+  <img src="./laxcode.jpg" alt="LaxCode" width="360" height="360">
+</p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
 
 LaxCode is a lightweight AI Agent implemented in Go.
 
+## Feature Navigation
+
+- [**Coding Agent CLI**](#coding-agent-cli) — A terminal agent for file search, editing, and command execution
+- [**Agentic QA**](#agentic-memory-qa) — Supports RAG user-memory recall and an SSE interaction page
+- [**Agentic RAG QA**](#agentic-rag-qa) — Supports knowledge-base retrieval and an SSE interaction page
+
 ## Quick Start
-### coding agent cli
+
+<a id="coding-agent-cli"></a>
+
+### Coding Agent CLI
 > [!TIP]
 > Default mounted tools: `grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
 
@@ -25,7 +36,9 @@ make build
 ```
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
 
-### SSE agentic QA (with RAG user-memory recall)
+<a id="agentic-memory-qa"></a>
+
+### Agentic QA (supports RAG user-memory recall and provides an SSE page)
 > [!TIP]
 > - No tools mounted by default
 > - Asynchronously extracts user memory every three ReAct loops and persists it via chunk-vectorization
@@ -67,7 +80,9 @@ npm --prefix web install
 npm --prefix web run dev
 ```
 
-### agentic RAG QA
+<a id="agentic-rag-qa"></a>
+
+### Agentic RAG QA (provides an SSE page)
 > [!TIP]
 > - No tools mounted by default
 > - step-1: Use the project's knowledge-pipeline tool to chunk-vectorize knowledge documents and persist them into the specified sqlite-vec db
@@ -99,7 +114,19 @@ export OPENAI_MODEL_NAME=gpt-4o-mini
 
 make build
 mkdir -p /tmp/laxcode-qa/workdir
-./bin/laxcode -qa \
+./bin/laxcode -sse \
+  -qa \
   -kb=/tmp/laxcode-qa/kb.sqlite \
-  -workdir=/tmp/laxcode-qa/workdir
+  -workdir=/tmp/laxcode-qa/workdir \
+  -vector-dim=1024 \
+  -addr=127.0.0.1:8080
+```
+```shell
+# In another terminal, start the React frontend (http://127.0.0.1:5173)
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web dev
+
+# or use npm
+npm --prefix web install
+npm --prefix web run dev
 ```
