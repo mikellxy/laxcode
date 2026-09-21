@@ -18,7 +18,10 @@ func swapConfigGlobals(t *testing.T) {
 	prevConf := EnvAndFileConf
 	EnvOrFile = viper.New()
 	EnvAndFileConf = envAndFileConf{}
-	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"} {
+	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME",
+		"OPENAI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_MODEL_NAME",
+		"OPENAI_COMPACTION_API_KEY", "OPENAI_COMPACTION_BASE_URL", "OPENAI_COMPACTION_MODEL_NAME",
+		"OPENAI_CONTEXT_WINDOW", "OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "LLM_ROUTER_ADDR"} {
 		t.Setenv(key, "")
 	}
 	t.Cleanup(func() {
@@ -31,7 +34,7 @@ func setEnvModel(t *testing.T, model string) {
 	t.Helper()
 	t.Setenv("OPENAI_API_KEY", "sk-env-key")
 	t.Setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
-	t.Setenv("OPENAI_MODEL", model)
+	t.Setenv("OPENAI_MODEL_NAME", model)
 }
 
 func modelSettings(provider, model string) string {
@@ -62,9 +65,9 @@ func TestParseEnvAndFileFromEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	setEnvModel(t, "gpt-env")
-	t.Setenv("EMBBED_OPENAI_API_KEY", "embed-key")
-	t.Setenv("EMBBED_OPENAI_BASE_URL", "https://embed.example.com/v1")
-	t.Setenv("EMBBED_OPENAI_MODEL", "embed-model")
+	t.Setenv("OPENAI_EMBEDDING_API_KEY", "embed-key")
+	t.Setenv("OPENAI_EMBEDDING_BASE_URL", "https://embed.example.com/v1")
+	t.Setenv("OPENAI_EMBEDDING_MODEL_NAME", "embed-model")
 
 	if err := ParseEnvAndFile(); err != nil {
 		t.Fatalf("ParseEnvAndFile: %v", err)
@@ -79,7 +82,7 @@ func TestParseEnvAndFileFromEnv(t *testing.T) {
 	if EnvAndFileConf.EmbedOpenaiApiKey != "embed-key" ||
 		EnvAndFileConf.EmbedOpenaiBaseUrl != "https://embed.example.com/v1" ||
 		EnvAndFileConf.EmbedOpenaiModel != "embed-model" {
-		t.Errorf("embedding config should come from EMBBED_* env vars: %+v", EnvAndFileConf)
+		t.Errorf("embedding config should come from OPENAI_EMBEDDING_* env vars: %+v", EnvAndFileConf)
 	}
 	if EnvAndFileConf.OpenaiContextWindow != DefaultContextWindow ||
 		EnvAndFileConf.OpenaiMaxOutputTokens != DefaultMaxOutputTokens {
@@ -220,7 +223,7 @@ func TestParseEnvAndFileCompactionProviderOverridesAndFallbacks(t *testing.T) {
 	setEnvModel(t, "main-model")
 	t.Setenv("OPENAI_CONTEXT_WINDOW", "100000")
 	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "10000")
-	t.Setenv("COMPACTION_OPENAI_MODEL", "summary-model")
+	t.Setenv("OPENAI_COMPACTION_MODEL_NAME", "summary-model")
 	t.Setenv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "2000")
 
 	if err := ParseEnvAndFile(); err != nil {
@@ -317,5 +320,64 @@ func TestParseCliDefaults(t *testing.T) {
 	}
 	if CliConf.Addr != DefaultSSEAddr {
 		t.Errorf("缺省 addr 应为 %q，实际 %q", DefaultSSEAddr, CliConf.Addr)
+	}
+}
+
+func TestAuxiliaryModelSources(t *testing.T) {
+	for _, kind := range []string{"EMBEDDING", "COMPACTION"} {
+		for _, scenario := range []string{"file", "partial env", "full env", "invalid reference", "unset"} {
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				swapConfigGlobals(t)
+				home := t.TempDir()
+				t.Setenv("HOME", home)
+				ref := "aux:small"
+				if scenario == "invalid reference" || scenario == "full env" {
+					ref = "missing:model"
+				}
+				if scenario == "unset" {
+					ref = ""
+				}
+				writeSettings(t, home, fmt.Sprintf(`{
+					"MODEL":"main:chat", %q:%q,
+					"PROVIDER_LIST":[
+						{"PROVIDER_NAME":"main","OPENAI_API_KEY":"main-key","OPENAI_BASE_URL":"https://main.example/v1","MODEL_LIST":[{"MODEL_NAME":"chat"}]},
+						{"PROVIDER_NAME":"aux","OPENAI_API_KEY":"aux-key","OPENAI_BASE_URL":"https://aux.example/v1","MODEL_LIST":[{"MODEL_NAME":"small"}]}
+					]
+				}`, kind+"_MODEL", ref))
+				want := []string{"aux-key", "https://aux.example/v1", "small"}
+				if scenario == "partial env" || scenario == "full env" {
+					t.Setenv("OPENAI_"+kind+"_MODEL_NAME", "env-model")
+					want[2] = "env-model"
+				}
+				if scenario == "full env" {
+					t.Setenv("OPENAI_"+kind+"_API_KEY", "env-key")
+					t.Setenv("OPENAI_"+kind+"_BASE_URL", "https://env.example/v1")
+					want[0], want[1] = "env-key", "https://env.example/v1"
+				}
+				if scenario == "unset" {
+					want = []string{"", "", ""}
+					if kind == "COMPACTION" {
+						want = []string{"main-key", "https://main.example/v1", "chat"}
+					}
+				}
+				err := ParseEnvAndFile()
+				if scenario == "invalid reference" {
+					if err == nil {
+						t.Fatal("expected invalid model reference error")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := []string{EnvAndFileConf.EmbedOpenaiApiKey, EnvAndFileConf.EmbedOpenaiBaseUrl, EnvAndFileConf.EmbedOpenaiModel}
+				if kind == "COMPACTION" {
+					got = []string{EnvAndFileConf.CompactionOpenaiApiKey, EnvAndFileConf.CompactionOpenaiBaseUrl, EnvAndFileConf.CompactionOpenaiModel}
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("got %v, want %v", got, want)
+				}
+			})
+		}
 	}
 }

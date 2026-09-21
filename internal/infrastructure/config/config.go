@@ -35,22 +35,24 @@ type ResolvedModel struct {
 }
 
 type envAndFileConf struct {
-	Model        string           `mapstructure:"MODEL"`
-	ProviderList []ProviderConfig `mapstructure:"PROVIDER_LIST"`
+	EmbeddingModel  string           `mapstructure:"EMBEDDING_MODEL"`
+	CompactionModel string           `mapstructure:"COMPACTION_MODEL"`
+	Model           string           `mapstructure:"MODEL"`
+	ProviderList    []ProviderConfig `mapstructure:"PROVIDER_LIST"`
 
 	// Openai* 是由 Model 解析出的当前运行时有效配置，不直接从配置文件反序列化。
 	OpenaiApiKey  string `mapstructure:"-"`
 	OpenaiBaseUrl string `mapstructure:"-"`
 	OpenaiModel   string `mapstructure:"-"`
 
-	EmbedOpenaiApiKey               string `mapstructure:"OPENAI_EMBEDDING_API_KEY"`
-	EmbedOpenaiBaseUrl              string `mapstructure:"OPENAI_EMBEDDING_BASE_URL"`
-	EmbedOpenaiModel                string `mapstructure:"OPENAI_EMBEDDING_MODEL_NAME"`
+	EmbedOpenaiApiKey               string `mapstructure:"-"`
+	EmbedOpenaiBaseUrl              string `mapstructure:"-"`
+	EmbedOpenaiModel                string `mapstructure:"-"`
 	OpenaiContextWindow             int    `mapstructure:"OPENAI_CONTEXT_WINDOW"`
 	OpenaiMaxOutputTokens           int    `mapstructure:"OPENAI_MAX_OUTPUT_TOKENS"`
-	CompactionOpenaiApiKey          string `mapstructure:"COMPACTION_OPENAI_API_KEY"`
-	CompactionOpenaiBaseUrl         string `mapstructure:"COMPACTION_OPENAI_BASE_URL"`
-	CompactionOpenaiModel           string `mapstructure:"COMPACTION_OPENAI_MODEL"`
+	CompactionOpenaiApiKey          string `mapstructure:"-"`
+	CompactionOpenaiBaseUrl         string `mapstructure:"-"`
+	CompactionOpenaiModel           string `mapstructure:"-"`
 	CompactionOpenaiContextWindow   int    `mapstructure:"COMPACTION_OPENAI_CONTEXT_WINDOW"`
 	CompactionOpenaiMaxOutputTokens int    `mapstructure:"COMPACTION_OPENAI_MAX_OUTPUT_TOKENS"`
 	LlmRouterAddr                   string `mapstructure:"LLM_ROUTER_ADDR"`
@@ -168,6 +170,32 @@ func (c *envAndFileConf) setActiveModel(ref string) error {
 	return nil
 }
 
+// resolveAuxiliaryModel 从模型目录解析文件引用，再逐项应用非空环境变量。
+// 完整的环境配置无需依赖文件引用；未配置压缩模型时继承主模型。
+func (c *envAndFileConf) resolveAuxiliaryModel(key, ref, prefix string, fallback ResolvedModel) (ResolvedModel, error) {
+	apiKey := strings.TrimSpace(os.Getenv(prefix + "API_KEY"))
+	baseURL := strings.TrimSpace(os.Getenv(prefix + "BASE_URL"))
+	model := strings.TrimSpace(os.Getenv(prefix + "MODEL_NAME"))
+	resolved := fallback
+	if ref != "" && (apiKey == "" || baseURL == "" || model == "") {
+		var err error
+		resolved, err = c.resolveModel(ref)
+		if err != nil {
+			return ResolvedModel{}, fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	if apiKey != "" {
+		resolved.OpenaiApiKey = apiKey
+	}
+	if baseURL != "" {
+		resolved.OpenaiBaseUrl = baseURL
+	}
+	if model != "" {
+		resolved.UpstreamModel = model
+	}
+	return resolved, nil
+}
+
 // ResolveModel 将 provider:model 引用解析为创建 provider/client 所需的运行时配置。
 func ResolveModel(ref string) (ResolvedModel, error) { return EnvAndFileConf.resolveModel(ref) }
 
@@ -228,14 +256,8 @@ func ParseEnvAndFile() error {
 	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", DefaultContextWindow)
 	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", DefaultMaxOutputTokens)
 	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
-	EnvOrFile.BindEnv("OPENAI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_API_KEY")
-	EnvOrFile.BindEnv("OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_BASE_URL")
-	EnvOrFile.BindEnv("OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_MODEL_NAME")
 	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
-	EnvOrFile.BindEnv("COMPACTION_OPENAI_API_KEY", "COMPACTION_OPENAI_API_KEY")
-	EnvOrFile.BindEnv("COMPACTION_OPENAI_BASE_URL", "COMPACTION_OPENAI_BASE_URL")
-	EnvOrFile.BindEnv("COMPACTION_OPENAI_MODEL", "COMPACTION_OPENAI_MODEL")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("LLM_ROUTER_ADDR", "LLM_ROUTER_ADDR")
@@ -257,7 +279,7 @@ func ParseEnvAndFile() error {
 		}
 	}
 	if envValues != 0 && envValues != 3 {
-		return errors.New("OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL must be set together")
+		return errors.New("OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL_NAME must be set together")
 	}
 	if envValues == 3 {
 		for _, provider := range EnvAndFileConf.ProviderList {
@@ -282,16 +304,21 @@ func ParseEnvAndFile() error {
 	if err := EnvAndFileConf.setActiveModel(EnvAndFileConf.Model); err != nil {
 		return err
 	}
-	// 压缩 provider 默认继承主 provider；通常只需配置一个更便宜的模型。
-	if EnvAndFileConf.CompactionOpenaiApiKey == "" {
-		EnvAndFileConf.CompactionOpenaiApiKey = EnvAndFileConf.OpenaiApiKey
+	embedding, err := EnvAndFileConf.resolveAuxiliaryModel("EMBEDDING_MODEL", EnvAndFileConf.EmbeddingModel, "OPENAI_EMBEDDING_", ResolvedModel{})
+	if err != nil {
+		return err
 	}
-	if EnvAndFileConf.CompactionOpenaiBaseUrl == "" {
-		EnvAndFileConf.CompactionOpenaiBaseUrl = EnvAndFileConf.OpenaiBaseUrl
+	EnvAndFileConf.EmbedOpenaiApiKey = embedding.OpenaiApiKey
+	EnvAndFileConf.EmbedOpenaiBaseUrl = embedding.OpenaiBaseUrl
+	EnvAndFileConf.EmbedOpenaiModel = embedding.UpstreamModel
+	mainModel, _ := EnvAndFileConf.resolveModel(EnvAndFileConf.Model)
+	compaction, err := EnvAndFileConf.resolveAuxiliaryModel("COMPACTION_MODEL", EnvAndFileConf.CompactionModel, "OPENAI_COMPACTION_", mainModel)
+	if err != nil {
+		return err
 	}
-	if EnvAndFileConf.CompactionOpenaiModel == "" {
-		EnvAndFileConf.CompactionOpenaiModel = EnvAndFileConf.OpenaiModel
-	}
+	EnvAndFileConf.CompactionOpenaiApiKey = compaction.OpenaiApiKey
+	EnvAndFileConf.CompactionOpenaiBaseUrl = compaction.OpenaiBaseUrl
+	EnvAndFileConf.CompactionOpenaiModel = compaction.UpstreamModel
 	if EnvAndFileConf.CompactionOpenaiContextWindow == 0 {
 		EnvAndFileConf.CompactionOpenaiContextWindow = EnvAndFileConf.OpenaiContextWindow
 	}

@@ -42,17 +42,16 @@ touch ~/.laxcode/settings.json
       "OPENAI_BASE_URL": "https://api.openai.com/v1",
       "MODEL_LIST": [
         {"MODEL_NAME": "gpt-4o-mini"},
-        {"MODEL_NAME": "gpt-4.1"}
+        {"MODEL_NAME": "gpt-4.1"},
+        {"MODEL_NAME": "text-embedding-3-small"}
       ]
     }
   ],
   "OPENAI_CONTEXT_WINDOW": 128000,
   "OPENAI_MAX_OUTPUT_TOKENS": 16384,
-  "EMBBED_OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
-  "EMBBED_OPENAI_BASE_URL": "https://api.openai.com/v1",
-  "EMBBED_OPENAI_MODEL": "text-embedding-3-small",
+  "EMBEDDING_MODEL": "openai:text-embedding-3-small",
   "LLM_ROUTER_ADDR": "127.0.0.1:0",
-  "COMPACTION_OPENAI_MODEL": "gpt-4o-mini",
+  "COMPACTION_MODEL": "openai:gpt-4o-mini",
   "COMPACTION_OPENAI_CONTEXT_WINDOW": 128000,
   "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS": 4096
 }
@@ -61,21 +60,26 @@ touch ~/.laxcode/settings.json
 ```shell
 export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
 export OPENAI_BASE_URL=https://api.openai.com/v1     # 任意 OpenAI 兼容端点
-export OPENAI_MODEL=gpt-4o-mini
+export OPENAI_MODEL_NAME=gpt-4o-mini
 export OPENAI_CONTEXT_WINDOW=128000
 export OPENAI_MAX_OUTPUT_TOKENS=16384
-# QA 模式向量化模型；变量名按现有约定使用 EMBBED 前缀
-export EMBBED_OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export EMBBED_OPENAI_BASE_URL=https://api.openai.com/v1
-export EMBBED_OPENAI_MODEL=text-embedding-3-small
+# QA 模式向量化模型
+export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
+export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
 # 默认 127.0.0.1:0；需要从外部访问路由器时改成固定端口
 export LLM_ROUTER_ADDR=127.0.0.1:18080
 # 压缩 provider 的未配置项会继承主 provider
-export COMPACTION_OPENAI_MODEL=gpt-4o-mini
+export OPENAI_COMPACTION_API_KEY=sk-xxxxxxxxxxxxxxxx
+export OPENAI_COMPACTION_BASE_URL=https://api.openai.com/v1
+export OPENAI_COMPACTION_MODEL_NAME=gpt-4o-mini
 ```
-`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 必须同时设置。三者完整时会作为
+`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL_NAME` 必须同时设置。三者完整时会作为
 `env_provider:env_model` 追加到模型目录，并覆盖配置文件中的当前 `MODEL`；上游请求仍使用
-`OPENAI_MODEL` 的真实值。
+`OPENAI_MODEL_NAME` 的真实值。
+
+`EMBEDDING_MODEL` 和 `COMPACTION_MODEL` 使用 `provider:model` 引用 `PROVIDER_LIST`。
+对应的 `OPENAI_EMBEDDING_*`、`OPENAI_COMPACTION_*` 非空环境变量逐项优先于文件配置；完整三元组无需文件引用。未配置压缩模型时继承主模型。
 
 ### 1.3 终端交互模式
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 700px;">  
@@ -292,7 +296,7 @@ LaxCode 在 ReAct 循环中完整实现 openai function call 协议。启动时�
 
 ## 4. 上下文压缩
 
-每次调用 LLM 前，按当前模型预算计算下一请求占用，包含消息与工具定义。触发阈值仍是可用输入容量的 80%，压缩目标仍是 60%。兼容 provider 不支持远端计数时使用本地估算，估算不等同于精确计数。系统先执行确定性的 `simpleStrategy`；本地压缩仍无法达到目标时，才调用 `COMPACTION_OPENAI_*` 配置的 provider 生成结构化摘要。压缩 provider 的未配置项继承主 provider。
+每次调用 LLM 前，按当前模型预算计算下一请求占用，包含消息与工具定义。触发阈值仍是可用输入容量的 80%，压缩目标仍是 60%。兼容 provider 不支持远端计数时使用本地估算，估算不等同于精确计数。系统先执行确定性的 `simpleStrategy`；本地压缩仍无法达到目标时，才调用 `COMPACTION_MODEL` 或 `OPENAI_COMPACTION_*` 配置的 provider 生成结构化摘要。压缩 provider 的未配置项继承主 provider。
 
 - 一条 assistant 发起的全部工具调用及其结果组成一个 `ToolCallGroup`。从最近第三组的起点到历史末尾，所有消息保持原样，区间内的 assistant 消息可以超过三条；未完成或跨界调用组使保护区向前扩展。
 - 保护区之前的大工具输出先存入 artifact，再替换为带 `artifact_id` 和 `read_artifact` 调用提示的引用。读取工具按 Unicode 字符偏移分页，单次最多 4000 字符，校验内容摘要并限制在当前会话内。

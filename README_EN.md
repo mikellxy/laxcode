@@ -34,16 +34,24 @@ touch ~/.laxcode/settings.json
 Write the following into the config file
 ```json
 {
-  "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
-  "OPENAI_BASE_URL": "https://api.openai.com/v1", # any OpenAI-compatible endpoint
-  "OPENAI_MODEL": "gpt-4o-mini",
+  "MODEL": "openai:gpt-4o-mini",
+  "PROVIDER_LIST": [
+    {
+      "PROVIDER_NAME": "openai",
+      "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
+      "OPENAI_BASE_URL": "https://api.openai.com/v1",
+      "MODEL_LIST": [
+        {"MODEL_NAME": "gpt-4o-mini"},
+        {"MODEL_NAME": "gpt-4.1"},
+        {"MODEL_NAME": "text-embedding-3-small"}
+      ]
+    }
+  ],
   "OPENAI_CONTEXT_WINDOW": 128000,
   "OPENAI_MAX_OUTPUT_TOKENS": 16384,
-  "EMBBED_OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxx",
-  "EMBBED_OPENAI_BASE_URL": "https://api.openai.com/v1",
-  "EMBBED_OPENAI_MODEL": "text-embedding-3-small",
+  "EMBEDDING_MODEL": "openai:text-embedding-3-small",
   "LLM_ROUTER_ADDR": "127.0.0.1:0",
-  "COMPACTION_OPENAI_MODEL": "gpt-4o-mini",
+  "COMPACTION_MODEL": "openai:gpt-4o-mini",
   "COMPACTION_OPENAI_CONTEXT_WINDOW": 128000,
   "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS": 4096
 }
@@ -52,18 +60,21 @@ Write the following into the config file
 ```shell
 export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
 export OPENAI_BASE_URL=https://api.openai.com/v1     # any OpenAI-compatible endpoint
-export OPENAI_MODEL=gpt-4o-mini
+export OPENAI_MODEL_NAME=gpt-4o-mini
 export OPENAI_CONTEXT_WINDOW=128000
 export OPENAI_MAX_OUTPUT_TOKENS=16384
-# Embedding provider for QA mode; the configured prefix is intentionally EMBBED
-export EMBBED_OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export EMBBED_OPENAI_BASE_URL=https://api.openai.com/v1
-export EMBBED_OPENAI_MODEL=text-embedding-3-small
+# Embedding provider for QA mode
+export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
+export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export OPENAI_EMBEDDING_MODEL_NAME_NAME=text-embedding-3-small
 # Defaults to 127.0.0.1:0; use a fixed port when external access is needed
 export LLM_ROUTER_ADDR=127.0.0.1:18080
 # Omitted compaction-provider settings inherit the main provider
-export COMPACTION_OPENAI_MODEL=gpt-4o-mini
+export COMPACTION_OPENAI_MODEL_NAME=gpt-4o-mini
 ```
+
+`EMBEDDING_MODEL` and `COMPACTION_MODEL` reference `PROVIDER_LIST` using `provider:model`.
+Nonempty `OPENAI_EMBEDDING_*` and `OPENAI_COMPACTION_*` environment variables override individual file values. A complete environment triple needs no file reference. Compaction defaults to the main model when unset.
 
 ### 1.3 Interactive Terminal Mode
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: auto;">  
@@ -282,7 +293,7 @@ Runs `rg` directly without a shell. Returns file paths and matching line numbers
 - A sub-agent can have its own persona, system prompt and permission scope, decoupled from the main agent's responsibilities
 
 ## 4. Context Compaction
-The trigger and target remain 80% and 60% of available input capacity. Requests include messages and tool definitions in token counting; compatible providers may fall back to a local estimate when remote counting is unavailable. The deterministic `simpleStrategy` runs first. Only when local compaction cannot reach the target does the provider configured by `COMPACTION_OPENAI_*` generate a structured summary; omitted compaction settings inherit the main provider.
+The trigger and target remain 80% and 60% of available input capacity. Requests include messages and tool definitions in token counting; compatible providers may fall back to a local estimate when remote counting is unavailable. The deterministic `simpleStrategy` runs first. Only when local compaction cannot reach the target does the provider configured by `COMPACTION_MODEL` or `OPENAI_COMPACTION_*` generate a structured summary; omitted compaction settings inherit the main provider.
 
 - A `ToolCallGroup` contains one assistant's tool calls and all matching results. Every message from the third most recent group's start through the end is protected, including additional ordinary assistant and user messages. Pending or crossing groups extend that interval.
 - Older large tool outputs are archived before being replaced with `read_artifact` references. The session-scoped tool verifies the content digest and reads pages of up to 4000 Unicode characters using offsets.
