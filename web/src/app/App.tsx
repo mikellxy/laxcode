@@ -1,0 +1,24 @@
+import { useMemo, useState } from "react";
+import { Menu, PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
+import { getOrCreateGuestID } from "../features/identity/guest";
+import { useWorkspace } from "../hooks/use-workspace";
+import { historyToMessage } from "../types/chat";
+import { SessionTabs } from "../components/session-tabs/SessionTabs";
+import { MessageList } from "../components/message-list/MessageList";
+import { ChatComposer } from "../components/chat-composer/ChatComposer";
+
+export function App() {
+  const userID = useMemo(getOrCreateGuestID, []); const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const messages = [...workspace.historyMessages.map(historyToMessage), ...workspace.stream.messages];
+  const selected = workspace.allSessions.find((session) => session.session_id === workspace.selectedID);
+  if (workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{workspace.sessions.error instanceof Error ? workspace.sessions.error.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => workspace.sessions.refetch()}>重新连接</button></div>;
+  return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarOpen ? "mobile-sidebar-open" : ""}`}>
+    <div className="mobile-backdrop" onClick={() => setSidebarOpen(false)} />
+    <SessionTabs sessions={workspace.allSessions} selectedID={workspace.selectedID} hasMore={Boolean(workspace.sessions.hasNextPage)} loadingMore={workspace.sessions.isFetchingNextPage} creating={workspace.create.isPending} onSelect={(id) => { workspace.select(id); setSidebarOpen(false); }} onCreate={() => { workspace.create.mutate(); setSidebarOpen(false); }} onLoadMore={() => workspace.sessions.fetchNextPage()} />
+    <section className="workspace">
+      <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div><strong>{selected?.title || "新会话"}</strong><small>{workspace.stream.running ? <><i className="working-dot" />正在执行</> : "准备就绪"}</small></div><span className="session-code">{workspace.selectedID?.slice(0, 8)}</span></header>
+      <MessageList messages={messages} hasMore={Boolean(workspace.history.hasNextPage)} loading={workspace.history.isFetchingNextPage} initialLoading={workspace.history.isLoading} error={workspace.stream.error} retryAction={workspace.stream.retryAction} retrying={workspace.stream.running} onRetry={workspace.retry} onLoadMore={() => workspace.history.fetchNextPage()} />
+      <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedID || workspace.history.isLoading} onSend={workspace.send} onCancel={workspace.cancel} />
+    </section>
+  </div>;
+}

@@ -30,6 +30,19 @@ const (
 	EventError     = "error"
 )
 
+const (
+	ErrorCodeInvalidRequest  = "INVALID_REQUEST"
+	ErrorCodeSessionBusy     = "SESSION_BUSY"
+	ErrorCodeAssemblyFailed  = "AGENT_ASSEMBLY_FAILED"
+	ErrorCodeChatFailed      = "CHAT_FAILED"
+	ErrorCodeResumeFailed    = "RESUME_FAILED"
+	ErrorCodeNothingToResume = "NOTHING_TO_RESUME"
+	ErrorCodeInternal        = "INTERNAL_ERROR"
+
+	RetryActionResume = "resume"
+	RetryActionResend = "resend"
+)
+
 // StartData 是 start 帧载荷：装配成功后立即回传实际会话 id。新建会话（请求
 // session_id 为空）时，客户端据此在后续请求里带回同一 id 续聊。
 type StartData struct {
@@ -60,7 +73,9 @@ type DoneData struct {
 // 因为响应头已发送、HTTP 状态码无法再回退（流开始前的用法错误仍走普通 JSON +
 // 状态码，见 handler）。
 type ErrorData struct {
-	Message string `json:"message"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	RetryAction string `json:"retry_action,omitempty"`
 }
 
 // sseWriter 把事件序列化为 SSE 帧写入 ResponseWriter 并立即 Flush，使客户端

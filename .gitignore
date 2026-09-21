@@ -12,3 +12,5 @@ scripts
 
 articles/
 /log/
+web/node_modules/
+web/dist/

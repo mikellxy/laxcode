@@ -250,8 +250,30 @@ func TestHandleChatAssembleError(t *testing.T) {
 	if !strings.Contains(body, "event: error") || !strings.Contains(body, "boom") {
 		t.Fatalf("装配失败应发含原因的 error 帧，实际 %q", body)
 	}
+	if !strings.Contains(body, `"code":"AGENT_ASSEMBLY_FAILED"`) || !strings.Contains(body, `"retry_action":"resend"`) {
+		t.Fatalf("装配失败应要求重发原 query，实际 %q", body)
+	}
 	if strings.Contains(body, "event: start") {
 		t.Fatalf("装配失败不应发 start 帧：%q", body)
+	}
+}
+
+func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
+	s := newServer(t.TempDir(), false)
+	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
+		return nil, errors.New("boom")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("进入 resume SSE 后状态码应为 200，实际 %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"AGENT_ASSEMBLY_FAILED"`) || !strings.Contains(body, `"retry_action":"resume"`) {
+		t.Fatalf("resume 装配失败应保持 resume 动作，实际 %q", body)
 	}
 }
 

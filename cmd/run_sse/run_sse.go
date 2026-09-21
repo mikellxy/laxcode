@@ -74,6 +74,7 @@ func Run() {
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
+	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)

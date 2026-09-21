@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 260" role="img" aria-labelledby="title desc">
+  <title id="title">LaxCode logo — dark background</title>
+  <desc id="desc">LaxCode wordmark with an orbital ring in a luminous blue to mint gradient.</desc>
+  <defs>
+    <linearGradient id="brand" x1="56" y1="42" x2="650" y2="218" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8D96FF"/>
+      <stop offset="0.48" stop-color="#96A0FA"/>
+      <stop offset="0.56" stop-color="#65DEC9"/>
+      <stop offset="1" stop-color="#5CE2C4"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-30%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="3" stdDeviation="7" flood-color="#61DCC8" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect width="600" height="260" rx="28" fill="#202625"/>
+  <g fill="none" stroke="url(#brand)" stroke-width="5" stroke-linecap="round" filter="url(#glow)">
+    <path d="M251 104A108 108 0 1 0 222 218"/>
+    <path d="M92 112A91 91 0 0 1 239 83"/>
+  </g>
+  <circle cx="178" cy="229" r="12" fill="#8C95FF" filter="url(#glow)"/>
+  <text x="111" y="177" fill="url(#brand)" filter="url(#glow)"
+        font-family="Arial Rounded MT Bold, Avenir Next, Nunito, ui-rounded, system-ui, sans-serif"
+        font-size="94" font-weight="800" letter-spacing="-6">LaxCode</text>
+</svg>

@@ -358,10 +358,45 @@ data: {
 
 ```text
 event: error
-data: {"message":"error description"}
+data: {
+  "code":"CHAT_FAILED",
+  "message":"error description",
+  "retry_action":"resume"
+}
 ```
 
 标记当前流失败并停止等待。失败后仍应刷新历史，因为 user 消息或部分执行消息可能已经持久化。
+
+- `code` 是稳定的业务错误码，前端不得解析 `message` 判断行为。
+- `retry_action=resume` 表示本轮 user 消息已经持久化，应调用恢复接口。
+- `retry_action=resend` 表示本轮 user 消息尚未持久化，应使用原 task 重新调用 `/chat`。
+- `retry_action` 缺失表示错误不可自动重试，只展示错误信息。
+
+当前业务错误码包括 `INVALID_REQUEST`、`SESSION_BUSY`、
+`AGENT_ASSEMBLY_FAILED`、`CHAT_FAILED`、`RESUME_FAILED`、
+`NOTHING_TO_RESUME` 和 `INTERNAL_ERROR`。
+
+## 6.1 恢复未完成对话
+
+当错误帧返回 `retry_action=resume` 时调用：
+
+```http
+POST /api/sessions/{session_id}/resume
+Accept: text/event-stream
+```
+
+请求不携带 task。后端从已持久化工作集执行 `recoverBeforeChat`，随后继续 ReAct
+推理，不会追加新的 user 消息。响应复用 `/chat` 的 `start`、`reasoning`、
+`message`、`tool_call`、`done` 和 `error` 事件。
+
+如果会话没有待恢复的对话，返回 SSE 错误：
+
+```text
+event: error
+data: {"code":"NOTHING_TO_RESUME","message":"reactservice: no interrupted chat to resume"}
+```
+
+前端收到该错误后不应继续自动重试，避免已经收束的会话重复生成。
 
 ## 7. 实时消息归并规则
 

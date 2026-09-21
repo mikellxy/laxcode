@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 260" role="img" aria-labelledby="title desc">
+  <title id="title">LaxCode logo — light background</title>
+  <desc id="desc">LaxCode wordmark with an orbital ring in a blue to mint gradient.</desc>
+  <defs>
+    <linearGradient id="brand" x1="56" y1="42" x2="650" y2="218" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6F7FE5"/>
+      <stop offset="0.48" stop-color="#7D8BE4"/>
+      <stop offset="0.56" stop-color="#59CDBB"/>
+      <stop offset="1" stop-color="#50D5B8"/>
+    </linearGradient>
+    <filter id="softShadow" x="-15%" y="-25%" width="130%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#3C7970" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="600" height="260" rx="28" fill="#FBFAF6"/>
+  <g fill="none" stroke="url(#brand)" stroke-width="5" stroke-linecap="round">
+    <path d="M251 104A108 108 0 1 0 222 218"/>
+    <path d="M92 112A91 91 0 0 1 239 83"/>
+  </g>
+  <circle cx="178" cy="229" r="12" fill="#7583E5"/>
+  <text x="111" y="177" fill="url(#brand)" filter="url(#softShadow)"
+        font-family="Arial Rounded MT Bold, Avenir Next, Nunito, ui-rounded, system-ui, sans-serif"
+        font-size="94" font-weight="800" letter-spacing="-6">LaxCode</text>
+</svg>

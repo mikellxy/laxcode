@@ -38,6 +38,9 @@ var (
 	ErrInvalidContextBudget  = errors.New("reactservice: invalid model context budget")
 	ErrContextTargetNotReach = errors.New("reactservice: context compaction target cannot be reached")
 	ErrPersistRequestContext = errors.New("reactservice: persist request context")
+	// ErrNothingToResume 表示会话尾部已经收束，或尚无用户消息。调用方应拒绝
+	// resume，避免在没有待完成输入时让模型重复生成。
+	ErrNothingToResume = errors.New("reactservice: no interrupted chat to resume")
 )
 
 const (
@@ -190,14 +193,33 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	return r.think(ctx)
 }
 
+// Resume 恢复已经持久化 user message、但尚未以无工具调用 assistant 收束的
+// 对话。它不会创建新的 user message，供断流/生成错误后的显式重试入口使用。
+func (r *ReActService) Resume(ctx context.Context) (*sharedkernel.Message, error) {
+	if !needsRecovery(r.Session.Messages) {
+		return nil, ErrNothingToResume
+	}
+	ctx = telemetry.ContextWithSessionID(ctx, r.Session.ID)
+	if err := r.recoverBeforeChat(ctx); err != nil {
+		return nil, fmt.Errorf("recover previous chat: %w", err)
+	}
+	return r.think(ctx)
+}
+
+// needsRecovery 只以已提交工作集判断是否存在未收束的一轮：至少有一条 user，
+// 且尾部不是无工具调用的最终 assistant。
+func needsRecovery(messages []sharedkernel.Message) bool {
+	if !hasUserMessage(messages) || len(messages) == 0 {
+		return false
+	}
+	tail := messages[len(messages)-1]
+	return tail.Role != sharedkernel.RoleAssistant || len(tail.ToolCalls) != 0
+}
+
 // recoverBeforeChat 直接从消息尾部推导上次执行是否收束；若未收束，只补齐
 // 最近一次工具调用中未持久化的 tool result，无需额外的活跃对话状态字段。
 func (r *ReActService) recoverBeforeChat(ctx context.Context) error {
-	if !hasUserMessage(r.Session.Messages) {
-		return nil
-	}
-	tail := r.Session.Messages[len(r.Session.Messages)-1]
-	if tail.Role == sharedkernel.RoleAssistant && len(tail.ToolCalls) == 0 {
+	if !needsRecovery(r.Session.Messages) {
 		return nil
 	}
 	r.ReActEventConsumerF(&ReactEvent{

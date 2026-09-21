@@ -673,6 +673,57 @@ func TestChatContinuesCommittedInterruptedInput(t *testing.T) {
 	}
 }
 
+func TestResumeContinuesWithoutAppendingUserMessage(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("resumed answer")}}}
+	svc := newTestService(t, "s-resume", "system prompt", repo, llm, tools.NewDefaultRegistry(nil))
+
+	user := svc.Session.BuildUserMessage("original question")
+	candidate, err := svc.Session.WithAppendedMessage(&user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.commitCreatedMessage(ctx, candidate, user, user); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := svc.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if final.Content != "resumed answer" || llm.calls != 1 {
+		t.Fatalf("unexpected resume result: final=%+v calls=%d", final, llm.calls)
+	}
+	msgs := svc.Session.Messages
+	if len(msgs) != 3 || msgs[1].Role != sharedkernel.RoleUser || msgs[1].Content != "original question" || msgs[2].Role != sharedkernel.RoleAssistant {
+		t.Fatalf("Resume 不应追加 user message：%+v", msgs)
+	}
+}
+
+func TestResumeRejectsSettledOrEmptyChat(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	svc := newTestService(t, "s-resume-none", "system prompt", repo, &scriptedLLM{}, tools.NewDefaultRegistry(nil))
+	if _, err := svc.Resume(ctx); !errors.Is(err, ErrNothingToResume) {
+		t.Fatalf("空会话应 ErrNothingToResume，实际 %v", err)
+	}
+	user := svc.Session.BuildUserMessage("question")
+	candidate, err := svc.Session.WithAppendedMessage(&user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.commitCreatedMessage(ctx, candidate, user, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.handleTurnMsg(ctx, assistantMsg("done")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Resume(ctx); !errors.Is(err, ErrNothingToResume) {
+		t.Fatalf("已收束会话应 ErrNothingToResume，实际 %v", err)
+	}
+}
+
 func TestChatSynthesizesOnlyMissingToolResults(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemRepo()

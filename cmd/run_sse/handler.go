@@ -12,7 +12,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
+	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/session"
+	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
@@ -233,11 +235,11 @@ func newServer(workDir string, planMode bool) *server {
 func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "invalid request body: "+err.Error(), "")
 		return
 	}
 	if strings.TrimSpace(req.Task) == "" {
-		writeJSONError(w, http.StatusBadRequest, "task is required")
+		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "task is required", "")
 		return
 	}
 
@@ -246,7 +248,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID != "" {
 		unlock, ok := s.locks.TryLock(req.SessionID)
 		if !ok {
-			writeJSONError(w, http.StatusConflict, "session is busy: "+req.SessionID)
+			writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "session is busy: "+req.SessionID, RetryActionResend)
 			return
 		}
 		defer unlock()
@@ -277,18 +279,91 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Consumer:  newEventConsumer(sw),
 	})
 	if err != nil {
-		sw.Send(EventError, ErrorData{Message: "assemble agent failed: " + err.Error()})
+		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResend})
 		return
 	}
 	defer assembled.Cleanup()
 
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
+	userCountBeforeChat := countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser)
 	msg, err := assembled.Service.Chat(ctx, req.Task)
 	if err != nil {
-		sw.Send(EventError, ErrorData{Message: err.Error()})
+		retryAction := RetryActionResend
+		// recoverBeforeChat 可能先补写 tool result；只有 user 数量增加才能证明
+		// 本次 query 已提交，不能用总消息数判断。
+		if countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser) > userCountBeforeChat {
+			retryAction = RetryActionResume
+		}
+		sw.Send(EventError, ErrorData{Code: ErrorCodeChatFailed, Message: err.Error(), RetryAction: retryAction})
 		return
 	}
+	sw.Send(EventDone, doneData(assembled, msg))
+}
+
+func countMessagesByRole(messages []sharedkernel.Message, role string) int {
+	count := 0
+	for i := range messages {
+		if messages[i].Role == role {
+			count++
+		}
+	}
+	return count
+}
+
+// handleResume 恢复已持久化但未收束的对话。与 /chat 共用 SSE 事件协议，但不接收
+// task，也不会追加 user message。
+func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("session_id"))
+	if sessionID == "" {
+		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "session_id is required", "")
+		return
+	}
+	unlock, ok := s.locks.TryLock(sessionID)
+	if !ok {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "session is busy: "+sessionID, RetryActionResume)
+		return
+	}
+	defer unlock()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "streaming unsupported", RetryActionResume)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream; charset=utf-8")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sw := newSSEWriter(w, flusher)
+	ctx := r.Context()
+	assembled, err := s.assemble(ctx, agentasm.Input{
+		WorkDir: s.workDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: newEventConsumer(sw),
+	})
+	if err != nil {
+		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResume})
+		return
+	}
+	defer assembled.Cleanup()
+	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
+
+	msg, err := assembled.Service.Resume(ctx)
+	if errors.Is(err, reactservice.ErrNothingToResume) {
+		sw.Send(EventError, ErrorData{Code: ErrorCodeNothingToResume, Message: err.Error()})
+		return
+	}
+	if err != nil {
+		sw.Send(EventError, ErrorData{Code: ErrorCodeResumeFailed, Message: err.Error(), RetryAction: RetryActionResume})
+		return
+	}
+	sw.Send(EventDone, doneData(assembled, msg))
+}
+
+func doneData(assembled *agentasm.Assembled, msg *sharedkernel.Message) DoneData {
 	done := DoneData{
 		SessionID:   assembled.Session.ID,
 		TokenUsed:   assembled.Session.TokenUsed,
@@ -297,7 +372,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if msg != nil {
 		done.Result = msg.Content
 	}
-	sw.Send(EventDone, done)
+	return done
 }
 
 // handleHealthz 是探活端点：返回 200，供负载均衡 / 容器健康检查，不触发装配。
@@ -309,9 +384,13 @@ func (s *server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // writeJSONError 写一个普通 JSON 错误响应，仅用于 SSE 流开始之前的用法错误
 // （此时响应头未发送，可自由设置状态码）。载荷与 error 帧同为 {message}。
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeJSONProtocolError(w, status, ErrorCodeInternal, msg, "")
+}
+
+func writeJSONProtocolError(w http.ResponseWriter, status int, code, msg, retryAction string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(ErrorData{Message: msg})
+	_ = json.NewEncoder(w).Encode(ErrorData{Code: code, Message: msg, RetryAction: retryAction})
 }
 
 // sessionLocks 是 per-session 互斥锁表：同一 session_id 串行、不同 session 并发。
