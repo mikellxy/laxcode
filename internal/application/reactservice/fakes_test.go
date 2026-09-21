@@ -78,7 +78,13 @@ func (m *memRepo) CommitCreateMessage(_ context.Context, id string, snapshot ses
 	if err := snapshot.Validate(); err != nil {
 		return 0, err
 	}
-	if !reflect.DeepEqual(original, memory) || len(snapshot.Messages) == 0 || !reflect.DeepEqual(snapshot.Messages[len(snapshot.Messages)-1], memory) {
+	// 与 sqlite 仓储同口径：memory 副本只允许比 original 多携带召回片段。
+	comparison := memory.Clone()
+	comparison.MemoryChunks = nil
+	comparison.RAGChunks = nil
+	if len(original.MemoryChunks) > 0 || len(original.RAGChunks) > 0 ||
+		!reflect.DeepEqual(original, comparison) || len(snapshot.Messages) == 0 ||
+		!reflect.DeepEqual(snapshot.Messages[len(snapshot.Messages)-1], memory) {
 		return 0, errRepo
 	}
 	if exists {

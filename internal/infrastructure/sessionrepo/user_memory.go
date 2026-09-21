@@ -20,6 +20,7 @@ func migrateUserMemory(tx *gorm.DB) error {
 		{&requestContextModel{}, "react_turn_count", "ALTER TABLE request_contexts ADD COLUMN react_turn_count INTEGER NOT NULL DEFAULT 0 CHECK(react_turn_count>=0)"},
 		{&messageModel{}, "react_turn", "ALTER TABLE messages ADD COLUMN react_turn INTEGER CHECK(react_turn IS NULL OR (react_turn>0 AND message_type='original' AND role='assistant' AND finish_reason='stop' AND (tool_calls_json IS NULL OR tool_calls_json='null' OR json_array_length(tool_calls_json)=0)))"},
 		{&messageModel{}, "memory_chunks_json", "ALTER TABLE messages ADD COLUMN memory_chunks_json JSON"},
+		{&messageModel{}, "rag_chunks_json", "ALTER TABLE messages ADD COLUMN rag_chunks_json JSON"},
 	} {
 		if !tx.Migrator().HasColumn(col.model, col.name) {
 			if err := tx.Exec(col.sql).Error; err != nil {

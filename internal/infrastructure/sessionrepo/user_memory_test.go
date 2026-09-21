@@ -102,6 +102,7 @@ func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
 	candidate, _ := s.WithAppendedMessage(&user)
 	original := user.Clone()
 	user.MemoryChunks = []sharedkernel.MemoryChunk{{ID: "1", Content: "recalled"}}
+	user.RAGChunks = []sharedkernel.MemoryChunk{{ID: "2", Content: "retrieved"}}
 	candidate.Messages[len(candidate.Messages)-1] = user
 	rev, err := repo.CommitCreateMessage(ctx, s.ID, candidate.Snapshot(), original, user)
 	if err != nil {
@@ -113,7 +114,8 @@ func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Messages[1].Content != "raw" || len(restored.Messages[1].MemoryChunks) != 1 {
+	if restored.Messages[1].Content != "raw" || len(restored.Messages[1].MemoryChunks) != 1 ||
+		len(restored.Messages[1].RAGChunks) != 1 || restored.Messages[1].RAGChunks[0].Content != "retrieved" {
 		t.Fatal("memory not restored")
 	}
 	page, _, _ := repo.ListOriginalHistory(ctx, s.ID, 0, 10)
@@ -132,7 +134,7 @@ func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
 	}
 	appendMessage(t, repo, s, &sharedkernel.Message{Role: "user", Content: "next"})
 	restored, _ = repo.GetRequestContext(ctx, s.ID)
-	if len(restored.Messages[1].MemoryChunks) != 0 {
+	if len(restored.Messages[1].MemoryChunks) != 0 || len(restored.Messages[1].RAGChunks) != 0 {
 		t.Fatal("old chunks retained")
 	}
 }

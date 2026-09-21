@@ -63,7 +63,7 @@ type ReactEvent struct {
 	HumanConfirmChan chan<- string             // 人工确认回复通道，仅 human_in_the_loop 事件携带
 }
 
-// PromptEnricher 在 chat 根 span 内把用户输入扩充为最终模型提示词。
+// MemoryEnricher 在 chat 根 span 内召回用户长期记忆片段。
 // 实现可创建 query-embedding、vector-retrieval 等子 span。
 type MemoryEnricher interface {
 	Recall(context.Context, string, string) ([]sharedkernel.MemoryChunk, error)
@@ -71,8 +71,10 @@ type MemoryEnricher interface {
 
 func (r *ReActService) EnableUserMemory(e MemoryEnricher) { r.memoryEnricher = e; r.trackTurns = true }
 
+// PromptEnricher 在 chat 根 span 内召回与本次用户输入相关的知识片段；
+// 片段挂在用户消息的工作集副本上，不改写原始 Content。
 type PromptEnricher interface {
-	Enrich(ctx context.Context, query string) (string, error)
+	Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error)
 }
 
 func NewReActService(sess *session.Session,
@@ -182,12 +184,6 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 		)
 	}()
 
-	if r.promptEnricher != nil {
-		p, err = r.promptEnricher.Enrich(ctx, p)
-		if err != nil {
-			return nil, err
-		}
-	}
 	if err = r.recoverBeforeChat(ctx); err != nil {
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
@@ -199,6 +195,15 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	original := userMsg.Clone()
 	for i := range candidate.Messages {
 		candidate.Messages[i].MemoryChunks = nil
+		candidate.Messages[i].RAGChunks = nil
+	}
+	if r.promptEnricher != nil {
+		chunks, enrichErr := r.promptEnricher.Enrich(ctx, p)
+		if enrichErr != nil {
+			return nil, enrichErr
+		}
+		userMsg.RAGChunks = chunks
+		candidate.Messages[len(candidate.Messages)-1] = userMsg.Clone()
 	}
 	if r.trackTurns {
 		if r.Session.UserID == "" {

@@ -53,6 +53,7 @@ func (requestContextModel) TableName() string { return "request_contexts" }
 type messageModel struct {
 	ReactTurn        *uint64   `gorm:"column:react_turn"`
 	MemoryChunksJSON []byte    `gorm:"column:memory_chunks_json;type:json"`
+	RAGChunksJSON    []byte    `gorm:"column:rag_chunks_json;type:json"`
 	SessionID        string    `gorm:"column:session_id;type:varchar(128);primaryKey;priority:1"`
 	MessageType      string    `gorm:"column:message_type;type:varchar(32);primaryKey;priority:2"`
 	MemoryGeneration uint64    `gorm:"column:memory_generation;primaryKey;priority:3"`
@@ -402,7 +403,7 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 			return err
 		}
 		if original.Role == sharedkernel.RoleUser {
-			if err := tx.Model(&messageModel{}).Where("session_id=? AND message_type=? AND memory_generation=?", id, messageTypeMemory, snapshot.MemoryGeneration).Update("memory_chunks_json", nil).Error; err != nil {
+			if err := tx.Model(&messageModel{}).Where("session_id=? AND message_type=? AND memory_generation=?", id, messageTypeMemory, snapshot.MemoryGeneration).Updates(map[string]any{"memory_chunks_json": nil, "rag_chunks_json": nil}).Error; err != nil {
 				return err
 			}
 		}
@@ -546,8 +547,9 @@ func validateCreatedMessage(snapshot session.RequestContext, original, memory sh
 	}
 	comparison := memory.Clone()
 	comparison.MemoryChunks = nil
-	if len(original.MemoryChunks) > 0 {
-		return fmt.Errorf("original cannot contain recalled memory")
+	comparison.RAGChunks = nil
+	if len(original.MemoryChunks) > 0 || len(original.RAGChunks) > 0 {
+		return fmt.Errorf("original cannot contain recalled chunks")
 	}
 	if !equalMessage(original, comparison) {
 		return fmt.Errorf("%w: original and initial memory differ", ErrStaleSequence)
@@ -645,8 +647,13 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 	if err != nil {
 		return messageModel{}, err
 	}
+	ragChunks, err := json.Marshal(msg.RAGChunks)
+	if err != nil {
+		return messageModel{}, err
+	}
 	row := messageModel{
 		MemoryChunksJSON: chunks,
+		RAGChunksJSON:    ragChunks,
 		SessionID:        id, MessageType: messageType, MemoryGeneration: generation,
 		Seq: msg.Seq, OriginalSeqJSON: originalSeq, Role: msg.Role,
 		ToolCallID: msg.ToolCallID, Content: msg.Content, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
@@ -671,6 +678,7 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 func messagePayload(row messageModel) map[string]any {
 	return map[string]any{
 		"memory_chunks_json": row.MemoryChunksJSON,
+		"rag_chunks_json":    row.RAGChunksJSON,
 		"original_seq_json":  row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
 		"content": row.Content, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
 		"compact_content":   row.CompactContent,
@@ -704,6 +712,11 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 	}
 	if len(row.MemoryChunksJSON) > 0 {
 		if err := json.Unmarshal(row.MemoryChunksJSON, &msg.MemoryChunks); err != nil {
+			return sharedkernel.Message{}, err
+		}
+	}
+	if len(row.RAGChunksJSON) > 0 {
+		if err := json.Unmarshal(row.RAGChunksJSON, &msg.RAGChunks); err != nil {
 			return sharedkernel.Message{}, err
 		}
 	}

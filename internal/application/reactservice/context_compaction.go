@@ -75,9 +75,10 @@ func (r *ReActService) compactContext(ctx context.Context, toolDefs []sharedkern
 	}
 	released := false
 	for i := range run.candidate.Messages {
-		if len(run.candidate.Messages[i].MemoryChunks) > 0 {
+		if len(run.candidate.Messages[i].MemoryChunks) > 0 || len(run.candidate.Messages[i].RAGChunks) > 0 {
 			released = true
 			run.candidate.Messages[i].MemoryChunks = nil
+			run.candidate.Messages[i].RAGChunks = nil
 		}
 	}
 	if released {

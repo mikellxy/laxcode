@@ -74,9 +74,9 @@ func TestRequestHumanConfirmationHonorsCancellation(t *testing.T) {
 	}
 }
 
-type promptEnricherFunc func(context.Context, string) (string, error)
+type promptEnricherFunc func(context.Context, string) ([]sharedkernel.MemoryChunk, error)
 
-func (f promptEnricherFunc) Enrich(ctx context.Context, query string) (string, error) {
+func (f promptEnricherFunc) Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
 	return f(ctx, query)
 }
 
@@ -85,8 +85,8 @@ func TestChatUsesEnrichedPrompt(t *testing.T) {
 	sess := newTestSession("s-enriched", repo)
 	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("answer")}}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	svc.SetPromptEnricher(promptEnricherFunc(func(_ context.Context, query string) (string, error) {
-		return query + "\nretrieved context", nil
+	svc.SetPromptEnricher(promptEnricherFunc(func(_ context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
+		return []sharedkernel.MemoryChunk{{ID: "k1", Content: "retrieved context"}}, nil
 	}))
 
 	if _, err := svc.Chat(context.Background(), "question"); err != nil {
@@ -95,8 +95,15 @@ func TestChatUsesEnrichedPrompt(t *testing.T) {
 	if len(llm.lastMsgs) != 2 {
 		t.Fatalf("LLM messages = %+v", llm.lastMsgs)
 	}
-	if got := llm.lastMsgs[1].Content; got != "question\nretrieved context" {
-		t.Fatalf("user prompt = %q", got)
+	userMsg := llm.lastMsgs[1]
+	if userMsg.Content != "question" {
+		t.Fatalf("user content must stay raw, got %q", userMsg.Content)
+	}
+	if len(userMsg.RAGChunks) != 1 || userMsg.RAGChunks[0].Content != "retrieved context" {
+		t.Fatalf("RAG chunks not attached: %+v", userMsg.RAGChunks)
+	}
+	if got := userMsg.ModelContent(); got != "question\n相关文档:\nretrieved context" {
+		t.Fatalf("model content = %q", got)
 	}
 }
 

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/domain/knowledgebase"
+	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
@@ -37,21 +39,24 @@ func (f *fakeRetriever) Search(_ context.Context, _ []float32, limit int) ([]kno
 	return f.chunks, f.err
 }
 
-func TestEnrichBuildsRetrievedPrompt(t *testing.T) {
+func TestEnrichReturnsRecalledChunks(t *testing.T) {
 	embedder := &fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)}
-	retriever := &fakeRetriever{chunks: []knowledgebase.Chunk{{Content: "chunk one"}, {Content: "chunk two\n"}}}
+	retriever := &fakeRetriever{chunks: []knowledgebase.Chunk{
+		{ID: "a", Content: "chunk one", Distance: 0.1},
+		{ID: "b", Content: "chunk two\n", Distance: 0.2},
+	}}
 	svc := New(embedder, retriever, nil)
 
-	prompt, err := svc.Enrich(context.Background(), "  question  ")
+	chunks, err := svc.Enrich(context.Background(), "  question  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retriever.gotLimit != 10 {
-		t.Fatalf("retrieval limit = %d, want 10", retriever.gotLimit)
+	if retriever.gotLimit != 4 {
+		t.Fatalf("retrieval limit = %d, want 4", retriever.gotLimit)
 	}
-	want := "question\n相关文档:\nchunk one\nchunk two"
-	if prompt != want {
-		t.Fatalf("prompt = %q, want %q", prompt, want)
+	want := []sharedkernel.MemoryChunk{{ID: "a", Content: "chunk one"}, {ID: "b", Content: "chunk two\n"}}
+	if !reflect.DeepEqual(chunks, want) {
+		t.Fatalf("chunks = %+v, want %+v", chunks, want)
 	}
 }
 
@@ -79,18 +84,18 @@ func TestEnrichStopsOnRetrievalError(t *testing.T) {
 	}
 }
 
-func TestEnrichWithNoChunksIncludesMarker(t *testing.T) {
+func TestEnrichWithNoChunksReturnsEmpty(t *testing.T) {
 	svc := New(
 		&fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)},
 		&fakeRetriever{},
 		nil,
 	)
-	prompt, err := svc.Enrich(context.Background(), "question")
+	chunks, err := svc.Enrich(context.Background(), "question")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt, "未召回到相关文档") {
-		t.Fatalf("missing empty retrieval marker: %q", prompt)
+	if len(chunks) != 0 {
+		t.Fatalf("empty retrieval must yield no chunks, got %+v", chunks)
 	}
 }
 

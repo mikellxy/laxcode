@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/knowledgebase"
+	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 )
 
-const retrievalLimit = 10
+const retrievalLimit = 4
 
 var ErrEmptyQuery = errors.New("qa: query is empty")
 
@@ -30,12 +31,13 @@ func New(embedder knowledgebase.Embedder, retriever knowledgebase.Retriever, tra
 	}
 }
 
-// Enrich 为每个用户问题执行向量化与知识库召回，返回扩充后的模型提示词。
-// 调用方负责在 chat 根 span 内调用本方法并继续 LLM 生成。
-func (s *Service) Enrich(ctx context.Context, query string) (string, error) {
+// Enrich 为每个用户问题执行向量化与知识库召回，返回召回的知识片段。
+// 调用方负责在 chat 根 span 内调用本方法，并把片段挂到用户消息的工作集
+// 副本上；模型看到的拼接文本由 Message.ModelContent 生成。
+func (s *Service) Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return "", ErrEmptyQuery
+		return nil, ErrEmptyQuery
 	}
 
 	embedStartedAt := time.Now()
@@ -53,7 +55,7 @@ func (s *Service) Enrich(ctx context.Context, query string) (string, error) {
 		telemetry.WithTimeCostMs(time.Since(embedStartedAt).Milliseconds()),
 	)
 	if err != nil {
-		return "", fmt.Errorf("embed query: %w", err)
+		return nil, fmt.Errorf("embed query: %w", err)
 	}
 
 	retrievalStartedAt := time.Now()
@@ -67,24 +69,11 @@ func (s *Service) Enrich(ctx context.Context, query string) (string, error) {
 		telemetry.WithTimeCostMs(time.Since(retrievalStartedAt).Milliseconds()),
 	)
 	if err != nil {
-		return "", fmt.Errorf("retrieve knowledge chunks: %w", err)
+		return nil, fmt.Errorf("retrieve knowledge chunks: %w", err)
 	}
-	return buildPrompt(query, chunks), nil
-}
-
-func buildPrompt(query string, chunks []knowledgebase.Chunk) string {
-	var b strings.Builder
-	b.WriteString(query)
-	b.WriteString("\n相关文档:\n")
-	if len(chunks) == 0 {
-		b.WriteString("（未召回到相关文档）")
-		return b.String()
+	recalled := make([]sharedkernel.MemoryChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		recalled = append(recalled, sharedkernel.MemoryChunk{ID: chunk.ID, Content: chunk.Content})
 	}
-	for i, chunk := range chunks {
-		b.WriteString(chunk.Content)
-		if i < len(chunks)-1 && !strings.HasSuffix(chunk.Content, "\n") {
-			b.WriteByte('\n')
-		}
-	}
-	return strings.TrimSuffix(b.String(), "\n")
+	return recalled, nil
 }
