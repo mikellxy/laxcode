@@ -11,8 +11,10 @@
 LaxCode is a lightweight AI Agent implemented in Go.
 
 ## Quick Start
-* Use the coding agent CLI
-  * Default mounted tools: `grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
+### coding agent cli
+> [!TIP]
+> Default mounted tools: `grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
+
 ```shell
 export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
 export OPENAI_BASE_URL=https://api.openai.com/v1     # any OpenAI-compatible endpoint
@@ -23,19 +25,21 @@ make build
 ```
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
 
-* Use the SSE agentic QA service
-  * No tools mounted by default
-  * Asynchronously extracts user memory every three ReAct loops
-  * Supports RAG recall of user memory across all sessions
-  * Stores user-memory chunks and vectors in a specified sqlite-vec db file
+### SSE agentic QA (with RAG user-memory recall)
+> [!TIP]
+> No tools mounted by default
+> Asynchronously extracts user memory every three ReAct loops and persists it via chunk-vectorization
+> Vectorizes the user query to recall memories
+> Uses the specified sqlite-vec db
+
 ```shell
-# Specify the embedding model & initialize the chunk-vectorization pipeline
+# Specify the embedding model & initialize the chunk-vectorization Python pipeline
 export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
 export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # any OpenAI-compatible endpoint
 export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
 uv sync --project knowledge-pipeline --locked
 export USER_MEMORY_EXECUTABLE="$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge"
-# Optional: the SSE service can still answer questions without user-memory extraction and recall
+# Optional: the SSE service still starts and answers questions, skipping user-memory extraction and recall
 ```
 ```shell
 export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
@@ -45,7 +49,7 @@ export OPENAI_MODEL_NAME=gpt-4o-mini
 make build
 # When memory is enabled:
 # -vector-dim should match the embedding model in use
-# -kb sets the absolute path of the sqlite-vec db file; laxcode runs migrations automatically
+# -kb sets the absolute path of the sqlite-vec db
 mkdir -p /tmp/laxcode-example
 ./bin/laxcode -sse \
   -kb=/tmp/laxcode-example/kb.sqlite \
@@ -63,10 +67,12 @@ npm --prefix web install
 npm --prefix web run dev
 ```
 
-* Use the agentic RAG QA service
-  * No tools mounted by default
-  * step-1: Use the project's knowledge-pipeline tool to chunk-vectorize knowledge documents and persist them into the specified sqlite-vec db file
-  * step-2: Start the laxcode agentic RAG QA service to experience knowledge recall
+### agentic RAG QA
+> [!TIP]
+> No tools mounted by default
+> step-1: Use the project's knowledge-pipeline tool to chunk-vectorize knowledge documents and persist them into the specified sqlite-vec db
+> step-2: Start laxcode agentic RAG QA to experience the RAG knowledge base
+
 ```shell
 # Configure the embedding model used by the knowledge base
 export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
