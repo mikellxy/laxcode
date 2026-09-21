@@ -12,9 +12,23 @@
 
 LaxCode 是一个用 Go 实现的轻量 AI Agent。
 
+## 特性
+- 会话存储引擎
+  - SQLite 事务 + 乐观锁、上下文压缩in_memory消息分代原子化更新、崩溃恢复时进行 agent 循环完整性检测
+  - [会话存储引擎设计文档](./docs/session-storage-engine.md)
+- Agentic 记忆/RAG
+  - 从对话异步提取记忆 → chunk 向量化 → sqlite-vec 召回
+  - [Agentic 记忆与 RAG 设计文档](./docs/agentic-memory-rag-design.md)
+- 上下文压缩
+  - 剪枝、上下文卸载、LLM 结构化摘要三层压缩
+  - [上下文压缩设计文档](./docs/context-compaction-design.md)
+- 可观测性
+  - 上报 agent 循环 span 到您的 Otel 服务(SigNoz/Tempo/Jaeger...)
+  - [将 LaxCode Span 上报到 SigNoz](./docs/signoz-tracing.md)
+
 ## 功能导航
 
-- [**Coding Agent CLI**](#coding-agent-cli) — 支持文件检索、编辑和命令执行的终端智能体
+- [**Coding Agent CLI**](#coding-agent-cli)
 - [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
 - [**Agentic 问答**](#agentic-memory-qa) — 支持 RAG 用户记忆召回与 SSE 交互页面
 - [**Agentic RAG 问答**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
@@ -96,7 +110,7 @@ mkdir -p /tmp/laxcode-example
   -kb=/tmp/laxcode-example/kb.sqlite \
   -vector-dim=1024 \
   -workdir=/tmp/laxcode-example \
-  -addr=127.0.0.1:8080
+  -addr=127.0.0.1:8090
 ```
 ```shell
 # 另开一个终端，启动 React 前端（http://127.0.0.1:5173）
@@ -147,7 +161,7 @@ mkdir -p /tmp/laxcode-qa/workdir
   -kb=/tmp/laxcode-qa/kb.sqlite \
   -workdir=/tmp/laxcode-qa/workdir \
   -vector-dim=1024 \
-  -addr=127.0.0.1:8080
+  -addr=127.0.0.1:8090
 ```
 ```shell
 # 另开一个终端，启动 React 前端（http://127.0.0.1:5173）

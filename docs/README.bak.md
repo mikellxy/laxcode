@@ -135,7 +135,7 @@ python3 ./examples/workflow-agent-hybrid/example.py -workdir=/tmp/laxcode-exampl
 SSE 使用无工具对话与用户长期记忆。Python 管线源码位于 `knowledge-pipeline/`。未配置 embedding 环境变量时自动跳过记忆任务，仍可正常聊天；启用记忆请按 [用户记忆运行说明](docs/sse-user-memory.md) 安装管线并初始化记忆库。
 
 ```shell
-./bin/laxcode -sse -kb=/absolute/path/kb.sqlite -vector-dim=1024 -workdir /tmp/laxcode-example -addr 127.0.0.1:8080
+./bin/laxcode -sse -kb=/absolute/path/kb.sqlite -vector-dim=1024 -workdir /tmp/laxcode-example -addr 127.0.0.1:8090
 go run ./examples/sse-client -task "请用中文简洁回答"
 go run ./examples/sse-client -task "我们都聊了什么" -session=20260910-142622.514
 ```

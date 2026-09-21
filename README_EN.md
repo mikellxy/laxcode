@@ -14,7 +14,7 @@ LaxCode is a lightweight AI Agent implemented in Go.
 
 ## Feature Navigation
 
-- [**Coding Agent CLI**](#coding-agent-cli) — A terminal agent for file search, editing, and command execution
+- [**Coding Agent CLI**](#coding-agent-cli)
 - [**Agent Evaluation**](#agent-session-evaluation) — Evaluates a completed task from its full ReAct log using LLM-as-a-Judge
 - [**Agentic QA**](#agentic-memory-qa) — Supports RAG user-memory recall and an SSE interaction page
 - [**Agentic RAG QA**](#agentic-rag-qa) — Supports knowledge-base retrieval and an SSE interaction page
@@ -96,7 +96,7 @@ mkdir -p /tmp/laxcode-example
   -kb=/tmp/laxcode-example/kb.sqlite \
   -vector-dim=1024 \
   -workdir=/tmp/laxcode-example \
-  -addr=127.0.0.1:8080
+  -addr=127.0.0.1:8090
 ```
 ```shell
 # In another terminal, start the React frontend (http://127.0.0.1:5173)
@@ -147,7 +147,7 @@ mkdir -p /tmp/laxcode-qa/workdir
   -kb=/tmp/laxcode-qa/kb.sqlite \
   -workdir=/tmp/laxcode-qa/workdir \
   -vector-dim=1024 \
-  -addr=127.0.0.1:8080
+  -addr=127.0.0.1:8090
 ```
 ```shell
 # In another terminal, start the React frontend (http://127.0.0.1:5173)

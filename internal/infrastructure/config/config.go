@@ -237,7 +237,7 @@ type cliConf struct {
 
 // DefaultSSEAddr 是 sse server 模式的缺省监听地址：仅绑定本地回环，因为
 // Agent 具备 bash / 写文件能力，默认不对外暴露；需要对外时以 -addr 覆盖。
-const DefaultSSEAddr = "127.0.0.1:8080"
+const DefaultSSEAddr = "127.0.0.1:8090"
 
 var CliConf cliConf
 
