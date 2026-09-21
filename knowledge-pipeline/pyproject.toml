@@ -1,0 +1,19 @@
+[project]
+name = "laxcode-knowledge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "langchain-core>=0.3.86",
+    "langchain[openai]>=0.3.30",
+    "langgraph>=0.6.11",
+    "sqlite-vec>=0.1.9",
+]
+
+[project.scripts]
+laxcode-knowledge = "laxcode_knowledge:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"

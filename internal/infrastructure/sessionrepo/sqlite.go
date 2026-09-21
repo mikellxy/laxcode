@@ -31,6 +31,7 @@ var (
 )
 
 type requestContextModel struct {
+	ReactTurnCount    uint64    `gorm:"column:react_turn_count;not null;default:0"`
 	SessionID         string    `gorm:"column:session_id;type:varchar(128);primaryKey"`
 	UserID            string    `gorm:"column:user_id;type:varchar(128);not null;default:''"`
 	Title             string    `gorm:"column:title;type:text;not null;default:''"`
@@ -50,6 +51,8 @@ func (requestContextModel) TableName() string { return "request_contexts" }
 // messageModel 同时承载不可变 original 与各代工作集消息。复合主键使 original
 // 和每一代 memory 在同一 session/seq 下各有且只有一条，无需额外关联表。
 type messageModel struct {
+	ReactTurn        *uint64   `gorm:"column:react_turn"`
+	MemoryChunksJSON []byte    `gorm:"column:memory_chunks_json;type:json"`
 	SessionID        string    `gorm:"column:session_id;type:varchar(128);primaryKey;priority:1"`
 	MessageType      string    `gorm:"column:message_type;type:varchar(32);primaryKey;priority:2"`
 	MemoryGeneration uint64    `gorm:"column:memory_generation;primaryKey;priority:3"`
@@ -85,7 +88,7 @@ func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := dbPath + "?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(FULL)"
+	dsn := dbPath + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(FULL)"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger:                 logger.Default.LogMode(logger.Silent),
 		SkipDefaultTransaction: true,
@@ -107,7 +110,7 @@ func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error
 	return r, nil
 }
 
-// 业务数据只使用两张表；新增可选消息字段时为已有会话补列。
+// 新增字段与记忆队列表采用幂等迁移；已有会话从零开始累计轮次。
 func (r *SqliteSessionRepo) migrate() error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		statements := []string{
@@ -183,7 +186,7 @@ func (r *SqliteSessionRepo) migrate() error {
 			ON request_contexts(user_id, updated_at DESC, session_id DESC)`).Error; err != nil {
 			return fmt.Errorf("create session list index: %w", err)
 		}
-		return nil
+		return migrateUserMemory(tx)
 	})
 }
 
@@ -379,6 +382,13 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 		if err := validateCreateTransition(snapshot, current, exists); err != nil {
 			return err
 		}
+		expectedTurn := current.ReactTurnCount
+		if original.ReactTurn > 0 {
+			expectedTurn++
+		}
+		if snapshot.ReactTurnCount != expectedTurn || (original.ReactTurn > 0 && original.ReactTurn != expectedTurn) {
+			return fmt.Errorf("invalid turn count")
+		}
 		now := time.Now().UTC()
 		if err := writeContext(tx, id, snapshot, newRevision, now, exists); err != nil {
 			return err
@@ -391,7 +401,18 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 		if err != nil {
 			return err
 		}
-		return tx.Create(&[]messageModel{originalRow, memoryRow}).Error
+		if original.Role == sharedkernel.RoleUser {
+			if err := tx.Model(&messageModel{}).Where("session_id=? AND message_type=? AND memory_generation=?", id, messageTypeMemory, snapshot.MemoryGeneration).Update("memory_chunks_json", nil).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Create(&[]messageModel{originalRow, memoryRow}).Error; err != nil {
+			return err
+		}
+		if original.ReactTurn > 0 {
+			return createMemoryWindow(tx, id, current, original)
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err
@@ -423,6 +444,9 @@ func (r *SqliteSessionRepo) CommitUpdateMessage(ctx context.Context, id string, 
 		}
 		if !exists || current.Revision != snapshot.Revision {
 			return ErrContextConflict
+		}
+		if snapshot.ReactTurnCount != current.ReactTurnCount {
+			return fmt.Errorf("cannot change turns outside completion")
 		}
 		if current.LastSeq != snapshot.LastSeq {
 			return ErrStaleSequence
@@ -472,6 +496,9 @@ func (r *SqliteSessionRepo) CommitNextMemoryGeneration(ctx context.Context, id s
 		if !exists || current.Revision != snapshot.Revision {
 			return ErrContextConflict
 		}
+		if snapshot.ReactTurnCount != current.ReactTurnCount {
+			return fmt.Errorf("cannot change turns outside completion")
+		}
 		if current.LastSeq != snapshot.LastSeq {
 			return ErrStaleSequence
 		}
@@ -517,7 +544,12 @@ func validateCreatedMessage(snapshot session.RequestContext, original, memory sh
 		len(original.OriginalSeq) != 1 || original.OriginalSeq[0] != original.Seq {
 		return fmt.Errorf("%w: invalid original identity", ErrStaleSequence)
 	}
-	if !equalMessage(original, memory) {
+	comparison := memory.Clone()
+	comparison.MemoryChunks = nil
+	if len(original.MemoryChunks) > 0 {
+		return fmt.Errorf("original cannot contain recalled memory")
+	}
+	if !equalMessage(original, comparison) {
 		return fmt.Errorf("%w: original and initial memory differ", ErrStaleSequence)
 	}
 	if len(snapshot.Messages) == 0 || !equalMessage(snapshot.Messages[len(snapshot.Messages)-1], memory) {
@@ -538,6 +570,9 @@ func validateCreateTransition(snapshot session.RequestContext, current requestCo
 			return ErrStaleSequence
 		}
 		return nil
+	}
+	if snapshot.ReactTurnCount < current.ReactTurnCount || snapshot.ReactTurnCount > current.ReactTurnCount+1 {
+		return fmt.Errorf("invalid react turn transition")
 	}
 	if current.Revision != snapshot.Revision {
 		return ErrContextConflict
@@ -561,7 +596,8 @@ func writeContext(tx *gorm.DB, id string, snapshot session.RequestContext, revis
 		Where("session_id = ? AND revision = ?", id, snapshot.Revision).
 		Updates(map[string]any{
 			"revision": revision, "memory_generation": state.MemoryGeneration,
-			"last_seq": state.LastSeq, "token_used_input": state.TokenUsedInput,
+			"react_turn_count": state.ReactTurnCount,
+			"last_seq":         state.LastSeq, "token_used_input": state.TokenUsedInput,
 			"token_used_output":   state.TokenUsedOutput,
 			"window_token_input":  state.WindowTokenInput,
 			"window_token_output": state.WindowTokenOutput, "updated_at": now,
@@ -578,7 +614,8 @@ func writeContext(tx *gorm.DB, id string, snapshot session.RequestContext, revis
 func contextToModel(id string, snapshot session.RequestContext, revision uint64, now time.Time) requestContextModel {
 	return requestContextModel{
 		SessionID: id, Revision: revision, MemoryGeneration: snapshot.MemoryGeneration,
-		LastSeq: snapshot.LastSeq, TokenUsedInput: int64(snapshot.TokenUsed.TokenInput),
+		ReactTurnCount: snapshot.ReactTurnCount,
+		LastSeq:        snapshot.LastSeq, TokenUsedInput: int64(snapshot.TokenUsed.TokenInput),
 		TokenUsedOutput:   int64(snapshot.TokenUsed.TokenOutput),
 		WindowTokenInput:  int64(snapshot.WindowToken.TokenInput),
 		WindowTokenOutput: int64(snapshot.WindowToken.TokenOutput), UpdatedAt: now,
@@ -588,6 +625,7 @@ func contextToModel(id string, snapshot session.RequestContext, revision uint64,
 func contextFromModel(state requestContextModel, msgs []sharedkernel.Message) session.RequestContext {
 	return session.RequestContext{
 		Revision: state.Revision, MemoryGeneration: state.MemoryGeneration, LastSeq: state.LastSeq,
+		UserID: state.UserID, ReactTurnCount: state.ReactTurnCount,
 		Messages:    msgs,
 		TokenUsed:   sharedkernel.TokenStatistics{TokenInput: int(state.TokenUsedInput), TokenOutput: int(state.TokenUsedOutput)},
 		WindowToken: sharedkernel.TokenStatistics{TokenInput: int(state.WindowTokenInput), TokenOutput: int(state.WindowTokenOutput)},
@@ -603,8 +641,13 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 	if err != nil {
 		return messageModel{}, err
 	}
+	chunks, err := json.Marshal(msg.MemoryChunks)
+	if err != nil {
+		return messageModel{}, err
+	}
 	row := messageModel{
-		SessionID: id, MessageType: messageType, MemoryGeneration: generation,
+		MemoryChunksJSON: chunks,
+		SessionID:        id, MessageType: messageType, MemoryGeneration: generation,
 		Seq: msg.Seq, OriginalSeqJSON: originalSeq, Role: msg.Role,
 		ToolCallID: msg.ToolCallID, Content: msg.Content, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
 		CompactContent:   msg.CompactContent,
@@ -612,6 +655,10 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 		FinishReason: msg.FinishReason,
 		TokenInput:   int64(msg.TokenUsed.TokenInput), TokenOutput: int64(msg.TokenUsed.TokenOutput),
 		CreatedAt: now, UpdatedAt: now,
+	}
+	if messageType == messageTypeOriginal && msg.ReactTurn > 0 {
+		n := msg.ReactTurn
+		row.ReactTurn = &n
 	}
 	if msg.Artifact != nil {
 		artifactID := msg.Artifact.ID
@@ -623,7 +670,8 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 
 func messagePayload(row messageModel) map[string]any {
 	return map[string]any{
-		"original_seq_json": row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
+		"memory_chunks_json": row.MemoryChunksJSON,
+		"original_seq_json":  row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
 		"content": row.Content, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
 		"compact_content":   row.CompactContent,
 		"reasoning_content": row.ReasoningContent, "tool_calls_json": row.ToolCallsJSON,
@@ -650,6 +698,14 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 		ReasoningID:    row.ReasoningID, ReasoningContent: row.ReasoningContent,
 		ToolCalls: calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,
 		TokenUsed: sharedkernel.TokenStatistics{TokenInput: int(row.TokenInput), TokenOutput: int(row.TokenOutput)},
+	}
+	if row.ReactTurn != nil {
+		msg.ReactTurn = *row.ReactTurn
+	}
+	if len(row.MemoryChunksJSON) > 0 {
+		if err := json.Unmarshal(row.MemoryChunksJSON, &msg.MemoryChunks); err != nil {
+			return sharedkernel.Message{}, err
+		}
 	}
 	if row.ArtifactID != nil {
 		msg.Artifact = &sharedkernel.ArtifactRef{ID: *row.ArtifactID}

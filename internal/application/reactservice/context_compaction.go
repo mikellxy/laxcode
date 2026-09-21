@@ -15,10 +15,10 @@ import (
 // compactionRun 承载本地压缩与 LLM 摘要两阶段共享的可变状态：候选工作集、
 // 最新精确计数，以及 failed/completed 两条日志都要读的观测字段。
 type compactionRun struct {
-	toolDefs            []sharedkernel.ToolDefinition
-	candidate           *session.Session
-	protectedStart      int
-	target              int
+	toolDefs       []sharedkernel.ToolDefinition
+	candidate      *session.Session
+	protectedStart int
+	target         int
 	// current 是最近一次 provider 精确计数的输入 token 数；两阶段每使
 	// 计数下降都要回写，编排层据此决定是否进入下一阶段。
 	current             int
@@ -72,6 +72,20 @@ func (r *ReActService) compactContext(ctx context.Context, toolDefs []sharedkern
 		protectedStart: protectedStart,
 		target:         target,
 		current:        current,
+	}
+	released := false
+	for i := range run.candidate.Messages {
+		if len(run.candidate.Messages[i].MemoryChunks) > 0 {
+			released = true
+			run.candidate.Messages[i].MemoryChunks = nil
+		}
+	}
+	if released {
+		count, err := r.LLMClient.CountInputTokens(ctx, run.candidate.Messages, toolDefs)
+		if err != nil {
+			return err
+		}
+		run.current = count
 	}
 	artifactCandidates := compactor.ArtifactCandidates(run.candidate.Messages)
 	slog.InfoContext(ctx, "context_compaction_triggered",

@@ -15,7 +15,8 @@ import (
 )
 
 type SQLiteVecRetriever struct {
-	db *sql.DB
+	db               *sql.DB
+	vectorDimensions int
 }
 
 var _ domainkb.Retriever = (*SQLiteVecRetriever)(nil)
@@ -33,7 +34,7 @@ func NewSQLiteVecRetriever(path string) (*SQLiteVecRetriever, error) {
 	if _, err := os.Stat(absPath); err != nil {
 		return nil, fmt.Errorf("knowledge base %q: %w", path, err)
 	}
-	dsn := (&url.URL{Scheme: "file", Path: absPath, RawQuery: "mode=ro"}).String()
+	dsn := (&url.URL{Scheme: "file", Path: absPath, RawQuery: "mode=ro&_busy_timeout=5000"}).String()
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open knowledge base: %w", err)

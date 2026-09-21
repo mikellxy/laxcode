@@ -221,8 +221,10 @@ func newServer(workDir string, planMode bool) *server {
 	return &server{
 		workDir:  workDir,
 		planMode: planMode,
-		assemble: agentasm.Assemble,
-		locks:    newSessionLocks(),
+		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
+			return agentasm.AssembleSSE(ctx, in)
+		},
+		locks: newSessionLocks(),
 	}
 }
 

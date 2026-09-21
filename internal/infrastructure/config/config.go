@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -35,6 +36,10 @@ type ResolvedModel struct {
 }
 
 type envAndFileConf struct {
+	UserMemoryExecutable     string `mapstructure:"USER_MEMORY_EXECUTABLE"`
+	UserMemoryConcurrency    int    `mapstructure:"USER_MEMORY_CONCURRENCY"`
+	UserMemoryTimeoutSeconds int    `mapstructure:"USER_MEMORY_TIMEOUT_SECONDS"`
+
 	EmbeddingModel  string           `mapstructure:"EMBEDDING_MODEL"`
 	CompactionModel string           `mapstructure:"COMPACTION_MODEL"`
 	Model           string           `mapstructure:"MODEL"`
@@ -215,15 +220,17 @@ func ModelRefs() []string {
 func SetActiveModel(ref string) error { return EnvAndFileConf.setActiveModel(ref) }
 
 type cliConf struct {
-	Oneshot  bool   `mapstructure:"oneshot"`
-	SSE      bool   `mapstructure:"sse"`
-	QA       bool   `mapstructure:"qa"`
-	Addr     string `mapstructure:"addr"`
-	WorkDir  string `mapstructure:"workdir"`
-	Task     string `mapstructure:"task"`
-	TaskFile string `mapstructure:"task-file"`
-	Session  string `mapstructure:"session"`
-	Plan     bool   `mapstructure:"plan"`
+	KB               string `mapstructure:"kb"`
+	VectorDimensions int    `mapstructure:"vector-dim"`
+	Oneshot          bool   `mapstructure:"oneshot"`
+	SSE              bool   `mapstructure:"sse"`
+	QA               bool   `mapstructure:"qa"`
+	Addr             string `mapstructure:"addr"`
+	WorkDir          string `mapstructure:"workdir"`
+	Task             string `mapstructure:"task"`
+	TaskFile         string `mapstructure:"task-file"`
+	Session          string `mapstructure:"session"`
+	Plan             bool   `mapstructure:"plan"`
 }
 
 // DefaultSSEAddr 是 sse server 模式的缺省监听地址：仅绑定本地回环，因为
@@ -256,6 +263,11 @@ func ParseEnvAndFile() error {
 	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", DefaultContextWindow)
 	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", DefaultMaxOutputTokens)
 	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
+	EnvOrFile.SetDefault("USER_MEMORY_CONCURRENCY", 1)
+	EnvOrFile.SetDefault("USER_MEMORY_TIMEOUT_SECONDS", 120)
+	for _, key := range []string{"USER_MEMORY_EXECUTABLE", "USER_MEMORY_CONCURRENCY", "USER_MEMORY_TIMEOUT_SECONDS"} {
+		_ = EnvOrFile.BindEnv(key, key)
+	}
 	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_CONTEXT_WINDOW")
@@ -357,6 +369,8 @@ func ParseCli() error {
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
 	qa := flag.Bool("qa", false, "knowledge-base question answering mode")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
+	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -qa and for -sse when OPENAI_EMBEDDING_* is configured")
+	vectorDimensions := flag.Int("vector-dim", 0, "user-memory vector dimensions; required for -sse when OPENAI_EMBEDDING_* is configured")
 	workDir := flag.String("workdir", "", "working directory; required in one-shot mode, defaults to cwd otherwise")
 	task := flag.String("task", "", "one-shot task prompt text")
 	taskFile := flag.String("task-file", "", "one-shot task prompt file path; takes precedence over -task")
@@ -369,10 +383,53 @@ func ParseCli() error {
 	Cli.Set("qa", *qa)
 	Cli.Set("addr", *addr)
 	Cli.Set("workdir", *workDir)
+	Cli.Set("kb", *kb)
+	Cli.Set("vector-dim", *vectorDimensions)
 	Cli.Set("task", *task)
 	Cli.Set("task-file", *taskFile)
 	Cli.Set("session", *session)
 	Cli.Set("plan", *plan)
 
-	return Cli.Unmarshal(&CliConf)
+	if err := Cli.Unmarshal(&CliConf); err != nil {
+		return err
+	}
+	if CliConf.QA || (CliConf.SSE && EmbeddingEnvironmentReady()) {
+		if err := ValidateKBPath(CliConf.KB); err != nil {
+			return err
+		}
+	}
+	if CliConf.SSE && EmbeddingEnvironmentReady() {
+		return ValidateVectorDimensions(CliConf.VectorDimensions)
+	}
+	return nil
+}
+
+// EmbeddingEnvironmentReady reports whether SSE user memory is explicitly
+// enabled through the complete embedding environment-variable triplet.
+func EmbeddingEnvironmentReady() bool {
+	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
+		if strings.TrimSpace(os.Getenv(key)) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidateVectorDimensions(dimensions int) error {
+	if dimensions <= 0 || dimensions > 8192 {
+		return errors.New("-vector-dim must be between 1 and 8192 when SSE embedding is enabled")
+	}
+	return nil
+}
+
+// ValidateKBPath checks configuration only. Disabled SSE memory does not require
+// the database to exist; enabled consumers validate the actual file and schema.
+func ValidateKBPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("-kb is required for -qa and SSE embedding; specify an absolute sqlite-vec database file path")
+	}
+	if !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
+		return errors.New("-kb must be an absolute sqlite-vec database file path")
+	}
+	return nil
 }

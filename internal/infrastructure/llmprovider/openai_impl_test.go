@@ -479,3 +479,28 @@ func TestBuildResponseParamsAssistantWithReasoningOnly(t *testing.T) {
 		t.Fatalf("无正文的 assistant 应仅产出 reasoning item，实际 %v", items)
 	}
 }
+
+func TestGenerateCompletionRequiresUsage(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"status":"completed","usage":{"input_tokens":10,"output_tokens":1},"output":[]}`, "stop"},
+		{`{"status":"completed","output":[]}`, "usage_unavailable"},
+		{`{"status":"completed","usage":{},"output":[]}`, "usage_unavailable"},
+		{`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}`, "max_output_tokens"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			provider := NewOpenApiProvider("test", server.URL, "test")
+			msg, err := provider.Generate(context.Background(), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if msg.FinishReason != tc.want {
+				t.Fatalf("reason=%q", msg.FinishReason)
+			}
+		})
+	}
+}

@@ -20,3 +20,9 @@ web/vite.config.d.ts
 
 # Frontend dependencies are managed by web/pnpm-lock.yaml.
 /package-lock.json
+
+# Embedded Python knowledge pipeline runtime and local data
+/knowledge-pipeline/.venv/
+/knowledge-pipeline/.env
+/knowledge-pipeline/vec_db/
+/knowledge-pipeline/**/*.sqlite*

@@ -123,6 +123,17 @@ func (p *OpenApiProvider) Generate(ctx context.Context, msgs []sharedkernel.Mess
 		}
 	}
 
+	switch resp.Status {
+	case "completed":
+		msg.FinishReason = sharedkernel.FinishReasonStop
+		if !hasCompleteUsage(resp.Usage) {
+			msg.FinishReason = sharedkernel.FinishReasonUsageUnavailable
+		}
+	case "incomplete":
+		msg.FinishReason = incompleteFinishReason(resp.IncompleteDetails.Reason)
+	default:
+		msg.FinishReason = sharedkernel.FinishReasonCancelled
+	}
 	return msg, nil
 }
 
@@ -137,7 +148,7 @@ func (p *OpenApiProvider) buildResponseParams(msgs []sharedkernel.Message, tools
 			item := responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleSystem)
 			inputParams.OfInputItemList = append(inputParams.OfInputItemList, item)
 		case sharedkernel.RoleUser:
-			item := responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser)
+			item := responses.ResponseInputItemParamOfMessage(msg.ModelContent(), responses.EasyInputMessageRoleUser)
 			inputParams.OfInputItemList = append(inputParams.OfInputItemList, item)
 		case sharedkernel.RoleTool:
 			item := responses.ResponseInputItemParamOfFunctionCallOutput(msg.ToolCallID, msg.Content)
@@ -266,6 +277,9 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 			resp := ev.AsResponseCompleted().Response
 			msg.TokenUsed = usageFromResponse(resp.Usage)
 			msg.FinishReason = sharedkernel.FinishReasonStop
+			if !hasCompleteUsage(resp.Usage) {
+				msg.FinishReason = sharedkernel.FinishReasonUsageUnavailable
+			}
 		case "response.incomplete":
 			// 达到 max_output_tokens 或被过滤时 Responses API 发 incomplete
 			// 而非 completed：usage 同样携带，终止原因是 incomplete_details.reason。
@@ -293,6 +307,11 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 	}
 
 	return msg, nil
+}
+
+func hasCompleteUsage(usage responses.ResponseUsage) bool {
+	input, output := usage.JSON.InputTokens.Raw(), usage.JSON.OutputTokens.Raw()
+	return input != "" && input != "null" && output != "" && output != "null" && usage.InputTokens >= 0 && usage.OutputTokens >= 0
 }
 
 // usageFromResponse 把 SDK 的 ResponseUsage 转为领域 token 统计。

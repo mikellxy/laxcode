@@ -22,6 +22,9 @@ const (
 )
 
 func checkConfig() error {
+	if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
+		return err
+	}
 	c := config.EnvAndFileConf
 	if c.OpenaiApiKey == "" || c.OpenaiBaseUrl == "" || c.OpenaiModel == "" {
 		return errors.New("openai_api_key / openai_base_url / openai_model are required")
@@ -95,6 +98,7 @@ func Run() {
 
 	assembled, err := agentasm.AssembleQA(ctx, agentasm.QAInput{
 		WorkDir:   workDir,
+		KBPath:    config.CliConf.KB,
 		SessionID: config.CliConf.Session,
 		Consumer:  newEventConsumer(func(text string) { sendIn(cliprinter.StreamEvent{Text: text}) }),
 	})

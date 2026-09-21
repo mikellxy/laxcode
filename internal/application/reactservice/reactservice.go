@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
@@ -32,6 +33,8 @@ type ReActService struct {
 	// promptEnricher 是 chat 根 span 内、消息落盘前执行的可选查询增强器。
 	// QA 模式注入向量化与知识库召回实现；普通模式保持 nil。
 	promptEnricher PromptEnricher
+	memoryEnricher MemoryEnricher
+	trackTurns     bool
 }
 
 var (
@@ -62,6 +65,12 @@ type ReactEvent struct {
 
 // PromptEnricher 在 chat 根 span 内把用户输入扩充为最终模型提示词。
 // 实现可创建 query-embedding、vector-retrieval 等子 span。
+type MemoryEnricher interface {
+	Recall(context.Context, string, string) ([]sharedkernel.MemoryChunk, error)
+}
+
+func (r *ReActService) EnableUserMemory(e MemoryEnricher) { r.memoryEnricher = e; r.trackTurns = true }
+
 type PromptEnricher interface {
 	Enrich(ctx context.Context, query string) (string, error)
 }
@@ -187,7 +196,25 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	if err != nil {
 		return nil, err
 	}
-	if err = r.commitCreatedMessage(ctx, candidate, userMsg, userMsg); err != nil {
+	original := userMsg.Clone()
+	for i := range candidate.Messages {
+		candidate.Messages[i].MemoryChunks = nil
+	}
+	if r.trackTurns {
+		if r.Session.UserID == "" {
+			slog.DebugContext(ctx, "user_memory_skipped", "session_id", r.Session.ID, "reason", "anonymous session")
+		}
+		if r.Session.UserID != "" && r.memoryEnricher != nil {
+			chunks, recallErr := r.memoryEnricher.Recall(ctx, r.Session.UserID, p)
+			if recallErr != nil {
+				slog.WarnContext(ctx, "user_memory_recall_failed", "error", recallErr)
+			} else {
+				userMsg.MemoryChunks = chunks
+			}
+		}
+		candidate.Messages[len(candidate.Messages)-1] = userMsg.Clone()
+	}
+	if err = r.commitCreatedMessage(ctx, candidate, original, userMsg); err != nil {
 		return nil, err
 	}
 	return r.think(ctx)
@@ -213,7 +240,7 @@ func needsRecovery(messages []sharedkernel.Message) bool {
 		return false
 	}
 	tail := messages[len(messages)-1]
-	return tail.Role != sharedkernel.RoleAssistant || len(tail.ToolCalls) != 0
+	return tail.Role != sharedkernel.RoleAssistant || len(tail.ToolCalls) != 0 || (tail.FinishReason != "" && tail.FinishReason != sharedkernel.FinishReasonStop)
 }
 
 // recoverBeforeChat 直接从消息尾部推导上次执行是否收束；若未收束，只补齐
@@ -342,6 +369,14 @@ func (r *ReActService) handleTurnMsg(ctx context.Context, msg *sharedkernel.Mess
 	candidate, err := r.Session.WithAppendedMessage(msg)
 	if err != nil {
 		return err
+	}
+	if r.trackTurns && msg.Role == sharedkernel.RoleAssistant && len(msg.ToolCalls) == 0 && msg.FinishReason == sharedkernel.FinishReasonStop {
+		if candidate.ReactTurnCount == ^uint64(0) {
+			return fmt.Errorf("react turn exhausted")
+		}
+		candidate.ReactTurnCount++
+		msg.ReactTurn = candidate.ReactTurnCount
+		candidate.Messages[len(candidate.Messages)-1] = msg.Clone()
 	}
 	return r.commitCreatedMessage(ctx, candidate, *msg, *msg)
 }

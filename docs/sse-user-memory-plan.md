@@ -1,6 +1,8 @@
 # SSE 用户长期记忆与 RAG 异步管线改造方案
 
-状态：设计方案，尚未实施。日期：2026-09-20。
+状态：第一版已实施（2026-09-21）。原始设计日期：2026-09-20。
+
+实现与运行说明见 [sse-user-memory.md](sse-user-memory.md)。QA 始终要求通过 `-kb` 指定数据库文件绝对路径；SSE 仅在三个 embedding 环境变量齐全时要求 `-kb` 和 `-vector-dim`，写入/召回共用该路径，不再使用固定目录或 `USER_MEMORY_DB` 回退。Python 管线现已复制到本仓库 `knowledge-pipeline/`；SSE 缺少任一 `OPENAI_EMBEDDING_MODEL_NAME / OPENAI_EMBEDDING_BASE_URL / OPENAI_EMBEDDING_API_KEY` 时静默跳过记忆任务（标记 skipped），无需数据库参数、Python 或向量库也可聊天。`messages.react_turn` 采用可空字段，仅在 `message_type='original'`、`role='assistant'`、无 tool calls、`finish_reason='stop'` 的完成记录上写入；其他记录为 NULL。它与 `request_contexts.react_turn_count`、`react_turns` 来源记录和三轮任务同事务提交。SSE 当前无工具；未来启用工具循环时须扩展完成提交点，不能仅沿用最终 assistant 的标记语义。
 
 涉及项目：
 
@@ -138,13 +140,13 @@ Message.Clone 深复制新切片。原始消息历史不保存附加 chunk；当
 | --- | --- |
 | user_memory | id 主键、user_id 非空、session_id、source_key、start_turn、end_turn、content 完整摘要、created_at；UNIQUE(user_id, source_key)、UNIQUE(id, user_id) |
 | user_memory_chunk | chunk_id 主键、user_id 非空、memory_id、chunk_seq、content、title；FOREIGN KEY(memory_id, user_id) REFERENCES user_memory(id, user_id)；UNIQUE(memory_id, chunk_seq) |
-| user_memory_vectors | vec0 虚表：chunk_id TEXT PRIMARY KEY、user_id 可用于 KNN 内部过滤的元数据列、embedding FLOAT[1024] |
+| user_memory_vectors | vec0 虚表：chunk_id TEXT PRIMARY KEY、user_id 可用于 KNN 内部过滤的元数据列、embedding FLOAT[运行时 `-vector-dim`] |
 
 普通表启用外键约束。向量虚表没有普通外键保障，writer 在同一事务维护 chunk 与向量一一对应，删除和替换也必须覆盖三张表。为普通表用户与关联查询建立索引。
 
 向量搜索必须在 KNN 选 top3 时限定 user_id，不允许全库 top3 后再过滤。实现时针对实际 Python/Go sqlite-vec 版本验证元数据过滤，确认所需语法在两端均可用；具体使用普通元数据列还是 partition key 由兼容性与实测决定。
 
-Python 与 Go 必须使用相同 embedding 模型和向量空间，维度固定匹配现有 Go 的 1024。相同维度并不代表不同模型可混用。写入前验证向量数量、维度及数值有效性，已有表不匹配时明确报错。
+Python 与 Go 必须使用相同 embedding 模型、向量空间和 `-vector-dim`。相同维度并不代表不同模型可混用。写入前验证向量数量、维度及数值有效性，已有表不匹配时明确报错。
 
 user_memory 表的 DDL 由 Python 写入侧统一维护；部署先运行幂等初始化/迁移，Go 启动验证表结构。避免两边分别维护不一致的建表语句。已有 documents 等表不被记忆迁移修改。
 
@@ -166,7 +168,7 @@ user_memory 表的 DDL 由 Python 写入侧统一维护；部署先运行幂等�
 新增 `--stdin-json`，与 `--doc` 互斥。user_memory 目标第一版使用 stdin JSON；现有 knowledge 文件入口保持兼容。
 
 ```text
-laxcode-knowledge --target user_memory --db /absolute/path/kb/kb.sqlite --stdin-json
+laxcode-knowledge --target user_memory --db /absolute/path/kb/kb.sqlite --dimensions 1024 --stdin-json
 ```
 
 ```json

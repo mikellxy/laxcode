@@ -13,18 +13,17 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	infraembedding "github.com/mikellxy/laxcode/internal/infrastructure/embedding"
 	infrakb "github.com/mikellxy/laxcode/internal/infrastructure/knowledgebase"
-	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
-	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
-	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
 type QAInput struct {
+	KBPath    string
 	WorkDir   string
 	SessionID string
 	Consumer  func(*reactservice.ReactEvent)
 }
 
 type QAAssembled struct {
+	tracer  telemetry.Tracer
 	Service *reactservice.ReActService
 	Session *session.Session
 	Cleanup func()
@@ -34,54 +33,30 @@ type QAAssembled struct {
 // deliberately empty: retrieved chunks are the only external context in this
 // version of QA mode.
 func AssembleQA(ctx context.Context, in QAInput) (*QAAssembled, error) {
-	sessRepo, err := sessionrepo.NewSqliteSessionRepo(
-		layout.SessionDB(in.WorkDir), layout.SessionRoot(in.WorkDir))
+	if err := config.ValidateKBPath(in.KBPath); err != nil {
+		return nil, err
+	}
+	assembled, err := assembleToolless(ctx, in)
 	if err != nil {
 		return nil, err
 	}
-	sess := session.NewSession(in.SessionID)
-	traceHandle, err := newTraceHandle(ctx, layout.TracingLog(in.WorkDir, sess.ID))
-	if err != nil {
-		_ = sessRepo.Close()
-		return nil, err
-	}
-	tracer := traceHandle.Tracer
-	toolReg := newQAToolRegistry(tracer)
-
+	react, sess := assembled.Service, assembled.Session
 	c := config.EnvAndFileConf
-	llmClient := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.OpenaiModel, c.LlmRouterURL,
-		c.OpenaiContextWindow, c.OpenaiMaxOutputTokens)
-	contextSummaryLLMClient := llmprovider.NewOpenApiProvider(
-		c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel,
-		c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)
-	react := reactservice.NewReActService(sess, sessRepo, llmClient, contextSummaryLLMClient,
-		toolReg, in.Consumer, tracer)
-
-	retriever, err := infrakb.NewSQLiteVecRetriever(layout.KnowledgeBaseDB(in.WorkDir))
+	retriever, err := infrakb.NewSQLiteVecRetriever(in.KBPath)
 	if err != nil {
-		_ = toolReg.Close()
-		_ = sessRepo.Close()
-		_ = traceHandle.Shutdown(ctx)
+		assembled.Cleanup()
 		return nil, err
 	}
 	embedder := infraembedding.NewOpenAIClient(
 		c.EmbedOpenaiApiKey, c.EmbedOpenaiBaseUrl, c.EmbedOpenaiModel)
-	react.SetPromptEnricher(qaservice.New(embedder, retriever, tracer))
+	react.SetPromptEnricher(qaservice.New(embedder, retriever, assembled.tracer))
 
 	var once sync.Once
 	cleanup := func() {
 		once.Do(func() {
-			_ = toolReg.Close()
 			_ = retriever.Close()
-			_ = sessRepo.Close()
-			_ = traceHandle.Shutdown(ctx)
+			assembled.Cleanup()
 		})
-	}
-
-	if err := react.InitSession(ctx); err != nil {
-		cleanup()
-		return nil, err
 	}
 	if err := react.InitSysPrompt(ctx, prompt.GetQASysPrompt()); err != nil {
 		cleanup()

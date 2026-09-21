@@ -7,11 +7,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/mikellxy/laxcode/cmd/agentasm"
+	"github.com/mikellxy/laxcode/internal/application/usermemory"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/embedding"
+	"github.com/mikellxy/laxcode/internal/infrastructure/knowledgebase"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
+	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
+	"github.com/mikellxy/laxcode/internal/infrastructure/memorypipeline"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
@@ -23,6 +31,14 @@ const shutdownTimeout = 15 * time.Second
 // checkConfig 校验 openai 三项必填配置，与 run_cli 一致：缺失即在起服务前失败，
 // 避免监听后才在首个请求暴露配置问题。
 func checkConfig() error {
+	if config.EmbeddingEnvironmentReady() {
+		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
+			return err
+		}
+		if err := config.ValidateVectorDimensions(config.CliConf.VectorDimensions); err != nil {
+			return err
+		}
+	}
 	if config.EnvAndFileConf.OpenaiApiKey == "" {
 		return errors.New("openai_api_key is required")
 	}
@@ -61,6 +77,11 @@ func Run() {
 		workDir = wd
 	}
 
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		fatal(err)
+	}
+	workDir = absWorkDir
 	s := newServer(workDir, config.CliConf.Plan)
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(workDir), layout.SessionRoot(workDir))
@@ -70,6 +91,11 @@ func Run() {
 	defer historyRepo.Close()
 	s.history = historyRepo
 	s.catalog = historyRepo
+	cleanupMemory, err := s.startUserMemory(historyRepo)
+	if err != nil {
+		fatal(err)
+	}
+	defer cleanupMemory()
 	mux := http.NewServeMux()
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
@@ -112,4 +138,53 @@ func Run() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		_ = srv.Close()
 	}
+}
+
+// startUserMemory owns server-scoped memory resources.
+func (s *server) startUserMemory(historyRepo *sessionrepo.SqliteSessionRepo) (func(), error) {
+	c := config.EnvAndFileConf
+	// Without the complete embedding environment, drain jobs as skipped and
+	// leave SSE chat available without opening the vector database.
+	if !memorypipeline.EnvironmentReady() {
+		worker := &usermemory.Worker{Repo: historyRepo, Concurrency: 1, Timeout: time.Second, Ready: func() bool { return false }}
+		worker.Start()
+		return worker.Close, nil
+	}
+	dbPath := config.CliConf.KB
+	if err := config.ValidateKBPath(dbPath); err != nil {
+		return nil, err
+	}
+	if err := config.ValidateVectorDimensions(config.CliConf.VectorDimensions); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(c.UserMemoryExecutable) == "" {
+		worker := &usermemory.Worker{Repo: historyRepo, Concurrency: 1, Timeout: time.Second, Ready: func() bool { return false }}
+		worker.Start()
+		return worker.Close, nil
+	}
+	pipeline := &memorypipeline.CLI{Executable: c.UserMemoryExecutable, DB: dbPath, Model: c.EmbedOpenaiModel, BaseURL: c.EmbedOpenaiBaseUrl, APIKey: c.EmbedOpenaiApiKey, Dimensions: config.CliConf.VectorDimensions}
+	if err := pipeline.Validate(); err != nil {
+		return nil, fmt.Errorf("init user memory pipeline: %w", err)
+	}
+	if c.UserMemoryConcurrency < 1 || c.UserMemoryConcurrency > 8 || c.UserMemoryTimeoutSeconds < 1 || c.UserMemoryTimeoutSeconds > 3600 {
+		return nil, fmt.Errorf("invalid user memory worker concurrency/timeout")
+	}
+	initCtx, initCancel := context.WithTimeout(context.Background(), time.Duration(c.UserMemoryTimeoutSeconds)*time.Second)
+	defer initCancel()
+	if err := pipeline.InitSchema(initCtx); err != nil {
+		return nil, fmt.Errorf("initialize user memory schema: %w", err)
+	}
+	retriever, err := knowledgebase.NewUserMemoryRetriever(dbPath, c.EmbedOpenaiModel, config.CliConf.VectorDimensions)
+	if err != nil {
+		return nil, err
+	}
+
+	recall := &usermemory.RecallService{Embedder: embedding.NewOpenAIClient(c.EmbedOpenaiApiKey, c.EmbedOpenaiBaseUrl, c.EmbedOpenaiModel), Retriever: retriever}
+	s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
+		return agentasm.AssembleSSE(ctx, in, recall)
+	}
+	worker := &usermemory.Worker{Ready: memorypipeline.EnvironmentReady, Repo: historyRepo, Pipeline: pipeline, Concurrency: c.UserMemoryConcurrency, Timeout: time.Duration(c.UserMemoryTimeoutSeconds) * time.Second,
+		LLM: llmprovider.NewOpenApiProvider(c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel, c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)}
+	worker.Start()
+	return func() { worker.Close(); _ = retriever.Close() }, nil
 }

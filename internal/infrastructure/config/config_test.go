@@ -275,6 +275,8 @@ func TestParseCli(t *testing.T) {
 		"-oneshot=true",
 		"-sse=true",
 		"-qa=true",
+		"-kb", filepath.Join(t.TempDir(), "vectors.sqlite"),
+		"-vector-dim", "1024",
 		"-addr", ":9000",
 		"-workdir", "/tmp/proj",
 		"-task", "do something",
@@ -304,6 +306,9 @@ func TestParseCli(t *testing.T) {
 	}
 	if CliConf.Addr != ":9000" {
 		t.Errorf("addr 应为 :9000，实际 %q", CliConf.Addr)
+	}
+	if CliConf.VectorDimensions != 1024 {
+		t.Errorf("vector dimensions 应为 1024，实际 %d", CliConf.VectorDimensions)
 	}
 }
 
@@ -379,5 +384,80 @@ func TestAuxiliaryModelSources(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestKnowledgeBaseFlagForSSEAndQA(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "external vectors.sqlite")
+	for _, mode := range []string{"-sse", "-qa"} {
+		for _, tc := range []struct {
+			name, value string
+			valid       bool
+		}{
+			{"absolute", path, true}, {"missing", "", false}, {"relative", "kb/memory.sqlite", false}, {"home shorthand", "~/kb.sqlite", false},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				if mode == "-sse" {
+					for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
+						t.Setenv(key, "configured")
+					}
+				}
+				args := []string{mode, "-kb=" + tc.value}
+				if mode == "-sse" {
+					args = append(args, "-vector-dim=1024")
+				}
+				swapCliGlobals(t, args...)
+				// Legacy configuration must not supply a missing -kb.
+				t.Setenv("USER_MEMORY_DB", path)
+				err := ParseCli()
+				if (err == nil) != tc.valid {
+					t.Fatalf("ParseCli error=%v, valid=%v", err, tc.valid)
+				}
+				if tc.valid && CliConf.KB != path {
+					t.Fatalf("kb=%q", CliConf.KB)
+				}
+			})
+		}
+	}
+}
+
+func TestSSERequiresValidVectorDimensions(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "vectors.sqlite")
+	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
+		t.Setenv(key, "configured")
+	}
+	for _, value := range []string{"", "0", "-1", "8193"} {
+		t.Run(value, func(t *testing.T) {
+			args := []string{"-sse", "-kb=" + db}
+			if value != "" {
+				args = append(args, "-vector-dim="+value)
+			}
+			swapCliGlobals(t, args...)
+			if err := ParseCli(); err == nil {
+				t.Fatalf("accepted vector dimensions %q", value)
+			}
+		})
+	}
+}
+
+func TestSSEAllowsMissingMemoryFlagsWhenEmbeddingIsDisabled(t *testing.T) {
+	keys := []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"}
+	for _, key := range keys {
+		t.Setenv(key, "configured")
+	}
+	for _, missing := range keys {
+		t.Run(missing, func(t *testing.T) {
+			t.Setenv(missing, "")
+			swapCliGlobals(t, "-sse")
+			if err := ParseCli(); err != nil {
+				t.Fatalf("disabled embedding unexpectedly requires memory flags: %v", err)
+			}
+			if CliConf.KB != "" {
+				t.Fatalf("kb = %q", CliConf.KB)
+			}
+			if CliConf.VectorDimensions != 0 {
+				t.Fatalf("vector dimensions = %d", CliConf.VectorDimensions)
+			}
+		})
 	}
 }

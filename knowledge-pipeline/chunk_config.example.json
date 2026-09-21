@@ -1,0 +1,8 @@
+{
+    "text_splitter": "by_title_spliter",
+    "properties": {
+        "chunk_size": 2800,
+        "overlap_size": 400,
+        "title_re": "^第([一二三四五六七八九十百]+)回\\s+(.*)$"
+    }
+}
