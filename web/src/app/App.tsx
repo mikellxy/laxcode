@@ -5,6 +5,7 @@ import { useWorkspace } from "../hooks/use-workspace";
 import { historyToMessage } from "../types/chat";
 import { SessionTabs } from "../components/session-tabs/SessionTabs";
 import { MessageList } from "../components/message-list/MessageList";
+import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { ChatComposer } from "../components/chat-composer/ChatComposer";
 
 export function App() {
@@ -18,6 +19,7 @@ export function App() {
     <section className="workspace">
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div><strong>{selected?.title || "新会话"}</strong><small>{workspace.stream.running ? <><i className="working-dot" />正在执行</> : "准备就绪"}</small></div><span className="session-code">{workspace.selectedID?.slice(0, 8)}</span></header>
       <MessageList messages={messages} hasMore={Boolean(workspace.history.hasNextPage)} loading={workspace.history.isFetchingNextPage} initialLoading={workspace.history.isLoading} error={workspace.stream.error} retryAction={workspace.stream.retryAction} retrying={workspace.stream.running} onRetry={workspace.retry} onLoadMore={() => workspace.history.fetchNextPage()} />
+      <ModelPicker running={workspace.stream.running} />
       <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedID || workspace.history.isLoading} onSend={workspace.send} onCancel={workspace.cancel} />
     </section>
   </div>;

@@ -83,8 +83,9 @@ func main() {
 		os.Exit(exitCode)
 	case config.CliConf.SSE:
 		// sse server：阻塞式监听，接受 POST /chat 并把 ReAct 事件以 SSE 流式回传；
-		// SIGINT/SIGTERM 触发优雅关闭后 Run 返回。
-		run_sse.Run()
+		// SIGINT/SIGTERM 触发优雅关闭后 Run 返回。routerServer 一并注入，供
+		// POST /api/model 切换模型时替换路由器的上游 client。
+		run_sse.Run(routerServer)
 	case config.CliConf.QA:
 		run_qa.Run()
 	default:

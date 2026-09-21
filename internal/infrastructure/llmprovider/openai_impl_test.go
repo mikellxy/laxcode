@@ -152,19 +152,20 @@ func TestGenerateStreamCompletedKeepsStopReason(t *testing.T) {
 	}
 }
 
-// TestGenerateStreamFailedEventMarksCancelled 验证 response.failed 事件：
-// finish_reason=cancelled 且 usage（若携带）不丢。
-func TestGenerateStreamFailedEventMarksCancelled(t *testing.T) {
+// TestGenerateStreamFailedEventReturnsError 验证 response.failed 事件不会被
+// 伪装成正常的空回复：保留 cancelled/usage，同时把上游错误传给调用方。
+func TestGenerateStreamFailedEventReturnsError(t *testing.T) {
 	p := newStreamTestProvider(t, "event: response.failed\n"+
 		"data: {\"type\":\"response.failed\",\"sequence_number\":1,"+
 		"\"response\":{\"id\":\"resp-3\",\"status\":\"failed\","+
+		"\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"},"+
 		"\"usage\":{\"input_tokens\":50,\"output_tokens\":0}}}\n\n")
 
 	msg, err := p.GenerateStream(context.Background(), []sharedkernel.Message{{
 		Role: sharedkernel.RoleUser, Content: "q",
 	}}, nil, func(sharedkernel.StreamChunk) {})
-	if err != nil {
-		t.Fatalf("GenerateStream: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "server_error") || !strings.Contains(err.Error(), "upstream exploded") {
+		t.Fatalf("GenerateStream error = %v", err)
 	}
 	if msg.FinishReason != sharedkernel.FinishReasonCancelled {
 		t.Fatalf("finish_reason 应为 cancelled，实际 %q", msg.FinishReason)

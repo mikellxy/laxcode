@@ -82,6 +82,23 @@ func (a *Assembled) SwitchModel(ref string) error {
 	return a.switchModel(ref)
 }
 
+// SwitchRouterModel 只替换本地 LLM 路由器的上游 client 并写回运行时配置，供没有
+// 长驻 ReActService 的前端（如 SSE：装配按请求进行，随后每个请求自然以新配置
+// 构建 provider）复用 Assembled.SwitchModel 的「解析 → 换路由 client → 落配置」
+// 顺序。切换只保证在无进行中 Chat 时生效；在途请求按各自快照继续用旧模型。
+func SwitchRouterModel(router RouterClientReplacer, ref string) error {
+	if router == nil {
+		return errors.New("model switching requires a running LLM router")
+	}
+	resolved, err := config.ResolveModel(ref)
+	if err != nil {
+		return err
+	}
+	router.ReplaceClient(infrastructurerouter.NewOpenAIStreamClient(
+		resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel))
+	return config.SetActiveModel(ref)
+}
+
 // Assemble 装配一个可直接运行的 ReActService：会话（含系统提示词）、tracer、
 // 工具集（含子 Agent）、LLM provider。OpenAI 凭据取自 config.EnvAndFileConf，
 // 调用前须已由调用方校验（本函数不重复校验，缺失会在 Run 时才暴露）。

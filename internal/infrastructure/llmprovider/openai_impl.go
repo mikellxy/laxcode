@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	domainllm "github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
@@ -290,6 +292,18 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 			resp := ev.AsResponseFailed().Response
 			msg.TokenUsed = usageFromResponse(resp.Usage)
 			msg.FinishReason = sharedkernel.FinishReasonCancelled
+			code := strings.TrimSpace(string(resp.Error.Code))
+			message := strings.TrimSpace(resp.Error.Message)
+			switch {
+			case code != "" && message != "":
+				return msg, fmt.Errorf("model response failed (%s): %s", code, message)
+			case message != "":
+				return msg, fmt.Errorf("model response failed: %s", message)
+			case code != "":
+				return msg, fmt.Errorf("model response failed (%s)", code)
+			default:
+				return msg, errors.New("model response failed")
+			}
 		}
 	}
 	// 终止事件从未出现（兼容端点不发 completed/incomplete/failed）或出现但

@@ -15,6 +15,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
@@ -36,6 +37,11 @@ type server struct {
 	locks    *sessionLocks
 	history  session.SessionHistoryRepository
 	catalog  session.SessionCatalogRepository
+	// router 是 main 启动的本地 LLM 路由器：流式生成全部经它转发，模型切换
+	// 须替换其上游 client。switchMu 串行化切换，避免并发切换使路由器与运行时
+	// 配置交错成不一致组合。
+	router   agentasm.RouterClientReplacer
+	switchMu sync.Mutex
 }
 
 const (
@@ -152,6 +158,90 @@ type historyMessageDTO struct {
 	ReasoningContent string    `json:"reasoning_content,omitempty"`
 	ToolSummary      string    `json:"tool_summary,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
+}
+
+// modelConfigDTO / providerModelsDTO / providerListModelDTO 是 GET /api/models
+// 的响应载体：只回传模型目录中的模型清单；OpenaiApiKey / OpenaiBaseUrl 属隐私
+// 配置不外发。ModelRef 是 provider:model 引用，前端凭它构造 POST /api/model
+// 的切换请求。CurrentModel 是运行时生效的引用，即当前（及后续每个请求）LLM
+// client 实际使用的模型。
+type modelConfigDTO struct {
+	ModelName     string `json:"model_name"`
+	UpstreamModel string `json:"upstream_model,omitempty"`
+	ModelRef      string `json:"model_ref"`
+}
+
+type providerModelsDTO struct {
+	ModelList []modelConfigDTO `json:"model_list"`
+}
+
+type providerListModelDTO struct {
+	CurrentModel string              `json:"current_model"`
+	Providers    []providerModelsDTO `json:"providers"`
+}
+
+// handleListModels 处理 GET /api/models：返回 EnvAndFileConf.ProviderList 的
+// 脱敏视图（各 provider 的 ModelList）与当前生效模型引用，供客户端做模型
+// 选择、切换与展示，不暴露凭据与端点。
+func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
+	providers := config.EnvAndFileConf.ProviderList
+	response := providerListModelDTO{
+		CurrentModel: config.EnvAndFileConf.Model,
+		Providers:    make([]providerModelsDTO, len(providers)),
+	}
+	for i, provider := range providers {
+		models := make([]modelConfigDTO, len(provider.ModelList))
+		for j, model := range provider.ModelList {
+			models[j] = modelConfigDTO{
+				ModelName:     model.ModelName,
+				UpstreamModel: model.UpstreamModel,
+				ModelRef:      provider.ProviderName + ":" + model.ModelName,
+			}
+		}
+		response.Providers[i] = providerModelsDTO{ModelList: models}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// switchModelRequest 是 POST /api/model 的请求体：provider 与 model 拼成
+// provider:model 引用，二者均必填。
+type switchModelRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// handleSwitchModel 处理 POST /api/model：按 provider + model 组合引用后，经
+// agentasm.SwitchRouterModel 复用 Assembled.SwitchModel 的切换语义——替换本地
+// LLM 路由器的上游 client（SSE 流式流量全经路由器，凭据与模型名都在其侧），
+// 再写回运行时配置；此后每个请求的按次装配自然以新配置构建 provider。
+// 切换只在无进行中 Chat 时原子生效，与 TUI 的约束一致；在途请求按装配快照
+// 继续使用旧模型。
+func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
+	var req switchModelRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	provider, model := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
+	if provider == "" || model == "" {
+		writeJSONError(w, http.StatusBadRequest, "provider and model are required")
+		return
+	}
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
+	if s.router == nil {
+		writeJSONError(w, http.StatusInternalServerError, "model switching requires a running LLM router")
+		return
+	}
+	if err := agentasm.SwitchRouterModel(s.router, provider+":"+model); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]string{"model_ref": provider + ":" + model})
 }
 
 type historyPageDTO struct {

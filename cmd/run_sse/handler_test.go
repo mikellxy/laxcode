@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
+	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/session"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
 type fakeHistoryRepo struct {
@@ -99,6 +101,142 @@ func TestSessionEndpointsRejectInvalidUserID(t *testing.T) {
 	s.handleListSessions(list, httptest.NewRequest(http.MethodGet, "/api/sessions?user_id=bad", nil))
 	if list.Code != http.StatusBadRequest {
 		t.Fatalf("list invalid user status=%d", list.Code)
+	}
+}
+
+type recordingModelRouter struct {
+	clients []domainrouter.StreamClient
+}
+
+func (r *recordingModelRouter) ReplaceClient(client domainrouter.StreamClient) {
+	r.clients = append(r.clients, client)
+}
+
+func setupSwitchModelCatalog(t *testing.T) {
+	t.Helper()
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{
+		{
+			ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1",
+			ModelList: []config.ModelConfig{{ModelName: "model-1"}},
+		},
+		{
+			ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1",
+			ModelList: []config.ModelConfig{{ModelName: "model-2", UpstreamModel: "upstream-2"}},
+		},
+	}
+	if err := config.SetActiveModel("first:model-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
+	setupSwitchModelCatalog(t)
+	router := &recordingModelRouter{}
+	s := newServer(t.TempDir(), false)
+	s.router = router
+
+	rec := httptest.NewRecorder()
+	s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
+		strings.NewReader(`{"provider":"second","model":"model-2"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ModelRef string `json:"model_ref"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ModelRef != "second:model-2" {
+		t.Fatalf("unexpected response: %+v", got)
+	}
+	if len(router.clients) != 1 {
+		t.Fatalf("router replacements=%d, want 1", len(router.clients))
+	}
+	if config.EnvAndFileConf.Model != "second:model-2" ||
+		config.EnvAndFileConf.OpenaiApiKey != "key-2" ||
+		config.EnvAndFileConf.OpenaiModel != "upstream-2" {
+		t.Fatalf("runtime config not switched: %+v", config.EnvAndFileConf)
+	}
+}
+
+func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
+	setupSwitchModelCatalog(t)
+	router := &recordingModelRouter{}
+	s := newServer(t.TempDir(), false)
+	s.router = router
+
+	cases := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{"missing model", `{"provider":"second"}`, http.StatusBadRequest},
+		{"unknown provider", `{"provider":"ghost","model":"model-1"}`, http.StatusBadRequest},
+		{"unknown model", `{"provider":"first","model":"ghost"}`, http.StatusBadRequest},
+		{"unknown field", `{"provider":"first","model":"model-1","extra":1}`, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model", strings.NewReader(tc.body)))
+		if rec.Code != tc.status {
+			t.Fatalf("%s: status=%d body=%s", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+	if len(router.clients) != 0 {
+		t.Fatalf("router replaced on failed switch: %d", len(router.clients))
+	}
+
+	noRouter := newServer(t.TempDir(), false)
+	rec := httptest.NewRecorder()
+	noRouter.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
+		strings.NewReader(`{"provider":"first","model":"model-1"}`)))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("nil router status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
+	originalProviders, originalModel := config.EnvAndFileConf.ProviderList, config.EnvAndFileConf.Model
+	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{{
+		OpenaiApiKey:  "sk-secret",
+		OpenaiBaseUrl: "https://api.example.com",
+		ProviderName:  "example",
+		ModelList: []config.ModelConfig{
+			{ModelName: "model-a"},
+			{ModelName: "model-b", UpstreamModel: "upstream-b"},
+		},
+	}}
+	config.EnvAndFileConf.Model = "example:model-a"
+	defer func() {
+		config.EnvAndFileConf.ProviderList, config.EnvAndFileConf.Model = originalProviders, originalModel
+	}()
+
+	s := newServer(t.TempDir(), false)
+	rec := httptest.NewRecorder()
+	s.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got providerListModelDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentModel != "example:model-a" || len(got.Providers) != 1 || len(got.Providers[0].ModelList) != 2 ||
+		got.Providers[0].ModelList[0].ModelName != "model-a" || got.Providers[0].ModelList[0].UpstreamModel != "" ||
+		got.Providers[0].ModelList[1].UpstreamModel != "upstream-b" {
+		t.Fatalf("unexpected response: %+v", got)
+	}
+	if got.Providers[0].ModelList[0].ModelRef != "example:model-a" ||
+		got.Providers[0].ModelList[1].ModelRef != "example:model-b" {
+		t.Fatalf("unexpected model refs: %+v", got.Providers[0].ModelList)
+	}
+	for _, secret := range []string{"sk-secret", "https://api.example.com", "api_key", "base_url", "provider_name"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("response leaks sensitive field %q: %s", secret, rec.Body.String())
+		}
 	}
 }
 

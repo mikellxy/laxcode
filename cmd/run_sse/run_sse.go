@@ -68,8 +68,9 @@ func fatal(err error) {
 // Run 启动 sse server 并阻塞至收到 SIGINT/SIGTERM 优雅关闭。它是 main 分发的
 // 第三种前端入口，与 run_cli.Run / run_oneshot.Run 平级：装配（session/tracer/
 // tools/provider/ReActService）经 cmd/agentasm 组合根按「每请求一次」完成（见
-// handler），本函数只负责 server 级配置、路由注册与生命周期管理。
-func Run() {
+// handler），本函数只负责 server 级配置、路由注册与生命周期管理。router 是
+// main 启动的本地 LLM 路由器，供模型切换端点替换其上游 client。
+func Run(router agentasm.RouterClientReplacer) {
 	if err := checkConfig(); err != nil {
 		fatal(err)
 	}
@@ -91,6 +92,7 @@ func Run() {
 	}
 	workDir = absWorkDir
 	s := newServer(workDir, config.CliConf.Plan)
+	s.router = router
 	if config.CliConf.QA {
 		s.useQAAssembly(config.CliConf.KB, agentasm.AssembleQA)
 	}
@@ -118,9 +120,11 @@ func Run() {
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
+	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。
