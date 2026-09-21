@@ -228,6 +228,31 @@ func newServer(workDir string, planMode bool) *server {
 	}
 }
 
+type qaAssembler func(context.Context, agentasm.QAInput) (*agentasm.QAAssembled, error)
+
+// useQAAssembly switches the HTTP transport to the same knowledge-base QA
+// composition root used by cmd/run_qa. The adapter only reconciles the two
+// command-layer result types; the ReAct service, prompt, retriever, and empty
+// tool registry all come from agentasm.AssembleQA.
+func (s *server) useQAAssembly(kbPath string, assembleQA qaAssembler) {
+	s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
+		assembled, err := assembleQA(ctx, agentasm.QAInput{
+			KBPath:    kbPath,
+			WorkDir:   in.WorkDir,
+			SessionID: in.SessionID,
+			Consumer:  in.Consumer,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &agentasm.Assembled{
+			Service: assembled.Service,
+			Session: assembled.Session,
+			Cleanup: assembled.Cleanup,
+		}, nil
+	}
+}
+
 // handleChat 处理 POST /chat：解析请求 → 同会话互斥 → 写 SSE 头 → 每请求装配 →
 // 发 start 帧 → 跑 Chat（其间 Consumer 逐帧推 reasoning/message/tool_call）→ 发
 // done/error 帧 → Cleanup。

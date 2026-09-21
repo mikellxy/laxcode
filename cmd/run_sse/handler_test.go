@@ -157,6 +157,41 @@ func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
 	}
 }
 
+func TestUseQAAssemblyAdaptsSSERequestToQACompositionRoot(t *testing.T) {
+	s := newServer("/server/workdir", true)
+	wantSession := session.NewSession("qa-session")
+	cleanupCalled := false
+	var got agentasm.QAInput
+	s.useQAAssembly("/tmp/laxcode-qa/kb.sqlite", func(_ context.Context, in agentasm.QAInput) (*agentasm.QAAssembled, error) {
+		got = in
+		return &agentasm.QAAssembled{
+			Session: wantSession,
+			Cleanup: func() { cleanupCalled = true },
+		}, nil
+	})
+
+	consumer := newEventConsumer(newSSEWriter(httptest.NewRecorder(), nil))
+	assembled, err := s.assemble(context.Background(), agentasm.Input{
+		WorkDir: "/request/workdir", SessionID: "qa-session", PlanMode: true, Consumer: consumer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KBPath != "/tmp/laxcode-qa/kb.sqlite" || got.WorkDir != "/request/workdir" || got.SessionID != "qa-session" {
+		t.Fatalf("unexpected QA assembly input: %+v", got)
+	}
+	if got.Consumer == nil {
+		t.Fatal("SSE event consumer was not forwarded to QA assembly")
+	}
+	if assembled.Session != wantSession || assembled.Cleanup == nil {
+		t.Fatalf("unexpected adapted assembly: %+v", assembled)
+	}
+	assembled.Cleanup()
+	if !cleanupCalled {
+		t.Fatal("QA cleanup was not preserved")
+	}
+}
+
 // TestHandleChatInvalidJSON 验证非法请求体在进入 SSE 流之前返回 400 + JSON。
 func TestHandleChatInvalidJSON(t *testing.T) {
 	s := newServer(t.TempDir(), false)

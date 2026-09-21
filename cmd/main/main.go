@@ -64,7 +64,8 @@ func main() {
 	defer shutdownRouter()
 
 	// 模式分发，优先级 oneshot > sse > qa > cli：oneshot 保留原有 os.Exit 契约，
-	// sse 起阻塞式 HTTP 服务，qa 进入知识库问答，其余进入默认 TUI 交互模式。
+	// sse 起阻塞式 HTTP 服务（同时指定 qa 时由 run_sse 装配知识库 QA），
+	// 单独 qa 进入终端知识库问答，其余进入默认 TUI 交互模式。
 	switch {
 	case config.CliConf.Oneshot:
 		// one-shot：跑单个任务、结果 JSON 直写 stdout，Run 返回进程 exit code

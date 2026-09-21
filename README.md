@@ -99,7 +99,9 @@ export OPENAI_MODEL_NAME=gpt-4o-mini
 
 make build
 mkdir -p /tmp/laxcode-qa/workdir
-./bin/laxcode -qa \
+./bin/laxcode -sse \
+  -qa \
   -kb=/tmp/laxcode-qa/kb.sqlite \
-  -workdir=/tmp/laxcode-qa/workdir
+  -workdir=/tmp/laxcode-qa/workdir \
+  -addr=127.0.0.1:8080
 ```

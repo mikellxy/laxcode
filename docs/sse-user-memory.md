@@ -27,9 +27,10 @@ export USER_MEMORY_EXECUTABLE='/absolute/path/LaxCode/knowledge-pipeline/.venv/b
 ```sh
 ./bin/laxcode -sse -kb=/absolute/path/kb.sqlite -vector-dim=1024
 ./bin/laxcode -qa -kb=/absolute/path/kb.sqlite
+./bin/laxcode -sse -qa -kb=/absolute/path/kb.sqlite -workdir=/tmp/laxcode-qa -addr=127.0.0.1:8080
 ```
 
-QA 始终必须提供绝对数据库文件路径（`~` 不在程序内展开）。三个 `OPENAI_EMBEDDING_*` 环境变量全部配置时，SSE 必须同时提供绝对路径 `-kb` 和 1–8192 范围内的 `-vector-dim`（受 sqlite-vec 上限约束）。两种模式均不回退到 `<workDir>/kb/kb.sqlite` 或 `USER_MEMORY_DB`。SSE 的 Python `--db/--dimensions` 参数与 Go 召回使用同一个 `-kb/-vector-dim` 值。`-workdir` 只决定会话等工作数据位置。
+QA 始终必须提供绝对数据库文件路径（`~` 不在程序内展开）。`-sse -qa` 使用与单独 `-qa` 完全相同的 QA ReAct 服务，只将交互层替换为 HTTP/SSE；它不启动用户记忆 worker，也不需要 `-vector-dim`。三个 `OPENAI_EMBEDDING_*` 环境变量全部配置时，单独 SSE 必须同时提供绝对路径 `-kb` 和 1–8192 范围内的 `-vector-dim`（受 sqlite-vec 上限约束）。两种模式均不回退到 `<workDir>/kb/kb.sqlite` 或 `USER_MEMORY_DB`。SSE 的 Python `--db/--dimensions` 参数与 Go 召回使用同一个 `-kb/-vector-dim` 值。`-workdir` 只决定会话等工作数据位置。
 
 缺少任一 embedding 环境变量时，SSE 不校验 `-kb` 或 `-vector-dim`，两者均可省略，也不会打开向量数据库。启用记忆后，SSE 才校验这两个参数，并在启动时自动调用 Python `--init-schema` 幂等创建或检查用户记忆表，成功后才创建 Go retriever；无需手动预初始化。QA 使用前仍需要导入文档知识库。
 

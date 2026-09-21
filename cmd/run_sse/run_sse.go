@@ -28,10 +28,18 @@ import (
 // 取消驱动在途 Chat 收敛、Cleanup 回收资源。
 const shutdownTimeout = 15 * time.Second
 
-// checkConfig 校验 openai 三项必填配置，与 run_cli 一致：缺失即在起服务前失败，
-// 避免监听后才在首个请求暴露配置问题。
+// checkConfig 按启动模式校验聊天模型以及 QA/用户记忆所需配置：
+// 缺失即在起服务前失败，避免监听后才在首个请求暴露配置问题。
 func checkConfig() error {
-	if config.EmbeddingEnvironmentReady() {
+	if config.CliConf.QA {
+		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
+			return err
+		}
+		c := config.EnvAndFileConf
+		if c.EmbedOpenaiApiKey == "" || c.EmbedOpenaiBaseUrl == "" || c.EmbedOpenaiModel == "" {
+			return errors.New("OPENAI_EMBEDDING_API_KEY / OPENAI_EMBEDDING_BASE_URL / OPENAI_EMBEDDING_MODEL_NAME are required")
+		}
+	} else if config.EmbeddingEnvironmentReady() {
 		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
 			return err
 		}
@@ -83,6 +91,9 @@ func Run() {
 	}
 	workDir = absWorkDir
 	s := newServer(workDir, config.CliConf.Plan)
+	if config.CliConf.QA {
+		s.useQAAssembly(config.CliConf.KB, agentasm.AssembleQA)
+	}
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(workDir), layout.SessionRoot(workDir))
 	if err != nil {
@@ -91,9 +102,15 @@ func Run() {
 	defer historyRepo.Close()
 	s.history = historyRepo
 	s.catalog = historyRepo
-	cleanupMemory, err := s.startUserMemory(historyRepo)
-	if err != nil {
-		fatal(err)
+	cleanupMemory := func() {}
+	// Combined -sse -qa mode serves the document knowledge-base QA service.
+	// User-memory recall/worker belongs to plain SSE mode and must not mutate or
+	// interpret the QA knowledge database.
+	if !config.CliConf.QA {
+		cleanupMemory, err = s.startUserMemory(historyRepo)
+		if err != nil {
+			fatal(err)
+		}
 	}
 	defer cleanupMemory()
 	mux := http.NewServeMux()
@@ -112,7 +129,11 @@ func Run() {
 
 	srv := &http.Server{Addr: config.CliConf.Addr, Handler: mux}
 
-	fmt.Printf("LaxCode SSE agent listening on %s (workdir: %s)\n", srv.Addr, workDir)
+	serviceName := "agent"
+	if config.CliConf.QA {
+		serviceName = "QA"
+	}
+	fmt.Printf("LaxCode SSE %s listening on %s (workdir: %s)\n", serviceName, srv.Addr, workDir)
 	fmt.Printf(">>> POST /chat with {\"session_id\":\"\",\"task\":\"...\"}\n")
 
 	// 监听在独立 goroutine：ListenAndServe 阻塞至服务关闭；ErrServerClosed 是

@@ -328,6 +328,21 @@ func TestParseCliDefaults(t *testing.T) {
 	}
 }
 
+func TestParseCliCombinedSSEQADoesNotRequireUserMemoryVectorDimensions(t *testing.T) {
+	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
+		t.Setenv(key, "configured")
+	}
+	swapCliGlobals(t,
+		"-sse=true",
+		"-qa=true",
+		"-kb", filepath.Join(t.TempDir(), "kb.sqlite"),
+	)
+
+	if err := ParseCli(); err != nil {
+		t.Fatalf("combined SSE QA should not require -vector-dim: %v", err)
+	}
+}
+
 func TestAuxiliaryModelSources(t *testing.T) {
 	for _, kind := range []string{"EMBEDDING", "COMPACTION"} {
 		for _, scenario := range []string{"file", "partial env", "full env", "invalid reference", "unset"} {

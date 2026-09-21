@@ -367,7 +367,7 @@ func ParseEnvAndFile() error {
 func ParseCli() error {
 	oneshot := flag.Bool("oneshot", false, "one-shot mode: run a single task and print structured JSON to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
-	qa := flag.Bool("qa", false, "knowledge-base question answering mode")
+	qa := flag.Bool("qa", false, "knowledge-base question answering mode; combine with -sse to serve QA over SSE")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
 	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -qa and for -sse when OPENAI_EMBEDDING_* is configured")
 	vectorDimensions := flag.Int("vector-dim", 0, "user-memory vector dimensions; required for -sse when OPENAI_EMBEDDING_* is configured")
@@ -398,7 +398,10 @@ func ParseCli() error {
 			return err
 		}
 	}
-	if CliConf.SSE && EmbeddingEnvironmentReady() {
+	// -sse -qa serves the regular QA service over HTTP. It uses the dimensions
+	// recorded in the knowledge database and therefore must not inherit the
+	// user-memory-only -vector-dim requirement from plain SSE mode.
+	if CliConf.SSE && !CliConf.QA && EmbeddingEnvironmentReady() {
 		return ValidateVectorDimensions(CliConf.VectorDimensions)
 	}
 	return nil
