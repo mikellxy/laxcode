@@ -14,16 +14,24 @@ import (
 	"github.com/spf13/viper"
 )
 
+// ModelLimit 是 model_list 条目里的模型级 token 预算（limit.context /
+// limit.output）：声明后作为该模型 LLM client 的 bucket，覆盖全局窗口配置。
+type ModelLimit struct {
+	Context int `mapstructure:"context"`
+	Output  int `mapstructure:"output"`
+}
+
 type ModelConfig struct {
-	ModelName     string `mapstructure:"MODEL_NAME"`
-	UpstreamModel string `mapstructure:"-"`
+	ModelName     string      `mapstructure:"model_name"`
+	UpstreamModel string      `mapstructure:"-"`
+	Limit         *ModelLimit `mapstructure:"limit"`
 }
 
 type ProviderConfig struct {
-	OpenaiApiKey  string        `mapstructure:"OPENAI_API_KEY"`
-	OpenaiBaseUrl string        `mapstructure:"OPENAI_BASE_URL"`
-	ProviderName  string        `mapstructure:"PROVIDER_NAME"`
-	ModelList     []ModelConfig `mapstructure:"MODEL_LIST"`
+	OpenaiApiKey  string        `mapstructure:"openai_api_key"`
+	OpenaiBaseUrl string        `mapstructure:"openai_base_url"`
+	ProviderName  string        `mapstructure:"provider_name"`
+	ModelList     []ModelConfig `mapstructure:"model_list"`
 }
 
 type ResolvedModel struct {
@@ -33,17 +41,26 @@ type ResolvedModel struct {
 	UpstreamModel string
 	OpenaiApiKey  string
 	OpenaiBaseUrl string
+	// ContextWindow / MaxOutputTokens 是该模型的生效 token 预算：模型级
+	// limit 优先，未声明时回退全局 openai_context_window /
+	// openai_max_output_tokens。
+	ContextWindow   int
+	MaxOutputTokens int
 }
 
+// envAndFileConf 的 mapstructure tag 与 settings.json 的键一致（小写
+// snake_case）；mapstructure 按大小写不敏感匹配，旧版大写键的配置文件仍可
+// 解析。Openai* 派生字段不从文件读取（mapstructure:"-"），由 setActiveModel
+// 按活跃模型维护。
 type envAndFileConf struct {
-	UserMemoryExecutable     string `mapstructure:"USER_MEMORY_EXECUTABLE"`
-	UserMemoryConcurrency    int    `mapstructure:"USER_MEMORY_CONCURRENCY"`
-	UserMemoryTimeoutSeconds int    `mapstructure:"USER_MEMORY_TIMEOUT_SECONDS"`
+	UserMemoryExecutable     string `mapstructure:"user_memory_executable"`
+	UserMemoryConcurrency    int    `mapstructure:"user_memory_concurrency"`
+	UserMemoryTimeoutSeconds int    `mapstructure:"user_memory_timeout_seconds"`
 
-	EmbeddingModel  string           `mapstructure:"EMBEDDING_MODEL"`
-	CompactionModel string           `mapstructure:"COMPACTION_MODEL"`
-	Model           string           `mapstructure:"MODEL"`
-	ProviderList    []ProviderConfig `mapstructure:"PROVIDER_LIST"`
+	EmbeddingModel  string           `mapstructure:"embedding_model"`
+	CompactionModel string           `mapstructure:"compaction_model"`
+	Model           string           `mapstructure:"model"`
+	ProviderList    []ProviderConfig `mapstructure:"provider_list"`
 
 	// Openai* 是由 Model 解析出的当前运行时有效配置，不直接从配置文件反序列化。
 	OpenaiApiKey  string `mapstructure:"-"`
@@ -53,14 +70,14 @@ type envAndFileConf struct {
 	EmbedOpenaiApiKey               string `mapstructure:"-"`
 	EmbedOpenaiBaseUrl              string `mapstructure:"-"`
 	EmbedOpenaiModel                string `mapstructure:"-"`
-	OpenaiContextWindow             int    `mapstructure:"OPENAI_CONTEXT_WINDOW"`
-	OpenaiMaxOutputTokens           int    `mapstructure:"OPENAI_MAX_OUTPUT_TOKENS"`
+	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
+	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
 	CompactionOpenaiApiKey          string `mapstructure:"-"`
 	CompactionOpenaiBaseUrl         string `mapstructure:"-"`
 	CompactionOpenaiModel           string `mapstructure:"-"`
-	CompactionOpenaiContextWindow   int    `mapstructure:"COMPACTION_OPENAI_CONTEXT_WINDOW"`
-	CompactionOpenaiMaxOutputTokens int    `mapstructure:"COMPACTION_OPENAI_MAX_OUTPUT_TOKENS"`
-	LlmRouterAddr                   string `mapstructure:"LLM_ROUTER_ADDR"`
+	CompactionOpenaiContextWindow   int    `mapstructure:"compaction_openai_context_window"`
+	CompactionOpenaiMaxOutputTokens int    `mapstructure:"compaction_openai_max_output_tokens"`
+	LlmRouterAddr                   string `mapstructure:"llm_router_addr"`
 	// LlmRouterURL 是进程启动后写入的实际本地端点，不从环境或配置文件读取。
 	LlmRouterURL string `mapstructure:"-"`
 }
@@ -110,14 +127,23 @@ func (c *envAndFileConf) resolveModel(ref string) (ResolvedModel, error) {
 			if upstreamModel == "" {
 				upstreamModel = model.ModelName
 			}
-			return ResolvedModel{
-				Ref:           ref,
-				ProviderName:  providerName,
-				ModelName:     modelName,
-				UpstreamModel: upstreamModel,
-				OpenaiApiKey:  provider.OpenaiApiKey,
-				OpenaiBaseUrl: provider.OpenaiBaseUrl,
-			}, nil
+			resolved := ResolvedModel{
+				Ref:             ref,
+				ProviderName:    providerName,
+				ModelName:       modelName,
+				UpstreamModel:   upstreamModel,
+				OpenaiApiKey:    provider.OpenaiApiKey,
+				OpenaiBaseUrl:   provider.OpenaiBaseUrl,
+				ContextWindow:   c.OpenaiContextWindow,
+				MaxOutputTokens: c.OpenaiMaxOutputTokens,
+			}
+			// 模型级 limit 覆盖全局窗口；validateModelCatalog 保证 limit
+			// 一旦声明则两项均合法，未声明（nil）时保持全局回退值。
+			if model.Limit != nil {
+				resolved.ContextWindow = model.Limit.Context
+				resolved.MaxOutputTokens = model.Limit.Output
+			}
+			return resolved, nil
 		}
 		return ResolvedModel{}, fmt.Errorf("model %q is not configured for provider %q", modelName, providerName)
 	}
@@ -128,19 +154,19 @@ func (c *envAndFileConf) validateModelCatalog() error {
 	providers := make(map[string]struct{}, len(c.ProviderList))
 	for _, provider := range c.ProviderList {
 		if !validCatalogName(provider.ProviderName) {
-			return fmt.Errorf("invalid PROVIDER_NAME %q", provider.ProviderName)
+			return fmt.Errorf("invalid provider_name %q", provider.ProviderName)
 		}
 		if provider.ProviderName == envProviderName &&
 			(len(provider.ModelList) != 1 || provider.ModelList[0].ModelName != envModelName ||
 				provider.ModelList[0].UpstreamModel == "") {
-			return fmt.Errorf("PROVIDER_NAME %q is reserved for environment configuration", envProviderName)
+			return fmt.Errorf("provider_name %q is reserved for environment configuration", envProviderName)
 		}
 		if _, exists := providers[provider.ProviderName]; exists {
-			return fmt.Errorf("duplicate PROVIDER_NAME %q", provider.ProviderName)
+			return fmt.Errorf("duplicate provider_name %q", provider.ProviderName)
 		}
 		providers[provider.ProviderName] = struct{}{}
 		if strings.TrimSpace(provider.OpenaiApiKey) == "" || strings.TrimSpace(provider.OpenaiBaseUrl) == "" {
-			return fmt.Errorf("provider %q requires OPENAI_API_KEY and OPENAI_BASE_URL", provider.ProviderName)
+			return fmt.Errorf("provider %q requires openai_api_key and openai_base_url", provider.ProviderName)
 		}
 		if len(provider.ModelList) == 0 {
 			return fmt.Errorf("provider %q requires at least one model", provider.ProviderName)
@@ -148,16 +174,21 @@ func (c *envAndFileConf) validateModelCatalog() error {
 		models := make(map[string]struct{}, len(provider.ModelList))
 		for _, model := range provider.ModelList {
 			if !validCatalogName(model.ModelName) {
-				return fmt.Errorf("invalid MODEL_NAME %q for provider %q", model.ModelName, provider.ProviderName)
+				return fmt.Errorf("invalid model_name %q for provider %q", model.ModelName, provider.ProviderName)
+			}
+			if model.Limit != nil &&
+				(model.Limit.Context <= 0 || model.Limit.Output <= 0 || model.Limit.Output >= model.Limit.Context) {
+				return fmt.Errorf("invalid limit for model %q of provider %q: context and output must be positive and output must be smaller than context",
+					model.ModelName, provider.ProviderName)
 			}
 			if _, exists := models[model.ModelName]; exists {
-				return fmt.Errorf("duplicate MODEL_NAME %q for provider %q", model.ModelName, provider.ProviderName)
+				return fmt.Errorf("duplicate model_name %q for provider %q", model.ModelName, provider.ProviderName)
 			}
 			models[model.ModelName] = struct{}{}
 		}
 	}
 	if len(c.ProviderList) == 0 {
-		return errors.New("PROVIDER_LIST must contain at least one provider")
+		return errors.New("provider_list must contain at least one provider")
 	}
 	_, err := c.resolveModel(c.Model)
 	return err
@@ -218,6 +249,16 @@ func ModelRefs() []string {
 
 // SetActiveModel 更新当前进程使用的模型引用及其派生连接参数，不写回配置文件。
 func SetActiveModel(ref string) error { return EnvAndFileConf.setActiveModel(ref) }
+
+// ActiveModelBudget 返回当前活跃主模型的 token 预算：模型级 limit 优先，未声明
+// 时回退全局 openai_context_window / openai_max_output_tokens。目录在启动时已
+// 校验，解析失败（仅可能出现在测试等手工构造的配置上）退回全局窗口配置。
+func ActiveModelBudget() (contextWindow, maxOutputTokens int) {
+	if resolved, err := EnvAndFileConf.resolveModel(EnvAndFileConf.Model); err == nil {
+		return resolved.ContextWindow, resolved.MaxOutputTokens
+	}
+	return EnvAndFileConf.OpenaiContextWindow, EnvAndFileConf.OpenaiMaxOutputTokens
+}
 
 type cliConf struct {
 	KB               string `mapstructure:"kb"`

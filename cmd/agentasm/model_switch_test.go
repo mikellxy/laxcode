@@ -26,7 +26,10 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 		},
 		{
 			ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1",
-			ModelList: []config.ModelConfig{{ModelName: "model-2"}},
+			ModelList: []config.ModelConfig{{
+				ModelName: "model-2",
+				Limit:     &config.ModelLimit{Context: 1_048_576, Output: 131_072},
+			}},
 		},
 	}
 	if err := config.SetActiveModel("first:model-1"); err != nil {
@@ -48,6 +51,9 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 	}
 	defer assembled.Cleanup()
 	previousClient := assembled.Service.LLMClient
+	if budget := previousClient.ContextBudget(); budget.ContextWindow != 128_000 || budget.ReservedOutputTokens != 16_384 {
+		t.Fatalf("初始 provider 预算应回退全局窗口配置：%+v", budget)
+	}
 
 	if err := assembled.SwitchModel("second:model-2"); err != nil {
 		t.Fatal(err)
@@ -57,6 +63,9 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 	}
 	if assembled.Service.LLMClient == previousClient {
 		t.Fatal("主 ReAct provider 未替换")
+	}
+	if budget := assembled.Service.LLMClient.ContextBudget(); budget.ContextWindow != 1_048_576 || budget.ReservedOutputTokens != 131_072 {
+		t.Fatalf("切换后 provider 预算未取新模型的 limit：%+v", budget)
 	}
 	if config.EnvAndFileConf.Model != "second:model-2" ||
 		config.EnvAndFileConf.OpenaiApiKey != "key-2" ||

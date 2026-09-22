@@ -212,11 +212,11 @@ type switchModelRequest struct {
 }
 
 // handleSwitchModel 处理 POST /api/model：按 provider + model 组合引用后，经
-// agentasm.SwitchRouterModel 复用 Assembled.SwitchModel 的切换语义——替换本地
-// LLM 路由器的上游 client（SSE 流式流量全经路由器，凭据与模型名都在其侧），
-// 再写回运行时配置；此后每个请求的按次装配自然以新配置构建 provider。
-// 切换只在无进行中 Chat 时原子生效，与 TUI 的约束一致；在途请求按装配快照
-// 继续使用旧模型。
+// agentasm.SwitchRouterModel（两处切换共用的核心，Assembled.SwitchModel 亦
+// 复用它）完成切换——替换本地 LLM 路由器的上游 client（SSE 流式流量全经
+// 路由器，凭据与模型名都在其侧），再写回运行时配置；此后每个请求的按次装配
+// 自然以新配置（含模型级 limit 预算）构建 provider。切换只在无进行中 Chat 时
+// 原子生效，与 TUI 的约束一致；在途请求按装配快照继续使用旧模型。
 func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 	var req switchModelRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))

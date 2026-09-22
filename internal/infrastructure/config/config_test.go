@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -39,12 +40,12 @@ func setEnvModel(t *testing.T, model string) {
 
 func modelSettings(provider, model string) string {
 	return fmt.Sprintf(`{
-		"MODEL": %q,
-		"PROVIDER_LIST": [{
-			"PROVIDER_NAME": %q,
-			"OPENAI_API_KEY": "sk-file-key",
-			"OPENAI_BASE_URL": "https://file.example.com/v1",
-			"MODEL_LIST": [{"MODEL_NAME": %q}]
+		"model": %q,
+		"provider_list": [{
+			"provider_name": %q,
+			"openai_api_key": "sk-file-key",
+			"openai_base_url": "https://file.example.com/v1",
+			"model_list": [{"model_name": %q}]
 		}]
 	}`, provider+":"+model, provider, model)
 }
@@ -105,10 +106,10 @@ func TestParseProviderModelCatalog(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeSettings(t, home, `{
-		"MODEL": "openai:gpt-4.1",
-		"PROVIDER_LIST": [
-			{"PROVIDER_NAME":"openai","OPENAI_API_KEY":"sk-o","OPENAI_BASE_URL":"https://o.example/v1","MODEL_LIST":[{"MODEL_NAME":"gpt-4o"},{"MODEL_NAME":"gpt-4.1"}]},
-			{"PROVIDER_NAME":"deepseek","OPENAI_API_KEY":"sk-d","OPENAI_BASE_URL":"https://d.example/v1","MODEL_LIST":[{"MODEL_NAME":"chat"}]}
+		"model": "openai:gpt-4.1",
+		"provider_list": [
+			{"provider_name":"openai","openai_api_key":"sk-o","openai_base_url":"https://o.example/v1","model_list":[{"model_name":"gpt-4o"},{"model_name":"gpt-4.1"}]},
+			{"provider_name":"deepseek","openai_api_key":"sk-d","openai_base_url":"https://d.example/v1","model_list":[{"model_name":"chat"}]}
 		]
 	}`)
 
@@ -138,14 +139,85 @@ func TestParseProviderModelCatalogRejectsDuplicateNames(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeSettings(t, home, `{
-		"MODEL":"p:m",
-		"PROVIDER_LIST":[
-			{"PROVIDER_NAME":"p","OPENAI_API_KEY":"k","OPENAI_BASE_URL":"https://a","MODEL_LIST":[{"MODEL_NAME":"m"}]},
-			{"PROVIDER_NAME":"p","OPENAI_API_KEY":"k","OPENAI_BASE_URL":"https://b","MODEL_LIST":[{"MODEL_NAME":"m"}]}
+		"model":"p:m",
+		"provider_list":[
+			{"provider_name":"p","openai_api_key":"k","openai_base_url":"https://a","model_list":[{"model_name":"m"}]},
+			{"provider_name":"p","openai_api_key":"k","openai_base_url":"https://b","model_list":[{"model_name":"m"}]}
 		]
 	}`)
 	if err := ParseEnvAndFile(); err == nil {
 		t.Fatal("重复 PROVIDER_NAME 应报错")
+	}
+}
+
+func TestResolveModelBudgetPrefersModelLimit(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model": "p:limited",
+		"provider_list": [{
+			"provider_name": "p",
+			"openai_api_key": "sk-p",
+			"openai_base_url": "https://p.example/v1",
+			"model_list": [
+				{"model_name": "limited", "limit": {"context": 1048576, "output": 131072}},
+				{"model_name": "plain"}
+			]
+		}]
+	}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	limited, err := ResolveModel("p:limited")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limited.ContextWindow != 1_048_576 || limited.MaxOutputTokens != 131_072 {
+		t.Fatalf("模型级 limit 未生效：%+v", limited)
+	}
+	plain, err := ResolveModel("p:plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.ContextWindow != DefaultContextWindow || plain.MaxOutputTokens != DefaultMaxOutputTokens {
+		t.Fatalf("未声明 limit 应回退全局窗口配置：%+v", plain)
+	}
+	if window, output := ActiveModelBudget(); window != 1_048_576 || output != 131_072 {
+		t.Fatalf("ActiveModelBudget 应取活跃模型的 limit：%d/%d", window, output)
+	}
+	// 切回未声明 limit 的模型应回退全局窗口，而非残留上一个模型的 limit。
+	if err := SetActiveModel("p:plain"); err != nil {
+		t.Fatal(err)
+	}
+	if window, output := ActiveModelBudget(); window != DefaultContextWindow || output != DefaultMaxOutputTokens {
+		t.Fatalf("切换后预算未回退全局窗口配置：%d/%d", window, output)
+	}
+}
+
+func TestParseProviderModelCatalogRejectsInvalidLimit(t *testing.T) {
+	for _, tc := range []struct{ name, limit string }{
+		{"zero context", `{"context": 0, "output": 100}`},
+		{"zero output", `{"context": 1000, "output": 0}`},
+		{"output not smaller than context", `{"context": 1000, "output": 1000}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			swapConfigGlobals(t)
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			writeSettings(t, home, fmt.Sprintf(`{
+				"model": "p:m",
+				"provider_list": [{
+					"provider_name": "p",
+					"openai_api_key": "k",
+					"openai_base_url": "https://a.example/v1",
+					"model_list": [{"model_name": "m", "limit": %s}]
+				}]
+			}`, tc.limit))
+			if err := ParseEnvAndFile(); err == nil {
+				t.Fatal("非法 limit 应报错")
+			}
+		})
 	}
 }
 
@@ -364,12 +436,12 @@ func TestAuxiliaryModelSources(t *testing.T) {
 					ref = ""
 				}
 				writeSettings(t, home, fmt.Sprintf(`{
-					"MODEL":"main:chat", %q:%q,
-					"PROVIDER_LIST":[
-						{"PROVIDER_NAME":"main","OPENAI_API_KEY":"main-key","OPENAI_BASE_URL":"https://main.example/v1","MODEL_LIST":[{"MODEL_NAME":"chat"}]},
-						{"PROVIDER_NAME":"aux","OPENAI_API_KEY":"aux-key","OPENAI_BASE_URL":"https://aux.example/v1","MODEL_LIST":[{"MODEL_NAME":"small"}]}
+					"model":"main:chat", %q:%q,
+					"provider_list":[
+						{"provider_name":"main","openai_api_key":"main-key","openai_base_url":"https://main.example/v1","model_list":[{"model_name":"chat"}]},
+						{"provider_name":"aux","openai_api_key":"aux-key","openai_base_url":"https://aux.example/v1","model_list":[{"model_name":"small"}]}
 					]
-				}`, kind+"_MODEL", ref))
+				}`, strings.ToLower(kind+"_MODEL"), ref))
 				want := []string{"aux-key", "https://aux.example/v1", "small"}
 				if scenario == "partial env" || scenario == "full env" {
 					t.Setenv("OPENAI_"+kind+"_MODEL_NAME", "env-model")

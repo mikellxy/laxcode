@@ -29,9 +29,9 @@ func assembleToolless(ctx context.Context, in QAInput) (*QAAssembled, error) {
 	toolReg := tools.NewDefaultRegistry(tracer)
 
 	c := config.EnvAndFileConf
-	llmClient := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.OpenaiModel, c.LlmRouterURL,
-		c.OpenaiContextWindow, c.OpenaiMaxOutputTokens)
+	// 主 provider 按当前活跃模型构建，token 预算取该模型的 limit（未声明时
+	// 回退全局窗口配置，见 newMainProvider）。
+	llmClient := newMainProvider()
 	contextSummaryLLMClient := llmprovider.NewOpenApiProvider(
 		c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel,
 		c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)

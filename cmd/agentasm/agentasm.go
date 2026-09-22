@@ -73,8 +73,10 @@ type Assembled struct {
 	switchModel func(string) error
 }
 
-// SwitchModel rebuilds both clients for subsequent Chat calls. It must be called
-// only while no Chat is in progress.
+// SwitchModel rebuilds both clients for subsequent Chat calls: it runs
+// SwitchRouterModel and additionally rebuilds the long-lived provider held by
+// the service, with the new model's limit as its token budget. It must be
+// called only while no Chat is in progress.
 func (a *Assembled) SwitchModel(ref string) error {
 	if a.switchModel == nil {
 		return errors.New("model switching is unavailable")
@@ -82,10 +84,12 @@ func (a *Assembled) SwitchModel(ref string) error {
 	return a.switchModel(ref)
 }
 
-// SwitchRouterModel 只替换本地 LLM 路由器的上游 client 并写回运行时配置，供没有
-// 长驻 ReActService 的前端（如 SSE：装配按请求进行，随后每个请求自然以新配置
-// 构建 provider）复用 Assembled.SwitchModel 的「解析 → 换路由 client → 落配置」
-// 顺序。切换只保证在无进行中 Chat 时生效；在途请求按各自快照继续用旧模型。
+// SwitchRouterModel 是两处模型切换共用的核心：解析 provider:model 引用、替换
+// 本地 LLM 路由器的上游 client、把解析结果写回运行时配置。没有长驻
+// ReActService 的前端（如 SSE：装配按请求进行，随后每个请求自然以新配置——
+// 含模型级 limit 预算——构建 provider）直接调用它；Assembled.SwitchModel 在它
+// 之后追加长驻 provider 的重建。切换只保证在无进行中 Chat 时生效；在途请求按
+// 各自快照继续用旧模型。
 func SwitchRouterModel(router RouterClientReplacer, ref string) error {
 	if router == nil {
 		return errors.New("model switching requires a running LLM router")
@@ -97,6 +101,18 @@ func SwitchRouterModel(router RouterClientReplacer, ref string) error {
 	router.ReplaceClient(infrastructurerouter.NewOpenAIStreamClient(
 		resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel))
 	return config.SetActiveModel(ref)
+}
+
+// newMainProvider 按当前活跃模型构建主 provider：凭据取运行时配置（由
+// config.SetActiveModel 维护），token 预算经 config.ActiveModelBudget 解析，
+// 模型级 limit（limit.context / limit.output）优先，未声明时回退全局窗口
+// 配置。
+func newMainProvider() *llmprovider.OpenApiProvider {
+	c := config.EnvAndFileConf
+	contextWindow, maxOutput := config.ActiveModelBudget()
+	return llmprovider.NewOpenApiProviderWithStreamGateway(
+		c.OpenaiApiKey, c.OpenaiBaseUrl, c.OpenaiModel, c.LlmRouterURL,
+		contextWindow, maxOutput)
 }
 
 // Assemble 装配一个可直接运行的 ReActService：会话（含系统提示词）、tracer、
@@ -153,11 +169,10 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner))
 	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner))
 
-	// provider + service
+	// provider + service：主 provider 按当前活跃模型构建，token 预算取该
+	// 模型的 limit（未声明时回退全局窗口配置，见 newMainProvider）。
 	c := config.EnvAndFileConf
-	llmClient := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.OpenaiModel, c.LlmRouterURL,
-		c.OpenaiContextWindow, c.OpenaiMaxOutputTokens)
+	llmClient := newMainProvider()
 	contextSummaryLLMClient := llmprovider.NewOpenApiProvider(
 		c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel,
 		c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)
@@ -198,25 +213,16 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		return nil, err
 	}
 
+	// 模型切换复用 SwitchRouterModel 的「解析 → 换路由 client → 落配置」，再
+	// 按落定后的活跃模型重建长驻 provider，token 预算取新模型的 limit。
+	// TUI 只会在输入阶段执行切换，因此主 Service 没有进行中的 Chat；Router
+	// 自身按请求快照 client，外部并发请求也不会在流中途切换。
 	switchModel := func(ref string) error {
-		if in.Router == nil {
-			return errors.New("model switching requires a running LLM router")
-		}
-		resolved, err := config.ResolveModel(ref)
-		if err != nil {
+		if err := SwitchRouterModel(in.Router, ref); err != nil {
 			return err
 		}
-		routerClient := infrastructurerouter.NewOpenAIStreamClient(
-			resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel)
-		provider := llmprovider.NewOpenApiProviderWithStreamGateway(
-			resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel, c.LlmRouterURL,
-			c.OpenaiContextWindow, c.OpenaiMaxOutputTokens)
-
-		// TUI 只会在输入阶段执行切换，因此主 Service 没有进行中的 Chat。
-		// Router 自身按请求快照 client，外部并发请求也不会在流中途切换。
-		in.Router.ReplaceClient(routerClient)
-		svc.ReplaceLLMClient(provider)
-		return config.SetActiveModel(ref)
+		svc.ReplaceLLMClient(newMainProvider())
+		return nil
 	}
 
 	return &Assembled{
