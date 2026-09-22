@@ -10,16 +10,17 @@ import (
 
 // AssessBashRisk inspects shell syntax before execution. A static check cannot
 // predict expansions or the effects of arbitrary programs, so uncertain forms
-// also require a human decision.
-func AssessBashRisk(command string) (reason string, risky bool) {
+// also require a human decision. workDir is the base directory for judging
+// whether file redirect targets stay within the permitted scope.
+func AssessBashRisk(command, workDir string) (reason string, risky bool) {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil {
 		return fmt.Sprintf("无法解析 Bash 命令: %v", err), true
 	}
-	return assessBashTree(file)
+	return assessBashTree(file, workDir)
 }
 
-func assessBashTree(file *syntax.File) (string, bool) {
+func assessBashTree(file *syntax.File, workDir string) (string, bool) {
 	var reason string
 	syntax.Walk(file, func(node syntax.Node) bool {
 		if reason != "" || node == nil {
@@ -27,15 +28,98 @@ func assessBashTree(file *syntax.File) (string, bool) {
 		}
 		switch n := node.(type) {
 		case *syntax.Redirect:
-			if n.Op == syntax.RdrOut || n.Op == syntax.AppOut || n.Op == syntax.RdrClob {
-				reason = "命令包含文件输出重定向"
-			}
+			reason = assessBashRedirect(n, workDir)
 		case *syntax.CallExpr:
 			reason = assessBashCall(n)
 		}
 		return reason == ""
 	})
 	return reason, reason != ""
+}
+
+// assessBashRedirect 放行 fd 复制/关闭（2>&1、>&-）与输入重定向（<、<<、<<<）；
+// 输出到文件的重定向（>、>>、>|、<>、>&file、&>）只放行 workdir、/tmp 与
+// /dev/null 内的目标，其余（含动态目标、~ 展开、.. 与符号链接逃逸）需人工确认。
+func assessBashRedirect(n *syntax.Redirect, workDir string) string {
+	switch n.Op {
+	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+		return ""
+	case syntax.DplIn, syntax.DplOut:
+		if target, ok := staticBashWord(n.Word); ok && bashIsFdRef(target) {
+			return ""
+		}
+	}
+	target, ok := staticBashWord(n.Word)
+	if !ok {
+		return "重定向目标含动态展开，无法确认写入位置"
+	}
+	if target == "" {
+		return "重定向目标为空，无法确认写入位置"
+	}
+	if !bashRedirectTargetAllowed(target, workDir) {
+		return "命令重定向写入受限范围之外的文件: " + target
+	}
+	return ""
+}
+
+func bashIsFdRef(target string) bool {
+	if target == "-" {
+		return true
+	}
+	digits := true
+	for _, r := range target {
+		if r < '0' || r > '9' {
+			digits = false
+			break
+		}
+	}
+	return digits && target != ""
+}
+
+// bashRedirectTargetAllowed 判断输出重定向目标是否落在放行范围：
+// /dev/null、/tmp 内或 workdir 内。相对路径按 workdir 解析；目标经 ..
+// 或符号链接指向范围之外时判为不允许。workDir 为空时相对路径一律不允许。
+func bashRedirectTargetAllowed(target, workDir string) bool {
+	if target == "/dev/null" {
+		return true
+	}
+	if strings.HasPrefix(target, "~") {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		if workDir == "" {
+			return false
+		}
+		target = filepath.Join(workDir, target)
+	}
+	target = resolveBashRedirectPath(filepath.Clean(target))
+	if bashPathWithin(target, "/tmp") {
+		return true
+	}
+	return workDir != "" && bashPathWithin(target, workDir)
+}
+
+// resolveBashRedirectPath 尽力解析路径中的符号链接：目标已存在时整体解析
+// （含末段链接，防止 workdir 内链接指向受限范围之外）；尚未存在时解析到
+// 最深存在的父目录。
+func resolveBashRedirectPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	dir, base := filepath.Split(path)
+	if resolved, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+		return filepath.Join(resolved, base)
+	}
+	return path
+}
+
+func bashPathWithin(path, dir string) bool {
+	root := filepath.Clean(dir)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	rel, err := filepath.Rel(root, filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func assessBashCall(call *syntax.CallExpr) string {
