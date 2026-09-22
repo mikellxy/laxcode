@@ -46,6 +46,7 @@ type ResolvedModel struct {
 	// openai_max_output_tokens。
 	ContextWindow   int
 	MaxOutputTokens int
+	hasLimit        bool
 }
 
 // envAndFileConf 的 mapstructure tag 与 settings.json 的键一致（小写
@@ -57,6 +58,8 @@ type envAndFileConf struct {
 	UserMemoryConcurrency    int    `mapstructure:"user_memory_concurrency"`
 	UserMemoryTimeoutSeconds int    `mapstructure:"user_memory_timeout_seconds"`
 
+	// 辅助模型使用 OPENAI_* 环境变量覆盖时，这两个引用是展示别名，
+	// 不作为可切换的模型目录条目。
 	EmbeddingModel  string           `mapstructure:"embedding_model"`
 	EmbeddingVecDim int              `mapstructure:"embedding_vec_dim"`
 	CompactionModel string           `mapstructure:"compaction_model"`
@@ -71,6 +74,8 @@ type envAndFileConf struct {
 	EmbedOpenaiApiKey               string `mapstructure:"-"`
 	EmbedOpenaiBaseUrl              string `mapstructure:"-"`
 	EmbedOpenaiModel                string `mapstructure:"-"`
+	EmbedOpenaiContextWindow        int    `mapstructure:"-"`
+	EmbedOpenaiMaxOutputTokens      int    `mapstructure:"-"`
 	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
 	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
 	CompactionOpenaiApiKey          string `mapstructure:"-"`
@@ -143,6 +148,14 @@ func (c *envAndFileConf) resolveModel(ref string) (ResolvedModel, error) {
 			if model.Limit != nil {
 				resolved.ContextWindow = model.Limit.Context
 				resolved.MaxOutputTokens = model.Limit.Output
+				resolved.hasLimit = true
+			}
+			// 显式环境变量优先于配置文件的模型级 limit。
+			if strings.TrimSpace(os.Getenv("OPENAI_CONTEXT_WINDOW")) != "" {
+				resolved.ContextWindow = c.OpenaiContextWindow
+			}
+			if strings.TrimSpace(os.Getenv("OPENAI_MAX_OUTPUT_TOKENS")) != "" {
+				resolved.MaxOutputTokens = c.OpenaiMaxOutputTokens
 			}
 			return resolved, nil
 		}
@@ -207,29 +220,79 @@ func (c *envAndFileConf) setActiveModel(ref string) error {
 	return nil
 }
 
+type modelEnvironment struct {
+	apiKey, baseURL, model string
+}
+
+func readModelEnvironment(prefix string) modelEnvironment {
+	return modelEnvironment{
+		apiKey:  strings.TrimSpace(os.Getenv(prefix + "API_KEY")),
+		baseURL: strings.TrimSpace(os.Getenv(prefix + "BASE_URL")),
+		model:   strings.TrimSpace(os.Getenv(prefix + "MODEL_NAME")),
+	}
+}
+
+func (e modelEnvironment) count() int {
+	count := 0
+	for _, value := range []string{e.apiKey, e.baseURL, e.model} {
+		if value != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func (e modelEnvironment) apply(resolved *ResolvedModel) {
+	if e.count() == 0 {
+		return
+	}
+	resolved.Ref = modelRef(envProviderName, envModelName)
+	if e.apiKey != "" {
+		resolved.OpenaiApiKey = e.apiKey
+	}
+	if e.baseURL != "" {
+		resolved.OpenaiBaseUrl = e.baseURL
+	}
+	if e.model != "" {
+		resolved.UpstreamModel = e.model
+	}
+}
+
+func effectiveAuxiliaryBudget(modelValue, configuredValue int, hasModelLimit bool, envKey string) int {
+	if strings.TrimSpace(os.Getenv(envKey)) != "" {
+		return configuredValue
+	}
+	if hasModelLimit {
+		return modelValue
+	}
+	if configuredValue != 0 {
+		return configuredValue
+	}
+	return modelValue
+}
+
 // resolveAuxiliaryModel 从模型目录解析文件引用，再逐项应用非空环境变量。
 // 完整的环境配置无需依赖文件引用；未配置压缩模型时继承主模型。
-func (c *envAndFileConf) resolveAuxiliaryModel(key, ref, prefix string, fallback ResolvedModel) (ResolvedModel, error) {
-	apiKey := strings.TrimSpace(os.Getenv(prefix + "API_KEY"))
-	baseURL := strings.TrimSpace(os.Getenv(prefix + "BASE_URL"))
-	model := strings.TrimSpace(os.Getenv(prefix + "MODEL_NAME"))
+func (c *envAndFileConf) resolveAuxiliaryModel(key, ref string, env modelEnvironment, fallback ResolvedModel) (ResolvedModel, error) {
 	resolved := fallback
-	if ref != "" && (apiKey == "" || baseURL == "" || model == "") {
+	if env.count() == 3 {
+		resolved = ResolvedModel{
+			ContextWindow: c.OpenaiContextWindow, MaxOutputTokens: c.OpenaiMaxOutputTokens,
+		}
+	} else if ref != "" {
 		var err error
 		resolved, err = c.resolveModel(ref)
 		if err != nil {
 			return ResolvedModel{}, fmt.Errorf("%s: %w", key, err)
 		}
 	}
-	if apiKey != "" {
-		resolved.OpenaiApiKey = apiKey
+	if env.model != "" && env.model != resolved.UpstreamModel {
+		// 模型名被环境变量替换后，原模型的 limit 不再适用。
+		resolved.ContextWindow = c.OpenaiContextWindow
+		resolved.MaxOutputTokens = c.OpenaiMaxOutputTokens
+		resolved.hasLimit = false
 	}
-	if baseURL != "" {
-		resolved.OpenaiBaseUrl = baseURL
-	}
-	if model != "" {
-		resolved.UpstreamModel = model
-	}
+	env.apply(&resolved)
 	return resolved, nil
 }
 
@@ -318,6 +381,7 @@ func ParseEnvAndFile() error {
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("LLM_ROUTER_ADDR", "LLM_ROUTER_ADDR")
 	EnvOrFile.BindEnv("EMBEDDING_MODEL", "EMBEDDING_MODEL")
+	EnvOrFile.BindEnv("COMPACTION_MODEL", "COMPACTION_MODEL")
 	EnvOrFile.BindEnv("EMBEDDING_VEC_DIM", "EMBEDDING_VEC_DIM")
 	EnvOrFile.SetEnvKeyReplacer(strings.NewReplacer("_", "_"))
 
@@ -327,15 +391,8 @@ func ParseEnvAndFile() error {
 
 	// 完整的 OPENAI_* 三元组作为一个保留别名的临时 provider 追加到目录，并
 	// 覆盖当前选择。部分设置不与文件配置拼接，避免凭据、端点和模型错配。
-	envAPIKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	envBaseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
-	envUpstreamModel := strings.TrimSpace(os.Getenv("OPENAI_MODEL_NAME"))
-	envValues := 0
-	for _, value := range []string{envAPIKey, envBaseURL, envUpstreamModel} {
-		if value != "" {
-			envValues++
-		}
-	}
+	mainEnv := readModelEnvironment("OPENAI_")
+	envValues := mainEnv.count()
 	if envValues != 0 && envValues != 3 {
 		return errors.New("OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL_NAME must be set together")
 	}
@@ -347,11 +404,11 @@ func ParseEnvAndFile() error {
 		}
 		EnvAndFileConf.ProviderList = append(EnvAndFileConf.ProviderList, ProviderConfig{
 			ProviderName:  envProviderName,
-			OpenaiApiKey:  envAPIKey,
-			OpenaiBaseUrl: envBaseURL,
+			OpenaiApiKey:  mainEnv.apiKey,
+			OpenaiBaseUrl: mainEnv.baseURL,
 			ModelList: []ModelConfig{{
 				ModelName:     envModelName,
-				UpstreamModel: envUpstreamModel,
+				UpstreamModel: mainEnv.model,
 			}},
 		})
 		EnvAndFileConf.Model = modelRef(envProviderName, envModelName)
@@ -362,30 +419,39 @@ func ParseEnvAndFile() error {
 	if err := EnvAndFileConf.setActiveModel(EnvAndFileConf.Model); err != nil {
 		return err
 	}
-	embedding, err := EnvAndFileConf.resolveAuxiliaryModel("EMBEDDING_MODEL", EnvAndFileConf.EmbeddingModel, "OPENAI_EMBEDDING_", ResolvedModel{})
+	embedding, err := EnvAndFileConf.resolveAuxiliaryModel(
+		"EMBEDDING_MODEL", EnvAndFileConf.EmbeddingModel,
+		readModelEnvironment("OPENAI_EMBEDDING_"),
+		ResolvedModel{ContextWindow: EnvAndFileConf.OpenaiContextWindow, MaxOutputTokens: EnvAndFileConf.OpenaiMaxOutputTokens})
 	if err != nil {
 		return err
 	}
+	EnvAndFileConf.EmbeddingModel = embedding.Ref
 	EnvAndFileConf.EmbedOpenaiApiKey = embedding.OpenaiApiKey
 	EnvAndFileConf.EmbedOpenaiBaseUrl = embedding.OpenaiBaseUrl
 	EnvAndFileConf.EmbedOpenaiModel = embedding.UpstreamModel
+	EnvAndFileConf.EmbedOpenaiContextWindow = embedding.ContextWindow
+	EnvAndFileConf.EmbedOpenaiMaxOutputTokens = embedding.MaxOutputTokens
 	if EnvAndFileConf.EmbeddingVecDim < 0 || EnvAndFileConf.EmbeddingVecDim > 8192 {
 		return errors.New("embedding_vec_dim must be between 1 and 8192")
 	}
 	mainModel, _ := EnvAndFileConf.resolveModel(EnvAndFileConf.Model)
-	compaction, err := EnvAndFileConf.resolveAuxiliaryModel("COMPACTION_MODEL", EnvAndFileConf.CompactionModel, "OPENAI_COMPACTION_", mainModel)
+	compaction, err := EnvAndFileConf.resolveAuxiliaryModel(
+		"COMPACTION_MODEL", EnvAndFileConf.CompactionModel,
+		readModelEnvironment("OPENAI_COMPACTION_"), mainModel)
 	if err != nil {
 		return err
 	}
+	EnvAndFileConf.CompactionModel = compaction.Ref
 	EnvAndFileConf.CompactionOpenaiApiKey = compaction.OpenaiApiKey
 	EnvAndFileConf.CompactionOpenaiBaseUrl = compaction.OpenaiBaseUrl
 	EnvAndFileConf.CompactionOpenaiModel = compaction.UpstreamModel
-	if EnvAndFileConf.CompactionOpenaiContextWindow == 0 {
-		EnvAndFileConf.CompactionOpenaiContextWindow = EnvAndFileConf.OpenaiContextWindow
-	}
-	if EnvAndFileConf.CompactionOpenaiMaxOutputTokens == 0 {
-		EnvAndFileConf.CompactionOpenaiMaxOutputTokens = EnvAndFileConf.OpenaiMaxOutputTokens
-	}
+	EnvAndFileConf.CompactionOpenaiContextWindow = effectiveAuxiliaryBudget(
+		compaction.ContextWindow, EnvAndFileConf.CompactionOpenaiContextWindow,
+		compaction.hasLimit, "COMPACTION_OPENAI_CONTEXT_WINDOW")
+	EnvAndFileConf.CompactionOpenaiMaxOutputTokens = effectiveAuxiliaryBudget(
+		compaction.MaxOutputTokens, EnvAndFileConf.CompactionOpenaiMaxOutputTokens,
+		compaction.hasLimit, "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
 	if EnvAndFileConf.OpenaiContextWindow <= 0 {
 		return errors.New("openai_context_window must be positive")
 	}
@@ -399,6 +465,12 @@ func ParseEnvAndFile() error {
 	if EnvAndFileConf.CompactionOpenaiMaxOutputTokens <= 0 ||
 		EnvAndFileConf.CompactionOpenaiMaxOutputTokens >= EnvAndFileConf.CompactionOpenaiContextWindow {
 		return errors.New("compaction_openai_max_output_tokens must be positive and smaller than compaction_openai_context_window")
+	}
+	if window, output := ActiveModelBudget(); window <= 0 || output <= 0 || output >= window {
+		return errors.New("active model limit must have positive context and output smaller than context")
+	}
+	if embedding.UpstreamModel != "" && (embedding.ContextWindow <= 0 || embedding.MaxOutputTokens <= 0 || embedding.MaxOutputTokens >= embedding.ContextWindow) {
+		return errors.New("embedding model limit must have positive context and output smaller than context")
 	}
 
 	return nil

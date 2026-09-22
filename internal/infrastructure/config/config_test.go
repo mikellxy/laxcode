@@ -21,7 +21,7 @@ func swapConfigGlobals(t *testing.T) {
 	EnvAndFileConf = envAndFileConf{}
 	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME",
 		"OPENAI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_MODEL_NAME",
-		"EMBEDDING_MODEL", "EMBEDDING_VEC_DIM",
+		"EMBEDDING_MODEL", "COMPACTION_MODEL", "EMBEDDING_VEC_DIM",
 		"OPENAI_COMPACTION_API_KEY", "OPENAI_COMPACTION_BASE_URL", "OPENAI_COMPACTION_MODEL_NAME",
 		"OPENAI_CONTEXT_WINDOW", "OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "LLM_ROUTER_ADDR"} {
 		t.Setenv(key, "")
@@ -208,6 +208,56 @@ func TestResolveModelBudgetPrefersModelLimit(t *testing.T) {
 	}
 	if window, output := ActiveModelBudget(); window != DefaultContextWindow || output != DefaultMaxOutputTokens {
 		t.Fatalf("切换后预算未回退全局窗口配置：%d/%d", window, output)
+	}
+}
+
+func TestThreeConfiguredModelsUseOwnLimits(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model":"p:main", "embedding_model":"p:embedding", "compaction_model":"p:summary",
+		"openai_context_window":200000, "openai_max_output_tokens":16000,
+		"compaction_openai_context_window":300000, "compaction_openai_max_output_tokens":20000,
+		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
+			"model_list":[
+				{"model_name":"main", "limit":{"context":100000,"output":8000}},
+				{"model_name":"embedding", "limit":{"context":60000,"output":6000}},
+				{"model_name":"summary", "limit":{"context":120000,"output":12000}}
+			]}]
+	}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if window, output := ActiveModelBudget(); window != 100000 || output != 8000 {
+		t.Fatalf("main budget = %d/%d", window, output)
+	}
+	if EnvAndFileConf.EmbedOpenaiContextWindow != 60000 || EnvAndFileConf.EmbedOpenaiMaxOutputTokens != 6000 {
+		t.Fatalf("embedding budget = %d/%d", EnvAndFileConf.EmbedOpenaiContextWindow, EnvAndFileConf.EmbedOpenaiMaxOutputTokens)
+	}
+	if EnvAndFileConf.CompactionOpenaiContextWindow != 120000 || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 12000 {
+		t.Fatalf("compaction budget = %d/%d", EnvAndFileConf.CompactionOpenaiContextWindow, EnvAndFileConf.CompactionOpenaiMaxOutputTokens)
+	}
+}
+
+func TestAuxiliaryLimitsFallBackToGlobalDefaults(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model":"p:main", "embedding_model":"p:embedding", "compaction_model":"p:summary",
+		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
+			"model_list":[{"model_name":"main"},{"model_name":"embedding"},{"model_name":"summary"}]}]
+	}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if window, output := ActiveModelBudget(); window != DefaultContextWindow || output != DefaultMaxOutputTokens {
+		t.Fatalf("main budget = %d/%d", window, output)
+	}
+	if EnvAndFileConf.EmbedOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.EmbedOpenaiMaxOutputTokens != DefaultMaxOutputTokens ||
+		EnvAndFileConf.CompactionOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != DefaultMaxOutputTokens {
+		t.Fatalf("auxiliary budgets did not fall back to global defaults: %+v", EnvAndFileConf)
 	}
 }
 
@@ -439,7 +489,7 @@ func TestParseCliCombinedSSEQADoesNotRequireUserMemoryVectorDimensions(t *testin
 
 func TestAuxiliaryModelSources(t *testing.T) {
 	for _, kind := range []string{"EMBEDDING", "COMPACTION"} {
-		for _, scenario := range []string{"file", "partial env", "full env", "invalid reference", "unset"} {
+		for _, scenario := range []string{"file", "reference env", "partial env", "full env", "invalid reference", "unset"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				swapConfigGlobals(t)
 				home := t.TempDir()
@@ -459,6 +509,10 @@ func TestAuxiliaryModelSources(t *testing.T) {
 					]
 				}`, strings.ToLower(kind+"_MODEL"), ref))
 				want := []string{"aux-key", "https://aux.example/v1", "small"}
+				if scenario == "reference env" {
+					t.Setenv(kind+"_MODEL", "main:chat")
+					want = []string{"main-key", "https://main.example/v1", "chat"}
+				}
 				if scenario == "partial env" || scenario == "full env" {
 					t.Setenv("OPENAI_"+kind+"_MODEL_NAME", "env-model")
 					want[2] = "env-model"
@@ -491,8 +545,105 @@ func TestAuxiliaryModelSources(t *testing.T) {
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("got %v, want %v", got, want)
 				}
+				wantRef := "aux:small"
+				if scenario == "reference env" {
+					wantRef = "main:chat"
+				}
+				if scenario == "partial env" || scenario == "full env" {
+					wantRef = modelRef(envProviderName, envModelName)
+				}
+				if scenario == "unset" {
+					wantRef = ""
+					if kind == "COMPACTION" {
+						wantRef = "main:chat"
+					}
+				}
+				gotRef := EnvAndFileConf.EmbeddingModel
+				if kind == "COMPACTION" {
+					gotRef = EnvAndFileConf.CompactionModel
+				}
+				if gotRef != wantRef {
+					t.Fatalf("display ref = %q, want %q", gotRef, wantRef)
+				}
 			})
 		}
+	}
+}
+
+func TestEnvironmentBudgetsOverrideFileModelLimits(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model":"p:main", "embedding_model":"p:embedding", "compaction_model":"p:summary",
+		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
+			"model_list":[
+				{"model_name":"main", "limit":{"context":100000,"output":8000}},
+				{"model_name":"embedding", "limit":{"context":60000,"output":6000}},
+				{"model_name":"summary", "limit":{"context":120000,"output":12000}}
+			]}]
+	}`)
+	t.Setenv("OPENAI_CONTEXT_WINDOW", "300000")
+	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "30000")
+	t.Setenv("COMPACTION_OPENAI_CONTEXT_WINDOW", "400000")
+	t.Setenv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "40000")
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if window, output := ActiveModelBudget(); window != 300000 || output != 30000 {
+		t.Fatalf("main budget = %d/%d", window, output)
+	}
+	if EnvAndFileConf.EmbedOpenaiContextWindow != 300000 || EnvAndFileConf.EmbedOpenaiMaxOutputTokens != 30000 ||
+		EnvAndFileConf.CompactionOpenaiContextWindow != 400000 || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 40000 {
+		t.Fatalf("environment budget overrides were not applied: %+v", EnvAndFileConf)
+	}
+}
+
+func TestCompleteEnvironmentModelsShareDisplayAlias(t *testing.T) {
+	swapConfigGlobals(t)
+	t.Setenv("HOME", t.TempDir())
+	for _, tc := range []struct{ prefix, model string }{
+		{"OPENAI_", "chat"},
+		{"OPENAI_EMBEDDING_", "vectors"},
+		{"OPENAI_COMPACTION_", "summary"},
+	} {
+		t.Setenv(tc.prefix+"API_KEY", "key")
+		t.Setenv(tc.prefix+"BASE_URL", "https://example.com/v1")
+		t.Setenv(tc.prefix+"MODEL_NAME", tc.model)
+	}
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	alias := modelRef(envProviderName, envModelName)
+	if EnvAndFileConf.Model != alias || EnvAndFileConf.EmbeddingModel != alias || EnvAndFileConf.CompactionModel != alias {
+		t.Fatalf("environment display refs = %q, %q, %q", EnvAndFileConf.Model, EnvAndFileConf.EmbeddingModel, EnvAndFileConf.CompactionModel)
+	}
+	if EnvAndFileConf.OpenaiModel != "chat" || EnvAndFileConf.EmbedOpenaiModel != "vectors" || EnvAndFileConf.CompactionOpenaiModel != "summary" {
+		t.Fatalf("upstream model names were mixed: %+v", EnvAndFileConf)
+	}
+}
+
+func TestEnvironmentModelNameDoesNotReuseFileModelLimit(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model":"p:main", "embedding_model":"p:embedding", "compaction_model":"p:summary",
+		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
+			"model_list":[
+				{"model_name":"main"},
+				{"model_name":"embedding", "limit":{"context":60000,"output":6000}},
+				{"model_name":"summary", "limit":{"context":120000,"output":12000}}
+			]}]
+	}`)
+	t.Setenv("OPENAI_EMBEDDING_MODEL_NAME", "env-vectors")
+	t.Setenv("OPENAI_COMPACTION_MODEL_NAME", "env-summary")
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if EnvAndFileConf.EmbedOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.EmbedOpenaiMaxOutputTokens != DefaultMaxOutputTokens ||
+		EnvAndFileConf.CompactionOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != DefaultMaxOutputTokens {
+		t.Fatalf("overridden models reused file limits: %+v", EnvAndFileConf)
 	}
 }
 
