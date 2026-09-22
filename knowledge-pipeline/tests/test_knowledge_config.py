@@ -40,6 +40,21 @@ class KnowledgeConfigTests(unittest.TestCase):
             get_embedding_model(*config[:3])
             self.assertEqual(embeddings.call_args.kwargs["model"], "embed")
 
+    def test_embedding_requests_are_batched_at_twenty_texts(self):
+        with patch.dict(os.environ, {}, clear=True):
+            model = get_embedding_model("embed", "https://file.example/v1", "file-key")
+        requests = []
+
+        def create(*, input, **kwargs):
+            requests.append(input)
+            return {"data": [{"embedding": [float(text)]} for text in input]}
+
+        with patch.object(model.client, "create", side_effect=create):
+            vectors = model.embed_documents([str(index) for index in range(45)])
+
+        self.assertEqual([len(batch) for batch in requests], [20, 20, 5])
+        self.assertEqual(vectors, [[float(index)] for index in range(45)])
+
     def test_environment_overrides_individual_settings(self):
         env = {"OPENAI_EMBEDDING_MODEL_NAME": "override", "EMBEDDING_VEC_DIM": "9"}
         with patch.object(Path, "home", return_value=self.home), patch.dict(os.environ, env, clear=True):

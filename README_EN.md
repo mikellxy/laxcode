@@ -112,6 +112,8 @@ mkdir -p /tmp/laxcode-qa
   --db=/tmp/laxcode-qa/kb.sqlite
 ```
 
+The splitter automatically reads `~/.laxcode/chunk_settings.json`. If the file is absent, it uses the default Markdown heading rule. See [`knowledge-pipeline/chunk_config.example.json`](./knowledge-pipeline/chunk_config.example.json) for the format.
+
 #### Step 2: Set the knowledge base path and start the RAG server
 
 ```shell

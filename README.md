@@ -18,7 +18,6 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
   - [会话存储引擎设计文档](./docs/session-storage-engine.md)
 - Agentic RAG
   - 提供基于 LangGraph 的知识库制作配套 pipeline，使用标题、chunk_size、overlap_size 三重约束的 chunk splitter（[knowledge-pipeline](./knowledge-pipeline/)）
-  - [Agentic 记忆与 RAG 设计文档](./docs/agentic-memory-rag-design.md)
 - 上下文压缩
   - 剪枝、上下文卸载、LLM 结构化摘要三层压缩
   - [上下文压缩设计文档](./docs/context-compaction-design.md)
@@ -84,21 +83,14 @@ ${workdir}/.laxcode/.session/${session_id}/history.jsonl
 
 <a id="agentic-rag-qa"></a>
 
-### Agentic RAG 问答(提供SSE页面)
+### Agentic RAG 问答
 
 > [!TIP]
 > - 默认不挂载工具
 
-#### Step 1：使用配套工具制作知识库
+#### Step 1：制作知识库
 
-```shell
-uv sync --project knowledge-pipeline --locked
-mkdir -p /tmp/laxcode-qa
-"$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge" \
-  --target=knowledge \
-  --doc=/absolute/path/to/knowledge.md \
-  --db=/tmp/laxcode-qa/kb.sqlite
-```
+按照 [knowledge-pipeline 使用说明](./knowledge-pipeline/README.md)配置向量模型并导入文档。
 
 #### Step 2：指定知识库路径并启动 RAG 服务
 

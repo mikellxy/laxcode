@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 
 from typing_extensions import Literal
 
@@ -20,6 +21,15 @@ def should_continue(state: IngestState) -> Literal["chunk_node", END]:
     return "chunk_node"
 
 
+def load_chunk_splitter():
+    config_path = Path.home() / ".laxcode" / "chunk_settings.json"
+    if not config_path.exists():
+        return ByTitleSplitter()
+    try:
+        return load_text_splitter(str(config_path))
+    except (ValueError, OSError) as exc:
+        raise ValueError(f"加载 chunk 配置失败: {config_path}: {exc}") from exc
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="文档向量化:分块 -> 嵌入 -> 写入 sqlite-vec")
@@ -30,7 +40,6 @@ def main() -> None:
     parser.add_argument("--init-schema", action="store_true")
     parser.add_argument("--dimensions", type=int, help="user_memory vector dimensions")
     parser.add_argument("--db", required=True, help="sqlite-vec 数据库文件绝对路径")
-    parser.add_argument("--chunk_config", default=None, help="分块器配置 json 文件绝对路径")
     args = parser.parse_args()
 
     if args.target == "user_memory":
@@ -49,17 +58,10 @@ def main() -> None:
     if not os.path.isfile(doc_path):
         raise SystemExit(f"文档不存在: {doc_path}")
 
-    # 按配置实例化分块器,未提供配置时使用默认分块器
-    if args.chunk_config:
-        config_path = os.path.abspath(args.chunk_config)
-        if not os.path.isfile(config_path):
-            raise SystemExit(f"chunk 配置文件不存在: {config_path}")
-        try:
-            text_splitter = load_text_splitter(config_path)
-        except (ValueError, OSError) as e:
-            raise SystemExit(f"加载 chunk 配置失败: {e}")
-    else:
-        text_splitter = ByTitleSplitter()
+    try:
+        text_splitter = load_chunk_splitter()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     try:
         name, base_url, api_key, dimensions = load_knowledge_embedding_config()

@@ -33,4 +33,6 @@ def get_embedding_model(name=None, base_url=None, api_key=None):
         # 部分 OpenAI 兼容服务(如智谱/阿里)只接受字符串数组,
         # 关掉默认的 tiktoken 切分,直接发送原始文本
         check_embedding_ctx_length=False,
+        # 部分兼容服务每次最多接受 20 条文本；由 LangChain 自动分批。
+        chunk_size=20,
     )
