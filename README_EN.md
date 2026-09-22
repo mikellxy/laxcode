@@ -97,13 +97,13 @@ npm --prefix web run dev
 <a id="agentic-rag-qa"></a>
 
 ### Agentic RAG QA (provides an SSE page)
+
 > [!TIP]
 > - No tools mounted by default
-> - step-1: Use the project's knowledge-pipeline tool to chunk-vectorize knowledge documents and persist them into the specified sqlite-vec db
-> - step-2: Start laxcode agentic RAG QA to experience the RAG knowledge base
+
+#### Step 1: Build the knowledge base with the bundled tool
 
 ```shell
-# Install the Python pipeline and write knowledge documents into the specified sqlite-vec db
 uv sync --project knowledge-pipeline --locked
 mkdir -p /tmp/laxcode-qa
 "$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge" \
@@ -111,6 +111,9 @@ mkdir -p /tmp/laxcode-qa
   --doc=/absolute/path/to/knowledge.md \
   --db=/tmp/laxcode-qa/kb.sqlite
 ```
+
+#### Step 2: Set the knowledge base path and start the RAG server
+
 ```shell
 make build
 mkdir -p /tmp/laxcode-qa/workdir
@@ -120,8 +123,10 @@ mkdir -p /tmp/laxcode-qa/workdir
   -workdir=/tmp/laxcode-qa/workdir \
   -addr=127.0.0.1:8090
 ```
+
+#### Step 3: Start the web UI in another terminal
+
 ```shell
-# In another terminal, start the React frontend (http://127.0.0.1:5173)
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web dev
 
@@ -129,3 +134,5 @@ pnpm --dir web dev
 npm --prefix web install
 npm --prefix web run dev
 ```
+
+Open <http://127.0.0.1:5173>.

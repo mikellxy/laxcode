@@ -16,12 +16,14 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
 - 会话存储引擎
   - SQLite 事务 + 乐观锁、上下文压缩in_memory消息分代原子化更新、崩溃恢复时进行 agent 循环完整性检测
   - [会话存储引擎设计文档](./docs/session-storage-engine.md)
-- Agentic 记忆/RAG
-  - 从对话异步提取记忆 → chunk 向量化 → sqlite-vec 召回
+- Agentic RAG
+  - 提供基于 LangGraph 的知识库制作配套 pipeline，使用标题、chunk_size、overlap_size 三重约束的 chunk splitter（[knowledge-pipeline](./knowledge-pipeline/)）
   - [Agentic 记忆与 RAG 设计文档](./docs/agentic-memory-rag-design.md)
 - 上下文压缩
   - 剪枝、上下文卸载、LLM 结构化摘要三层压缩
   - [上下文压缩设计文档](./docs/context-compaction-design.md)
+- Token 预算
+  - 主模型、压缩模型、向量化模型可独立配置上下文窗口，支持热切换
 - 可观测性
   - 上报 agent 循环 span 到您的 Otel 服务(SigNoz/Tempo/Jaeger...)
   - [将 LaxCode Span 上报到 SigNoz](./docs/signoz-tracing.md)
@@ -30,9 +32,12 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
 
 - [**Coding Agent CLI**](#coding-agent-cli)
 - [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
-- [**Agentic RAG 问答**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
+- [**Agentic RAG**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
 
 ## 快速开始
+### 创建配置文件
+
+[配置文件使用说明](./docs/settings.md)。
 
 <a id="coding-agent-cli"></a>
 
@@ -76,13 +81,13 @@ ${workdir}/.laxcode/.session/${session_id}/history.jsonl
 <a id="agentic-rag-qa"></a>
 
 ### Agentic RAG 问答(提供SSE页面)
+
 > [!TIP]
 > - 默认不挂载工具
-> - step-1: 使用项目的 knowledge-pipeline 工具进行知识文档 chunk-vectorization，并持久化到指定的 sqlite-vec db
-> - step-2: 启动 laxcode agentic RAG QA，体验 RAG 知识库
+
+#### Step 1：使用配套工具制作知识库
 
 ```shell
-# 安装 Python pipeline，并将知识文档写入指定的 sqlite-vec db
 uv sync --project knowledge-pipeline --locked
 mkdir -p /tmp/laxcode-qa
 "$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge" \
@@ -90,6 +95,9 @@ mkdir -p /tmp/laxcode-qa
   --doc=/absolute/path/to/knowledge.md \
   --db=/tmp/laxcode-qa/kb.sqlite
 ```
+
+#### Step 2：指定知识库路径并启动 RAG 服务
+
 ```shell
 make build
 mkdir -p /tmp/laxcode-qa/workdir
@@ -99,8 +107,10 @@ mkdir -p /tmp/laxcode-qa/workdir
   -workdir=/tmp/laxcode-qa/workdir \
   -addr=127.0.0.1:8090
 ```
+
+#### Step 3：在另一终端启动 Web 界面
+
 ```shell
-# 另开一个终端，启动 React 前端（http://127.0.0.1:5173）
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web dev
 
@@ -108,3 +118,5 @@ pnpm --dir web dev
 npm --prefix web install
 npm --prefix web run dev
 ```
+
+打开 <http://127.0.0.1:5173>。
