@@ -146,6 +146,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 			}
 		}, s.parent.tracer, s.parent.Artifacts)
 	childSvc.humanConfirmationEnabled = s.parent.humanConfirmationEnabled
+	childSvc.SetWorkDir(workDir)
 	if err := childSvc.InitSession(ctx); err != nil {
 		return "", fmt.Errorf("init session: %w", err)
 	}

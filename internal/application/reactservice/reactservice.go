@@ -39,6 +39,9 @@ type ReActService struct {
 	promptEnricher PromptEnricher
 	memoryEnricher MemoryEnricher
 	trackTurns     bool
+	// workDir 是 bash 危险命令检查的基准目录：输出重定向只放行该目录、
+	// /tmp 与 /dev/null 内的目标。经 SetWorkDir 由组合根注入。
+	workDir string
 }
 
 var (
@@ -119,6 +122,11 @@ func NewReActService(sess *session.Session,
 func (r *ReActService) SetPromptEnricher(enricher PromptEnricher) {
 	r.promptEnricher = enricher
 }
+
+// SetWorkDir 配置 bash 危险命令检查的基准目录（输出重定向只放行该目录、
+// /tmp 与 /dev/null 内的目标）。应仅在服务对外可见前由组合根调用，不应在
+// 并发 Chat 期间修改。
+func (r *ReActService) SetWorkDir(workDir string) { r.workDir = workDir }
 
 // ReplaceLLMClient replaces the main generation client between Chat calls.
 // Callers must not invoke it while a Chat is in progress.
@@ -472,7 +480,7 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 			Command string `json:"command"`
 		}
 		if json.Unmarshal(call.Arguments, &args) == nil && strings.TrimSpace(args.Command) != "" {
-			if reason, risky := tools.AssessBashRisk(args.Command); risky {
+			if reason, risky := tools.AssessBashRisk(args.Command, r.workDir); risky {
 				answer, err := r.requestHumanConfirmation(ctx, fmt.Sprintf("危险 Bash 命令：%s\n原因：%s\n输入 yes 执行；其他输入取消。", args.Command, reason))
 				if err != nil {
 					return nil, err

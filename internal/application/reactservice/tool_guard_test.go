@@ -173,3 +173,33 @@ func TestDangerousBashWithoutConsumerFailsClosed(t *testing.T) {
 		t.Fatalf("result=%+v err=%v calls=%v", result, err, shell.calls)
 	}
 }
+
+func TestBashRedirectWithinWorkDirSkipsConfirmation(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("bash-redirect-ok", repo)
+	shell := &recordingShell{}
+	reg := tools.NewDefaultRegistry(nil)
+	wd := t.TempDir()
+	reg.Register(tools.NewBashTool(wd, shell, nil, sess.ID))
+	svc := NewReActService(sess, repo, &scriptedLLM{}, nil, reg, nil, nil)
+	svc.SetWorkDir(wd)
+	result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "c1", Name: "bash", Arguments: json.RawMessage(`{"command":"echo hi > out.txt 2>&1"}`)})
+	if err != nil || len(shell.calls) != 1 || strings.Contains(result.Output, "未执行") {
+		t.Fatalf("result=%+v err=%v calls=%v", result, err, shell.calls)
+	}
+}
+
+func TestBashRedirectOutsideWorkDirRequiresConfirmation(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("bash-redirect-out", repo)
+	shell := &recordingShell{}
+	reg := tools.NewDefaultRegistry(nil)
+	wd := t.TempDir()
+	reg.Register(tools.NewBashTool(wd, shell, nil, sess.ID))
+	svc := NewReActService(sess, repo, &scriptedLLM{}, nil, reg, nil, nil)
+	svc.SetWorkDir(wd)
+	result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "c1", Name: "bash", Arguments: json.RawMessage(`{"command":"echo hi > /etc/nope.txt"}`)})
+	if err != nil || len(shell.calls) != 0 || !strings.Contains(result.Output, "未执行") {
+		t.Fatalf("result=%+v err=%v calls=%v", result, err, shell.calls)
+	}
+}

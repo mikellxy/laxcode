@@ -147,6 +147,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)
 	svc := reactservice.NewReActService(sess, sessRepo, llmClient, contextSummaryLLMClient, toolReg,
 		in.Consumer, tracer, artifactStore)
+	svc.SetWorkDir(in.WorkDir)
 	// 子 Agent 复用 svc 的 LLMClient/tracer/Repo 派生隔离子服务，注册进同一
 	// toolReg（svc 持其引用，late register 对 svc 可见）。
 	toolReg.Register(reactservice.NewSubAgent(svc, in.WorkDir,
