@@ -2,9 +2,12 @@ package reactservice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
@@ -22,10 +25,11 @@ type ReActService struct {
 	LLMClient llmprovider.LLMClient
 	// ContextSummaryLLMClient 只在确定性本地压缩无法达到目标时调用。
 	// 它不参与正常 ReAct 生成，且摘要请求不携带业务工具定义。
-	ContextSummaryLLMClient llmprovider.LLMClient
-	ToolRegistry            tools.Registry
-	Artifacts               tools.ArtifactStore
-	ReActEventConsumerF     func(reactEvent *ReactEvent)
+	ContextSummaryLLMClient  llmprovider.LLMClient
+	ToolRegistry             tools.Registry
+	Artifacts                tools.ArtifactStore
+	ReActEventConsumerF      func(reactEvent *ReactEvent)
+	humanConfirmationEnabled bool
 	// tracer 是 chat 及其子 span 的追踪注入点，经构造注入；nil 缺省
 	// noop，不产生任何观测输出。类型经 telemetry 别名持有，本包不直接
 	// 依赖 OTel（span 的开启与收尾均走 telemetry 辅助函数）。
@@ -43,7 +47,8 @@ var (
 	ErrPersistRequestContext = errors.New("reactservice: persist request context")
 	// ErrNothingToResume 表示会话尾部已经收束，或尚无用户消息。调用方应拒绝
 	// resume，避免在没有待完成输入时让模型重复生成。
-	ErrNothingToResume = errors.New("reactservice: no interrupted chat to resume")
+	ErrNothingToResume  = errors.New("reactservice: no interrupted chat to resume")
+	ErrRepeatedToolCall = errors.New("连续 3 次相同工具调用，已中断本轮推理")
 )
 
 const (
@@ -54,6 +59,7 @@ const (
 	contextTriggerPercent        = 80
 	contextTargetPercent         = 60
 	recoveryToolResultPrompt     = "上一次工具调用未获得可确认的结果；它可能尚未执行，也可能已经执行但结果未被保存。请先检查当前状态，再决定是否重试。"
+	repeatedToolReminder         = "提醒：你已连续 5 次调用同一个工具。请检查当前目标、已有结果和调用参数，判断是否陷入循环；必要时换一种方法或向用户说明阻碍。"
 )
 
 type ReactEvent struct {
@@ -85,17 +91,19 @@ func NewReActService(sess *session.Session,
 	reActEventConsumerF func(reactEvent *ReactEvent),
 	tracer telemetry.Tracer,
 	artifactStores ...tools.ArtifactStore) *ReActService {
+	humanConfirmationEnabled := reActEventConsumerF != nil
 	if reActEventConsumerF == nil {
 		reActEventConsumerF = func(*ReactEvent) {}
 	}
 	r := &ReActService{
-		Session:                 sess,
-		SessRepo:                sessRepo,
-		LLMClient:               llmClient,
-		ContextSummaryLLMClient: contextSummaryLLMClient,
-		ToolRegistry:            toolRegistry,
-		ReActEventConsumerF:     reActEventConsumerF,
-		tracer:                  telemetry.OrNoop(tracer),
+		Session:                  sess,
+		SessRepo:                 sessRepo,
+		LLMClient:                llmClient,
+		ContextSummaryLLMClient:  contextSummaryLLMClient,
+		ToolRegistry:             toolRegistry,
+		ReActEventConsumerF:      reActEventConsumerF,
+		humanConfirmationEnabled: humanConfirmationEnabled,
+		tracer:                   telemetry.OrNoop(tracer),
 	}
 	// ArtifactStore 与数据库会话仓储相互独立；子服务绑定自己的 session ID。
 	if len(artifactStores) > 0 && artifactStores[0] != nil {
@@ -121,8 +129,10 @@ func (r *ReActService) ReplaceLLMClient(client llmprovider.LLMClient) {
 // requestHumanConfirmation 向交互前端发出一次人工确认请求，并等待回复或取消。
 // channel 由 ReActService 创建并持有；前端只获得发送端，不应关闭。容量为 1，
 // 避免取消与用户提交同时发生时让前端发送 goroutine 永久阻塞。
-// 当前尚无风险检测调用此能力，待策略确定后在相应边界接入。
 func (r *ReActService) requestHumanConfirmation(ctx context.Context, content string) (string, error) {
+	if !r.humanConfirmationEnabled {
+		return "", nil
+	}
 	confirmChan := make(chan string, 1)
 	r.ReActEventConsumerF(&ReactEvent{
 		Type:             ReActEventTypeHumanInTheLoop,
@@ -310,6 +320,7 @@ func missingToolResults(messages []sharedkernel.Message) []sharedkernel.ToolCall
 
 func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error) {
 	turnCnt := 0
+	streak := recentToolStreak(r.Session.Messages)
 	for {
 		turnCnt++
 
@@ -352,18 +363,127 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		}
 		toolCtx := telemetry.ContextWithTurnSeq(ctx, turnCnt)
 
+		interrupted := false
 		for _, tc := range msg.ToolCalls {
 			info := r.ToolRegistry.BeforeExecInfo(&tc)
 			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info})
 
-			result := r.ToolRegistry.Execute(toolCtx, &tc)
+			var result *sharedkernel.ToolResult
+			if interrupted {
+				result = rejectedToolResult(tc.ID, "连续重复调用已触发中断，本组剩余工具未执行。")
+			} else {
+				streak.observe(tc)
+				if streak.fingerprintCount >= 3 {
+					interrupted = true
+					result = rejectedToolResult(tc.ID, "连续 3 次相同工具调用（工具名与参数相同），本次执行已中断。")
+				} else {
+					var execErr error
+					result, execErr = r.executeToolCall(toolCtx, &tc)
+					if execErr != nil {
+						return nil, execErr
+					}
+				}
+				if streak.toolCount == 5 {
+					result.Output += "\n" + repeatedToolReminder
+					result.CompactContent += "\n" + repeatedToolReminder
+				}
+			}
 			toolMsg := tools.ToolResultAsMsg(result)
 			toolMsg.DisplayContent = info
 			if err := r.handleTurnMsg(ctx, toolMsg); err != nil {
 				return nil, err
 			}
 		}
+		if interrupted {
+			return nil, ErrRepeatedToolCall
+		}
 	}
+}
+
+type toolCallStreak struct {
+	fingerprint      [32]byte
+	name             string
+	fingerprintCount int
+	toolCount        int
+}
+
+func (s *toolCallStreak) observe(call sharedkernel.ToolCall) {
+	fingerprint := toolCallFingerprint(call)
+	if s.fingerprintCount > 0 && s.fingerprint == fingerprint {
+		s.fingerprintCount++
+	} else {
+		s.fingerprintCount = 1
+	}
+	s.fingerprint = fingerprint
+	if s.name == call.Name {
+		s.toolCount++
+	} else {
+		s.toolCount = 1
+	}
+	s.name = call.Name
+}
+
+// recentToolStreak restores the current user turn's completed calls after Resume.
+// An uncertain recovery result is not evidence that its command ran.
+func recentToolStreak(messages []sharedkernel.Message) toolCallStreak {
+	start := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == sharedkernel.RoleUser {
+			start = i + 1
+			break
+		}
+	}
+	pending := make(map[string]sharedkernel.ToolCall)
+	var streak toolCallStreak
+	for _, message := range messages[start:] {
+		if message.Role == sharedkernel.RoleAssistant {
+			for _, call := range message.ToolCalls {
+				pending[call.ID] = call
+			}
+		}
+		if message.Role == sharedkernel.RoleTool {
+			if call, ok := pending[message.ToolCallID]; ok {
+				if message.Content != recoveryToolResultPrompt {
+					streak.observe(call)
+				}
+				delete(pending, message.ToolCallID)
+			}
+		}
+	}
+	return streak
+}
+
+func toolCallFingerprint(call sharedkernel.ToolCall) [32]byte {
+	args := []byte(call.Arguments)
+	var normalized any
+	if json.Unmarshal(args, &normalized) == nil {
+		args, _ = json.Marshal(normalized)
+	}
+	return sha256.Sum256(append(append([]byte(call.Name), 0), args...))
+}
+
+func rejectedToolResult(id, message string) *sharedkernel.ToolResult {
+	return &sharedkernel.ToolResult{ToolCallID: id, IsError: true, Output: message, CompactContent: message}
+}
+
+func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.ToolCall) (*sharedkernel.ToolResult, error) {
+	if call.Name == tools.ToolBash {
+		var args struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(call.Arguments, &args) == nil && strings.TrimSpace(args.Command) != "" {
+			if reason, risky := tools.AssessBashRisk(args.Command); risky {
+				answer, err := r.requestHumanConfirmation(ctx, fmt.Sprintf("危险 Bash 命令：%s\n原因：%s\n输入 yes 执行；其他输入取消。", args.Command, reason))
+				if err != nil {
+					return nil, err
+				}
+				if !strings.EqualFold(strings.TrimSpace(answer), "yes") {
+					return rejectedToolResult(call.ID, "用户未批准危险 Bash 命令，命令未执行。"), nil
+				}
+			}
+		}
+	}
+	return r.ToolRegistry.Execute(ctx, call), nil
 }
 
 // handleTurnMsg 先在候选中赋予稳定标识，再原子提交历史与工作集；成功后内存

@@ -15,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
-	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -102,7 +101,6 @@ func Run() int {
 		WorkDir:      cli.WorkDir,
 		SessionID:    judgeSessionID,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(),
-		Consumer:     newEventConsumer(),
 	})
 	if err != nil {
 		return usageFail("assemble evaluator failed: %v", err)
@@ -133,10 +131,6 @@ func resolveHistoryPath(workDir, sessionID string) (string, error) {
 		return "", fmt.Errorf("session ID must be one path segment")
 	}
 	return layout.SessionHistory(workDir, sessionID), nil
-}
-
-func newEventConsumer() func(*reactservice.ReactEvent) {
-	return func(*reactservice.ReactEvent) {}
 }
 
 func writeResult(w io.Writer, res EvaluationResult) {

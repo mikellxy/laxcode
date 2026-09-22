@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
-	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
@@ -59,7 +58,7 @@ type OneShotResult struct {
 // Run 执行 one-shot 模式并返回进程 exit code（0 成功 / 1 运行失败 / 2 用法错误）。
 //
 // 契约：stdout 只承载单行结果 JSON；中间过程（thinking / 生成 / 工具调用）整体
-// 丢弃（见 newEventConsumer）。错误一律走 stdout 的结构化 JSON + exit code，不
+// 丢弃（由服务的空事件回调处理）。错误一律走 stdout 的结构化 JSON + exit code，不
 // panic——用法错误在跑任务前即可判定，运行失败则带已发生的 token 统计。
 //
 // 装配（session / tracer / tools / provider / ReActService）经 cmd/agentasm 组合根
@@ -96,12 +95,11 @@ func Run() int {
 
 	// 装配（会话 / tracer / 工具集含子 Agent / provider / ReActService）收口到
 	// cmd/agentasm 组合根，与交互模式共用；one-shot 专属的只有前后的参数校验与结果
-	// 契约输出。Consumer 用静默丢弃回调，保证 stdout 只承载结果 JSON。
+	// 契约输出。Consumer 留空时事件被静默丢弃，危险命令不会等待不存在的确认界面。
 	assembled, err := agentasm.Assemble(ctx, agentasm.Input{
 		WorkDir:   cli.WorkDir,
 		SessionID: cli.Session,
 		PlanMode:  cli.Plan,
-		Consumer:  newEventConsumer(),
 	})
 	if err != nil {
 		return usageFail("assemble agent failed: %v", err)
@@ -128,13 +126,6 @@ func Run() int {
 	}
 	writeResult(os.Stdout, res)
 	return exitOK
-}
-
-// newEventConsumer 返回 one-shot 的 ReAct 事件回调：始终丢弃中间过程（thinking /
-// 生成 / 工具调用），保证 stdout 只承载结果 JSON、契约纯净。作为 Consumer 注入
-// cmd/agentasm 的装配。
-func newEventConsumer() func(*reactservice.ReactEvent) {
-	return func(*reactservice.ReactEvent) {}
 }
 
 // loadTaskPrompt 解析任务提示词：-task-file 非空则读文件且优先于 -task；两者取

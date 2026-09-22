@@ -138,9 +138,14 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	run := &subAgentRun{}
 	childLLM := &subAgentLLMClient{LLMClient: s.parent.LLMClient, run: run}
 
-	// 事件静默：子 Agent 中间过程不外发（consumer 直接丢弃）。
+	// 子 Agent 中间过程静默，但人工确认必须交由父服务的交互前端处理。
 	childSvc := NewReActService(childSess, s.parent.SessRepo, childLLM,
-		s.parent.ContextSummaryLLMClient, childReg, func(*ReactEvent) {}, s.parent.tracer, s.parent.Artifacts)
+		s.parent.ContextSummaryLLMClient, childReg, func(event *ReactEvent) {
+			if event.Type == ReActEventTypeHumanInTheLoop {
+				s.parent.ReActEventConsumerF(event)
+			}
+		}, s.parent.tracer, s.parent.Artifacts)
+	childSvc.humanConfirmationEnabled = s.parent.humanConfirmationEnabled
 	if err := childSvc.InitSession(ctx); err != nil {
 		return "", fmt.Errorf("init session: %w", err)
 	}
