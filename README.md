@@ -30,7 +30,6 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
 
 - [**Coding Agent CLI**](#coding-agent-cli)
 - [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
-- [**Agentic 问答**](#agentic-memory-qa) — 支持 RAG 用户记忆召回与 SSE 交互页面
 - [**Agentic RAG 问答**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
 
 ## 快速开始
@@ -77,50 +76,6 @@ ${workdir}/.laxcode/.session/${session_id}/history.jsonl
 - `result` 是 Markdown 格式的评估报告，包含工具调用合理性、工具调用健壮性、任务规划能力和用户目标完成度等维度的评分与证据。
 
 评估过程不会续聊或修改被评估任务的 session；评估器自己的消息和 token 统计保存在独立 session 中。
-
-<a id="agentic-memory-qa"></a>
-
-### Agentic 问答(支持 RAG 用户记忆召回,提供SSE页面)
-> [!TIP]
-> - 默认不挂载工具
-> - 异步从每三轮 ReAct 循环提取用户记忆，进行 chunk-vectorization 持久化
-> - 用户 query 向量化召回记忆
-> - 使用指定的 sqlite-vec db
-
-```shell
-# 指定向量化模型 & 初始化 chunk-vectorization python pipeline
-export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # 任意 OpenAI 兼容端点
-export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
-uv sync --project knowledge-pipeline --locked
-export USER_MEMORY_EXECUTABLE="$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge"
-# 非必须，可以正常启动sse服务进行问答，并跳过用户记忆提取和召回
-```
-```shell
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1     # 任意 OpenAI 兼容端点
-export OPENAI_MODEL_NAME=gpt-4o-mini
-
-make build
-# 激活记忆功能时
-# -vector-dim 根据使用的向量化模型设置
-# -kb 设置 sqlite-vec db 绝对路径
-mkdir -p /tmp/laxcode-example
-./bin/laxcode -sse \
-  -kb=/tmp/laxcode-example/kb.sqlite \
-  -vector-dim=1024 \
-  -workdir=/tmp/laxcode-example \
-  -addr=127.0.0.1:8090
-```
-```shell
-# 另开一个终端，启动 React 前端（http://127.0.0.1:5173）
-pnpm --dir web install --frozen-lockfile
-pnpm --dir web dev
-
-# 或使用 npm
-npm --prefix web install
-npm --prefix web run dev
-```
 
 <a id="agentic-rag-qa"></a>
 
