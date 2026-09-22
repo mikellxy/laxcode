@@ -18,6 +18,9 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
   - [会话存储引擎设计文档](./docs/session-storage-engine.md)
 - Agentic RAG
   - 提供基于 LangGraph 的知识库制作配套 pipeline，使用标题、chunk_size、overlap_size 三重约束的 chunk splitter（[knowledge-pipeline](./knowledge-pipeline/)）
+- 效果评测
+  - 提供 agent 循环效果评测配套工具，多维打分，输出人类可读报告
+  - [查看单任务评估样例](./docs/readpaged-maxbytes-fix-evaluation.md)
 - 上下文压缩
   - 剪枝、上下文卸载、LLM 结构化摘要三层压缩
   - [上下文压缩设计文档](./docs/context-compaction-design.md)
@@ -27,9 +30,6 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
   - 连续 3 次相同工具名与参数的调用会中断本轮推理；连续 5 次使用同一工具会向模型注入自查提醒
   - 使用 Bash AST 检查命令；删除、提权、覆盖重定向等风险操作须由用户输入 `yes` 后执行
   - 命令检查属于静态规则，不能推断任意外部程序或脚本的全部副作用
-- 效果评测
-  - 提供 agent 循环效果评测套件
-  - [查看单任务评估样例](./docs/readpaged-maxbytes-fix-evaluation.md)
 - 可观测性
   - 上报 agent 循环 span 到您的 Otel 服务(SigNoz/Tempo/Jaeger...)
   - [将 LaxCode Span 上报到 SigNoz](./docs/signoz-tracing.md)
