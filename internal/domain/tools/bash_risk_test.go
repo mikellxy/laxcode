@@ -65,9 +65,34 @@ func TestAssessBashRiskRedirectWithoutWorkDir(t *testing.T) {
 	}
 }
 
+// escapeTargetDir 返回一个位于放行范围（/tmp 与 workDir）之外的可写目录，
+// 用作符号链接逃逸目标。t.TempDir() 在 Linux 上位于 /tmp 内，而 /tmp 本身
+// 是放行的重定向区域，逃逸目标落在其中时不会被标记。
+func escapeTargetDir(t *testing.T, workDir string) string {
+	t.Helper()
+	var bases []string
+	if wd, err := os.Getwd(); err == nil {
+		bases = append(bases, wd)
+	}
+	bases = append(bases, "/var/tmp")
+	for _, base := range bases {
+		dir, err := os.MkdirTemp(base, "bash-risk-escape-")
+		if err != nil {
+			continue
+		}
+		if resolved := resolveBashRedirectPath(dir); !bashPathWithin(resolved, "/tmp") && !bashPathWithin(resolved, workDir) {
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			return dir
+		}
+		_ = os.RemoveAll(dir)
+	}
+	t.Skip("无法在放行范围之外构造可写目录")
+	return ""
+}
+
 func TestAssessBashRiskSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
-	outside := t.TempDir()
+	outside := escapeTargetDir(t, root)
 	link := filepath.Join(root, "escape")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatalf("symlink: %v", err)
