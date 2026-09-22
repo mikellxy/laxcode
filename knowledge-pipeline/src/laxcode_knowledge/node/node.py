@@ -79,11 +79,12 @@ class EmbeddingNode(object):
         chunks = state["chunks"]
         if not chunks:
             return {"num_chunks": 0}
+        vectors = self.model.embed_documents([chunk.page_content for chunk in chunks])
+        self.vec_writer.validate_vectors(chunks, vectors)
         document_id = state.get("document_id")
         if document_id is None:
             # 首个批次:获取/创建文档记录,并清理历史数据保证幂等
             document_id = self.vec_writer.prepare_document(state["document_path"])
-        vectors = self.model.embed_documents([chunk.page_content for chunk in chunks])
         self.vec_writer.save_chunks(document_id, chunks, vectors)
         return {"document_id": document_id, "num_chunks": len(chunks)}
 

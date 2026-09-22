@@ -18,10 +18,10 @@ def get_chat_model():
     )
     return model
 
-def get_embedding_model():
-    name = os.environ.get("OPENAI_EMBEDDING_MODEL_NAME")
-    base_url = os.environ.get("OPENAI_EMBEDDING_BASE_URL")
-    api_key = os.environ.get("OPENAI_EMBEDDING_API_KEY")
+def get_embedding_model(name=None, base_url=None, api_key=None):
+    name = name or os.environ.get("OPENAI_EMBEDDING_MODEL_NAME")
+    base_url = base_url or os.environ.get("OPENAI_EMBEDDING_BASE_URL")
+    api_key = api_key or os.environ.get("OPENAI_EMBEDDING_API_KEY")
 
     if not name or not base_url or not api_key:
         raise ValueError()

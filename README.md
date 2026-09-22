@@ -41,10 +41,6 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
 > 默认挂载工具：`grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
 
 ```shell
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1     # 任意 OpenAI 兼容端点
-export OPENAI_MODEL=gpt-4o-mini
-
 make build
 ./bin/laxcode
 ```
@@ -86,11 +82,6 @@ ${workdir}/.laxcode/.session/${session_id}/history.jsonl
 > - step-2: 启动 laxcode agentic RAG QA，体验 RAG 知识库
 
 ```shell
-# 配置知识库使用的向量化模型
-export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # 任意 OpenAI 兼容端点
-export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
-
 # 安装 Python pipeline，并将知识文档写入指定的 sqlite-vec db
 uv sync --project knowledge-pipeline --locked
 mkdir -p /tmp/laxcode-qa
@@ -100,22 +91,12 @@ mkdir -p /tmp/laxcode-qa
   --db=/tmp/laxcode-qa/kb.sqlite
 ```
 ```shell
-# QA 查询必须使用与建库相同的向量化模型
-export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # 任意 OpenAI 兼容端点
-export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
-
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1     # 任意 OpenAI 兼容端点
-export OPENAI_MODEL_NAME=gpt-4o-mini
-
 make build
 mkdir -p /tmp/laxcode-qa/workdir
 ./bin/laxcode -sse \
   -qa \
   -kb=/tmp/laxcode-qa/kb.sqlite \
   -workdir=/tmp/laxcode-qa/workdir \
-  -vector-dim=1024 \
   -addr=127.0.0.1:8090
 ```
 ```shell

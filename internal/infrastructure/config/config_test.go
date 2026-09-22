@@ -21,6 +21,7 @@ func swapConfigGlobals(t *testing.T) {
 	EnvAndFileConf = envAndFileConf{}
 	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME",
 		"OPENAI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_MODEL_NAME",
+		"EMBEDDING_MODEL", "EMBEDDING_VEC_DIM",
 		"OPENAI_COMPACTION_API_KEY", "OPENAI_COMPACTION_BASE_URL", "OPENAI_COMPACTION_MODEL_NAME",
 		"OPENAI_CONTEXT_WINDOW", "OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "LLM_ROUTER_ADDR"} {
 		t.Setenv(key, "")
@@ -29,6 +30,21 @@ func swapConfigGlobals(t *testing.T) {
 		EnvOrFile = prevViper
 		EnvAndFileConf = prevConf
 	})
+}
+
+func TestEmbeddingVecDimEnvironmentOverridesSettings(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, strings.Replace(modelSettings("example", "embed"),
+		`"model": "example:embed",`, `"model": "example:embed", "embedding_vec_dim": 7,`, 1))
+	t.Setenv("EMBEDDING_VEC_DIM", "9")
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if EnvAndFileConf.EmbeddingVecDim != 9 {
+		t.Fatalf("embedding vec dim = %d, want 9", EnvAndFileConf.EmbeddingVecDim)
+	}
 }
 
 func setEnvModel(t *testing.T, model string) {

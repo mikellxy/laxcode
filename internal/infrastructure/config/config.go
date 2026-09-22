@@ -58,6 +58,7 @@ type envAndFileConf struct {
 	UserMemoryTimeoutSeconds int    `mapstructure:"user_memory_timeout_seconds"`
 
 	EmbeddingModel  string           `mapstructure:"embedding_model"`
+	EmbeddingVecDim int              `mapstructure:"embedding_vec_dim"`
 	CompactionModel string           `mapstructure:"compaction_model"`
 	Model           string           `mapstructure:"model"`
 	ProviderList    []ProviderConfig `mapstructure:"provider_list"`
@@ -316,6 +317,8 @@ func ParseEnvAndFile() error {
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("LLM_ROUTER_ADDR", "LLM_ROUTER_ADDR")
+	EnvOrFile.BindEnv("EMBEDDING_MODEL", "EMBEDDING_MODEL")
+	EnvOrFile.BindEnv("EMBEDDING_VEC_DIM", "EMBEDDING_VEC_DIM")
 	EnvOrFile.SetEnvKeyReplacer(strings.NewReplacer("_", "_"))
 
 	if err = EnvOrFile.Unmarshal(&EnvAndFileConf); err != nil {
@@ -366,6 +369,9 @@ func ParseEnvAndFile() error {
 	EnvAndFileConf.EmbedOpenaiApiKey = embedding.OpenaiApiKey
 	EnvAndFileConf.EmbedOpenaiBaseUrl = embedding.OpenaiBaseUrl
 	EnvAndFileConf.EmbedOpenaiModel = embedding.UpstreamModel
+	if EnvAndFileConf.EmbeddingVecDim < 0 || EnvAndFileConf.EmbeddingVecDim > 8192 {
+		return errors.New("embedding_vec_dim must be between 1 and 8192")
+	}
 	mainModel, _ := EnvAndFileConf.resolveModel(EnvAndFileConf.Model)
 	compaction, err := EnvAndFileConf.resolveAuxiliaryModel("COMPACTION_MODEL", EnvAndFileConf.CompactionModel, "OPENAI_COMPACTION_", mainModel)
 	if err != nil {
@@ -446,7 +452,7 @@ func ParseCli() error {
 		}
 	}
 	// -sse -qa serves the regular QA service over HTTP. It uses the dimensions
-	// recorded in the knowledge database and therefore must not inherit the
+	// from embedding_vec_dim and therefore must not inherit the
 	// user-memory-only -vector-dim requirement from plain SSE mode.
 	if CliConf.SSE && !CliConf.QA && EmbeddingEnvironmentReady() {
 		return ValidateVectorDimensions(CliConf.VectorDimensions)

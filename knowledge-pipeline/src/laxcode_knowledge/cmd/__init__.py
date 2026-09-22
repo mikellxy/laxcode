@@ -4,6 +4,7 @@ import os
 from typing_extensions import Literal
 
 from laxcode_knowledge.models import get_embedding_model
+from laxcode_knowledge.models.knowledge_config import load_knowledge_embedding_config
 from laxcode_knowledge.node import ChunkNode, EmbeddingNode
 from laxcode_knowledge.splitter import ByTitleSplitter, load_text_splitter
 from laxcode_knowledge.state import IngestState
@@ -61,15 +62,13 @@ def main() -> None:
         text_splitter = ByTitleSplitter()
 
     try:
-        model = get_embedding_model()
-    except ValueError:
-        raise SystemExit(
-            "缺少 embedding 配置,请设置环境变量 "
-            "OPENAI_EMBEDDING_MODEL_NAME / OPENAI_EMBEDDING_BASE_URL / OPENAI_EMBEDDING_API_KEY"
-        )
+        name, base_url, api_key, dimensions = load_knowledge_embedding_config()
+        model = get_embedding_model(name, base_url, api_key)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
 
     try:
-        vec_writer = VecWriter(db_path)
+        vec_writer = VecWriter(db_path, dimensions)
     except ValueError as e:
         raise SystemExit(str(e))
     if vec_writer.created:

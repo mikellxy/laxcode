@@ -6,6 +6,7 @@ import (
 
 	"github.com/mikellxy/laxcode/internal/application/qaservice"
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
+	"github.com/mikellxy/laxcode/internal/domain/knowledgebase"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
@@ -42,14 +43,18 @@ func AssembleQA(ctx context.Context, in QAInput) (*QAAssembled, error) {
 	}
 	react, sess := assembled.Service, assembled.Session
 	c := config.EnvAndFileConf
-	retriever, err := infrakb.NewSQLiteVecRetriever(in.KBPath)
+	dimensions := c.EmbeddingVecDim
+	if dimensions == 0 {
+		dimensions = knowledgebase.EmbeddingDimensions
+	}
+	retriever, err := infrakb.NewSQLiteVecRetriever(in.KBPath, dimensions)
 	if err != nil {
 		assembled.Cleanup()
 		return nil, err
 	}
 	embedder := infraembedding.NewOpenAIClient(
-		c.EmbedOpenaiApiKey, c.EmbedOpenaiBaseUrl, c.EmbedOpenaiModel)
-	react.SetPromptEnricher(qaservice.New(embedder, retriever, assembled.tracer))
+		c.EmbedOpenaiApiKey, c.EmbedOpenaiBaseUrl, c.EmbedOpenaiModel, dimensions)
+	react.SetPromptEnricher(qaservice.New(embedder, retriever, assembled.tracer, dimensions))
 
 	var once sync.Once
 	cleanup := func() {

@@ -72,6 +72,15 @@ func TestEnrichRejectsWrongEmbeddingDimensionBeforeRetrieval(t *testing.T) {
 	}
 }
 
+func TestEnrichUsesConfiguredEmbeddingDimension(t *testing.T) {
+	retriever := &fakeRetriever{chunks: []knowledgebase.Chunk{{ID: "one", Content: "example"}}}
+	svc := New(&fakeEmbedder{vector: make([]float32, 7)}, retriever, nil, 7)
+	chunks, err := svc.Enrich(context.Background(), "question")
+	if err != nil || len(chunks) != 1 || chunks[0].ID != "one" {
+		t.Fatalf("chunks = %+v, error = %v", chunks, err)
+	}
+}
+
 func TestEnrichStopsOnRetrievalError(t *testing.T) {
 	svc := New(
 		&fakeEmbedder{vector: make([]float32, knowledgebase.EmbeddingDimensions)},

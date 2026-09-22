@@ -26,7 +26,7 @@ func init() {
 }
 
 // NewSQLiteVecRetriever opens an existing sqlite-vec database in read-only mode.
-func NewSQLiteVecRetriever(path string) (*SQLiteVecRetriever, error) {
+func NewSQLiteVecRetriever(path string, dimensions ...int) (*SQLiteVecRetriever, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve knowledge base %q: %w", path, err)
@@ -39,7 +39,11 @@ func NewSQLiteVecRetriever(path string) (*SQLiteVecRetriever, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open knowledge base: %w", err)
 	}
-	r := &SQLiteVecRetriever{db: db}
+	dim := domainkb.EmbeddingDimensions
+	if len(dimensions) > 0 && dimensions[0] > 0 {
+		dim = dimensions[0]
+	}
+	r := &SQLiteVecRetriever{db: db, vectorDimensions: dim}
 	var version string
 	if err := db.QueryRow("SELECT vec_version()").Scan(&version); err != nil {
 		_ = db.Close()
@@ -56,9 +60,9 @@ func (r *SQLiteVecRetriever) Close() error {
 }
 
 func (r *SQLiteVecRetriever) Search(ctx context.Context, vector []float32, limit int) ([]domainkb.Chunk, error) {
-	if len(vector) != domainkb.EmbeddingDimensions {
+	if len(vector) != r.vectorDimensions {
 		return nil, fmt.Errorf("embedding dimension mismatch: got %d, want %d",
-			len(vector), domainkb.EmbeddingDimensions)
+			len(vector), r.vectorDimensions)
 	}
 	if limit <= 0 {
 		return nil, errors.New("retrieval limit must be positive")

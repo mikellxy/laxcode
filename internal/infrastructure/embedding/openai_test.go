@@ -53,3 +53,10 @@ func TestOpenAIClientEmbed(t *testing.T) {
 		t.Fatalf("vector length = %d", len(vector))
 	}
 }
+
+func TestOpenAIClientUsesConfiguredDimensions(t *testing.T) {
+	client := NewOpenAIClient("test-key", "https://example.com/v1", "embed-model", 7)
+	if client.dimensions != 7 {
+		t.Fatalf("dimensions = %d, want 7", client.dimensions)
+	}
+}

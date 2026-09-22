@@ -28,10 +28,6 @@ LaxCode is a lightweight AI Agent implemented in Go.
 > Default mounted tools: `grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
 
 ```shell
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1     # any OpenAI-compatible endpoint
-export OPENAI_MODEL=gpt-4o-mini
-
 make build
 ./bin/laxcode
 ```
@@ -74,19 +70,9 @@ The evaluator neither resumes nor modifies the target session. Its own messages 
 > - Uses the specified sqlite-vec db
 
 ```shell
-# Specify the embedding model & initialize the chunk-vectorization Python pipeline
-export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # any OpenAI-compatible endpoint
-export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
 uv sync --project knowledge-pipeline --locked
-export USER_MEMORY_EXECUTABLE="$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge"
-# Optional: the SSE service still starts and answers questions, skipping user-memory extraction and recall
 ```
 ```shell
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1     # any OpenAI-compatible endpoint
-export OPENAI_MODEL_NAME=gpt-4o-mini
-
 make build
 # When memory is enabled:
 # -vector-dim should match the embedding model in use
@@ -117,11 +103,6 @@ npm --prefix web run dev
 > - step-2: Start laxcode agentic RAG QA to experience the RAG knowledge base
 
 ```shell
-# Configure the embedding model used by the knowledge base
-export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # any OpenAI-compatible endpoint
-export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
-
 # Install the Python pipeline and write knowledge documents into the specified sqlite-vec db
 uv sync --project knowledge-pipeline --locked
 mkdir -p /tmp/laxcode-qa
@@ -131,22 +112,12 @@ mkdir -p /tmp/laxcode-qa
   --db=/tmp/laxcode-qa/kb.sqlite
 ```
 ```shell
-# QA queries must use the same embedding model as indexing
-export OPENAI_EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_EMBEDDING_BASE_URL=https://api.openai.com/v1 # any OpenAI-compatible endpoint
-export OPENAI_EMBEDDING_MODEL_NAME=text-embedding-3-small
-
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1     # any OpenAI-compatible endpoint
-export OPENAI_MODEL_NAME=gpt-4o-mini
-
 make build
 mkdir -p /tmp/laxcode-qa/workdir
 ./bin/laxcode -sse \
   -qa \
   -kb=/tmp/laxcode-qa/kb.sqlite \
   -workdir=/tmp/laxcode-qa/workdir \
-  -vector-dim=1024 \
   -addr=127.0.0.1:8090
 ```
 ```shell

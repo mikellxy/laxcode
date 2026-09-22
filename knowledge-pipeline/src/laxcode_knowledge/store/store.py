@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import uuid
 
@@ -19,7 +20,7 @@ class VecWriter(object):
     目录不存在则抛 ValueError
     """
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, dimensions=None):
         self.db_path = db_path
         parent = os.path.dirname(db_path)
         if parent and not os.path.isdir(parent):
@@ -29,7 +30,14 @@ class VecWriter(object):
         self.conn.enable_load_extension(True)
         sqlite_vec.load(self.conn)
         self.conn.enable_load_extension(False)
-        self._migrate()
+        self.dimensions = dimensions
+        try:
+            self._migrate()
+            if dimensions is not None:
+                self._ensure_vector_table(dimensions)
+        except Exception:
+            self.conn.close()
+            raise
 
     def _migrate(self):
         """建表迁移,幂等"""
@@ -106,7 +114,13 @@ class VecWriter(object):
                     )
 
     def _ensure_vector_table(self, dim):
-        # vec0 的维度建表时才能确定,按首个向量的实际维度创建
+        # vec0 的维度建表时确定；已有表必须与配置保持一致。
+        if self._has_vector_table():
+            schema = self.conn.execute("SELECT sql FROM sqlite_master WHERE name='chunk_vectors'").fetchone()[0]
+            declared = re.search(r"\bembedding\s+FLOAT\[(\d+)\]", schema, re.IGNORECASE)
+            if declared is None or int(declared.group(1)) != dim:
+                raise ValueError(f"现有 chunk_vectors 的维度与配置的 {dim} 不一致")
+            return
         self.conn.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
@@ -153,10 +167,17 @@ class VecWriter(object):
                 document_id = cursor.lastrowid
         return document_id
 
+    def validate_vectors(self, chunks, vectors):
+        if len(chunks) != len(vectors):
+            raise ValueError("chunk 数量与 embedding 数量不一致")
+        if self.dimensions is not None and any(len(vector) != self.dimensions for vector in vectors):
+            raise ValueError(f"embedding 向量维度与配置的 {self.dimensions} 不一致")
+
     def save_chunks(self, document_id, chunks, vectors):
         """追加写入一批 chunks 及其向量,chunk_id 为 uuid"""
+        self.validate_vectors(chunks, vectors)
         if vectors:
-            self._ensure_vector_table(len(vectors[0]))
+            self._ensure_vector_table(self.dimensions or len(vectors[0]))
         with self.conn:
             for index, chunk in enumerate(chunks):
                 chunk_id = str(uuid.uuid4())

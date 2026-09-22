@@ -11,16 +11,22 @@ import (
 )
 
 type OpenAIClient struct {
-	client openai.Client
-	model  string
+	client     openai.Client
+	model      string
+	dimensions int
 }
 
 var _ knowledgebase.Embedder = (*OpenAIClient)(nil)
 
-func NewOpenAIClient(apiKey, baseURL, model string) *OpenAIClient {
+func NewOpenAIClient(apiKey, baseURL, model string, dimensions ...int) *OpenAIClient {
+	dim := knowledgebase.EmbeddingDimensions
+	if len(dimensions) > 0 && dimensions[0] > 0 {
+		dim = dimensions[0]
+	}
 	return &OpenAIClient{
-		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
-		model:  model,
+		client:     openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
+		model:      model,
+		dimensions: dim,
 	}
 }
 
@@ -30,7 +36,7 @@ func (c *OpenAIClient) Embed(ctx context.Context, text string) ([]float32, error
 			OfString: openai.String(text),
 		},
 		Model:          c.model,
-		Dimensions:     openai.Int(knowledgebase.EmbeddingDimensions),
+		Dimensions:     openai.Int(int64(c.dimensions)),
 		EncodingFormat: openai.EmbeddingNewParamsEncodingFormatFloat,
 	})
 	if err != nil {

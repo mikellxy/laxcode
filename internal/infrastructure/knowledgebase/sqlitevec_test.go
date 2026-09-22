@@ -62,6 +62,46 @@ func TestSQLiteVecRetrieverSearchesByDistance(t *testing.T) {
 	}
 }
 
+func TestSQLiteVecRetrieverUsesConfiguredDimensions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kb.sqlite")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, content TEXT NOT NULL)`,
+		`CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id TEXT PRIMARY KEY, embedding FLOAT[7])`,
+		`INSERT INTO chunks(chunk_id, content) VALUES ('one', 'example')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vector := []float32{1, 0, 0, 0, 0, 0, 0}
+	encoded, err := sqlitevec.SerializeFloat32(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO chunk_vectors(chunk_id, embedding) VALUES (?, ?)`, "one", encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	retriever, err := NewSQLiteVecRetriever(path, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retriever.Close()
+	chunks, err := retriever.Search(context.Background(), vector, 1)
+	if err != nil || len(chunks) != 1 || chunks[0].ID != "one" {
+		t.Fatalf("search = %+v, %v", chunks, err)
+	}
+	if _, err := retriever.Search(context.Background(), make([]float32, 8), 1); err == nil {
+		t.Fatal("expected dimension mismatch")
+	}
+}
+
 func TestWorkspaceKnowledgeBaseIsCompatible(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "kb", "kb.sqlite")
 	if _, err := os.Stat(path); err != nil {

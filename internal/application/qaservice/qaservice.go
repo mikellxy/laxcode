@@ -18,16 +18,22 @@ const retrievalLimit = 4
 var ErrEmptyQuery = errors.New("qa: query is empty")
 
 type Service struct {
-	embedder  knowledgebase.Embedder
-	retriever knowledgebase.Retriever
-	tracer    telemetry.Tracer
+	embedder   knowledgebase.Embedder
+	retriever  knowledgebase.Retriever
+	tracer     telemetry.Tracer
+	dimensions int
 }
 
-func New(embedder knowledgebase.Embedder, retriever knowledgebase.Retriever, tracer telemetry.Tracer) *Service {
+func New(embedder knowledgebase.Embedder, retriever knowledgebase.Retriever, tracer telemetry.Tracer, dimensions ...int) *Service {
+	dim := knowledgebase.EmbeddingDimensions
+	if len(dimensions) > 0 && dimensions[0] > 0 {
+		dim = dimensions[0]
+	}
 	return &Service{
-		embedder:  embedder,
-		retriever: retriever,
-		tracer:    telemetry.OrNoop(tracer),
+		embedder:   embedder,
+		retriever:  retriever,
+		tracer:     telemetry.OrNoop(tracer),
+		dimensions: dim,
 	}
 }
 
@@ -43,9 +49,9 @@ func (s *Service) Enrich(ctx context.Context, query string) ([]sharedkernel.Memo
 	embedStartedAt := time.Now()
 	embedCtx, embedSpan := telemetry.Start(ctx, s.tracer, telemetry.SpanQueryEmbedding)
 	vector, err := s.embedder.Embed(embedCtx, query)
-	if err == nil && len(vector) != knowledgebase.EmbeddingDimensions {
+	if err == nil && len(vector) != s.dimensions {
 		err = fmt.Errorf("embedding dimension mismatch: got %d, want %d",
-			len(vector), knowledgebase.EmbeddingDimensions)
+			len(vector), s.dimensions)
 	}
 	if len(vector) > 0 {
 		embedSpan.SetAttributes(telemetry.AttrEmbeddingDims.Int(len(vector)))
