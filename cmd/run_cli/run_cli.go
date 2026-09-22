@@ -240,7 +240,7 @@ func Run(router agentasm.RouterClientReplacer) {
 			case input := <-outChan:
 				if ref, matched, parseErr := parseModelCommand(input); matched {
 					if parseErr == nil {
-						parseErr = assembled.SwitchModel(ref)
+						parseErr = assembled.Switcher.SwitchModel(ref)
 					}
 					if parseErr != nil {
 						sendIn(cliprinter.StreamEvent{Text: fmt.Sprintf(

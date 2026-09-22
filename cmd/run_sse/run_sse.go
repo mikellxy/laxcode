@@ -92,7 +92,7 @@ func Run(router agentasm.RouterClientReplacer) {
 	}
 	workDir = absWorkDir
 	s := newServer(workDir, config.CliConf.Plan)
-	s.router = router
+	s.switcher = agentasm.NewModelSwitcher(router, nil)
 	if config.CliConf.QA {
 		s.useQAAssembly(config.CliConf.KB, agentasm.AssembleQA)
 	}

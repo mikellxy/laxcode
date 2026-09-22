@@ -37,11 +37,8 @@ type server struct {
 	locks    *sessionLocks
 	history  session.SessionHistoryRepository
 	catalog  session.SessionCatalogRepository
-	// router 是 main 启动的本地 LLM 路由器：流式生成全部经它转发，模型切换
-	// 须替换其上游 client。switchMu 串行化切换，避免并发切换使路由器与运行时
-	// 配置交错成不一致组合。
-	router   agentasm.RouterClientReplacer
-	switchMu sync.Mutex
+	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
+	switcher *agentasm.ModelSwitcher
 }
 
 const (
@@ -184,6 +181,7 @@ type providerListModelDTO struct {
 // 脱敏视图（各 provider 的 ModelList）与当前生效模型引用，供客户端做模型
 // 选择、切换与展示，不暴露凭据与端点。
 func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
+	s.switcher.RLock()
 	providers := config.EnvAndFileConf.ProviderList
 	response := providerListModelDTO{
 		CurrentModel: config.EnvAndFileConf.Model,
@@ -200,6 +198,7 @@ func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 		}
 		response.Providers[i] = providerModelsDTO{ModelList: models}
 	}
+	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -212,11 +211,10 @@ type switchModelRequest struct {
 }
 
 // handleSwitchModel 处理 POST /api/model：按 provider + model 组合引用后，经
-// agentasm.SwitchRouterModel（两处切换共用的核心，Assembled.SwitchModel 亦
-// 复用它）完成切换——替换本地 LLM 路由器的上游 client（SSE 流式流量全经
+// agentasm.ModelSwitcher.SwitchModel 完成切换——替换本地 LLM 路由器的上游 client（SSE 流式流量全经
 // 路由器，凭据与模型名都在其侧），再写回运行时配置；此后每个请求的按次装配
-// 自然以新配置（含模型级 limit 预算）构建 provider。切换只在无进行中 Chat 时
-// 原子生效，与 TUI 的约束一致；在途请求按装配快照继续使用旧模型。
+// 自然以新配置（含模型级 limit 预算）构建 provider。切换等待进行中的 Chat/
+// Resume 结束后生效，与 TUI 的约束一致。
 func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 	var req switchModelRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
@@ -230,13 +228,11 @@ func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "provider and model are required")
 		return
 	}
-	s.switchMu.Lock()
-	defer s.switchMu.Unlock()
-	if s.router == nil {
-		writeJSONError(w, http.StatusInternalServerError, "model switching requires a running LLM router")
-		return
-	}
-	if err := agentasm.SwitchRouterModel(s.router, provider+":"+model); err != nil {
+	if err := s.switcher.SwitchModel(provider + ":" + model); err != nil {
+		if errors.Is(err, agentasm.ErrRouterUnavailable) {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -314,7 +310,8 @@ func newServer(workDir string, planMode bool) *server {
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 			return agentasm.AssembleSSE(ctx, in)
 		},
-		locks: newSessionLocks(),
+		locks:    newSessionLocks(),
+		switcher: agentasm.NewModelSwitcher(nil, nil),
 	}
 }
 
@@ -389,6 +386,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context() // 客户端断开即取消，驱动 Chat 从 LLM/工具调用收敛
 
+	s.switcher.RLock()
+	defer s.switcher.RUnlock()
 	assembled, err := s.assemble(ctx, agentasm.Input{
 		WorkDir:   s.workDir,
 		SessionID: req.SessionID,
@@ -458,6 +457,8 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context()
+	s.switcher.RLock()
+	defer s.switcher.RUnlock()
 	assembled, err := s.assemble(ctx, agentasm.Input{
 		WorkDir: s.workDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: newEventConsumer(sw),
 	})

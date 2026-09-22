@@ -11,7 +11,6 @@ package agentasm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -25,7 +24,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
-	infrastructurerouter "github.com/mikellxy/laxcode/internal/infrastructure/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
@@ -70,37 +68,8 @@ type Assembled struct {
 	// bash 后台进程与临时文件），再 Shutdown tracer（flush 关闭阶段产生的 span）。
 	Cleanup func()
 
-	switchModel func(string) error
-}
-
-// SwitchModel rebuilds both clients for subsequent Chat calls: it runs
-// SwitchRouterModel and additionally rebuilds the long-lived provider held by
-// the service, with the new model's limit as its token budget. It must be
-// called only while no Chat is in progress.
-func (a *Assembled) SwitchModel(ref string) error {
-	if a.switchModel == nil {
-		return errors.New("model switching is unavailable")
-	}
-	return a.switchModel(ref)
-}
-
-// SwitchRouterModel 是两处模型切换共用的核心：解析 provider:model 引用、替换
-// 本地 LLM 路由器的上游 client、把解析结果写回运行时配置。没有长驻
-// ReActService 的前端（如 SSE：装配按请求进行，随后每个请求自然以新配置——
-// 含模型级 limit 预算——构建 provider）直接调用它；Assembled.SwitchModel 在它
-// 之后追加长驻 provider 的重建。切换只保证在无进行中 Chat 时生效；在途请求按
-// 各自快照继续用旧模型。
-func SwitchRouterModel(router RouterClientReplacer, ref string) error {
-	if router == nil {
-		return errors.New("model switching requires a running LLM router")
-	}
-	resolved, err := config.ResolveModel(ref)
-	if err != nil {
-		return err
-	}
-	router.ReplaceClient(infrastructurerouter.NewOpenAIStreamClient(
-		resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel))
-	return config.SetActiveModel(ref)
+	// Switcher 供交互模式在两轮 Chat 之间切换模型。
+	Switcher *ModelSwitcher
 }
 
 // newMainProvider 按当前活跃模型构建主 provider：凭据取运行时配置（由
@@ -213,24 +182,12 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		return nil, err
 	}
 
-	// 模型切换复用 SwitchRouterModel 的「解析 → 换路由 client → 落配置」，再
-	// 按落定后的活跃模型重建长驻 provider，token 预算取新模型的 limit。
-	// TUI 只会在输入阶段执行切换，因此主 Service 没有进行中的 Chat；Router
-	// 自身按请求快照 client，外部并发请求也不会在流中途切换。
-	switchModel := func(ref string) error {
-		if err := SwitchRouterModel(in.Router, ref); err != nil {
-			return err
-		}
-		svc.ReplaceLLMClient(newMainProvider())
-		return nil
-	}
-
 	return &Assembled{
-		Service:     svc,
-		Session:     sess,
-		Skills:      append([]prompt.Skill(nil), skills...),
-		Cleanup:     cleanup,
-		switchModel: switchModel,
+		Service:  svc,
+		Session:  sess,
+		Skills:   append([]prompt.Skill(nil), skills...),
+		Cleanup:  cleanup,
+		Switcher: NewModelSwitcher(in.Router, svc),
 	}, nil
 }
 

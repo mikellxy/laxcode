@@ -135,7 +135,7 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 	setupSwitchModelCatalog(t)
 	router := &recordingModelRouter{}
 	s := newServer(t.TempDir(), false)
-	s.router = router
+	s.switcher = agentasm.NewModelSwitcher(router, nil)
 
 	rec := httptest.NewRecorder()
 	s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
@@ -166,7 +166,7 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 	setupSwitchModelCatalog(t)
 	router := &recordingModelRouter{}
 	s := newServer(t.TempDir(), false)
-	s.router = router
+	s.switcher = agentasm.NewModelSwitcher(router, nil)
 
 	cases := []struct {
 		name   string

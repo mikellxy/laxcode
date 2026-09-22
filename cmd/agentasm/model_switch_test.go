@@ -3,6 +3,7 @@ package agentasm
 import (
 	"context"
 	"testing"
+	"time"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -55,7 +56,7 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 		t.Fatalf("初始 provider 预算应回退全局窗口配置：%+v", budget)
 	}
 
-	if err := assembled.SwitchModel("second:model-2"); err != nil {
+	if err := assembled.Switcher.SwitchModel("second:model-2"); err != nil {
 		t.Fatal(err)
 	}
 	if len(router.clients) != 1 {
@@ -71,5 +72,34 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 		config.EnvAndFileConf.OpenaiApiKey != "key-2" ||
 		config.EnvAndFileConf.OpenaiModel != "model-2" {
 		t.Fatalf("运行时配置未切换：%+v", config.EnvAndFileConf)
+	}
+}
+
+func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{{
+		ProviderName: "p", OpenaiApiKey: "key", OpenaiBaseUrl: "https://example.com/v1",
+		ModelList: []config.ModelConfig{{ModelName: "model"}},
+	}}
+	router := &recordingRouter{}
+	switcher := NewModelSwitcher(router, nil)
+	switcher.RLock()
+	done := make(chan error, 1)
+	go func() { done <- switcher.SwitchModel("p:model") }()
+	select {
+	case err := <-done:
+		switcher.RUnlock()
+		t.Fatalf("switch completed while request was active: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	switcher.RUnlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("switch did not complete after request ended")
 	}
 }
