@@ -22,8 +22,9 @@ LaxCode/
 │   │   │   └── chat-stream.ts      # POST /chat 与 SSE 帧解析
 │   │   ├── components/
 │   │   │   ├── session-tabs/       # Session 标签、切换和新建按钮
-│   │   │   ├── message-list/       # 历史区、滚动锚点和加载更早消息
-│   │   │   ├── message-item/       # user/assistant/tool 消息展示
+│   │   │   ├── message-list/       # 历史区、滚动锚点、消息分组和加载更早消息
+│   │   │   ├── message-item/       # user/assistant 消息展示
+│   │   │   ├── tool-message-block/ # 同一 assistant 轮次的 tool 消息标签块（可展开/折叠）
 │   │   │   ├── reasoning-panel/    # reasoning_content 折叠区
 │   │   │   └── chat-composer/      # 输入框、发送和取消按钮
 │   │   ├── features/
