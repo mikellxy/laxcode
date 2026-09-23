@@ -267,6 +267,34 @@ GET /api/sessions/{session_id}/messages?limit=50&before_seq={上一页的next_be
 - `tool` 只返回 `tool_summary`，不会返回工具执行结果。
 - JSON 中带 `omitempty` 的空字段可能不存在，前端应使用空字符串作为默认值。
 
+## 5.1 模型目录与新增模型
+
+模型菜单通过 `GET /api/models` 获取当前模型和可切换目录。新增模型使用：
+
+```http
+POST /api/models
+Content-Type: application/json
+```
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-5",
+  "api_key": "sk-...",
+  "base_url": "https://api.openai.com/v1",
+  "context_window": 200000,
+  "max_output_tokens": 16384
+}
+```
+
+成功返回 `201 Created`，响应只包含 `model_name` 和 `model_ref`，不会回传 API
+Key 或 Base URL。服务端将配置原子写入 `~/.laxcode/settings.json`，文件权限为
+`0600`，并立即更新当前进程的模型目录，但不自动切换当前模型。
+
+API Key 和 Base URL 是 provider 级配置。同名 provider 已存在时，传入值必须与
+已有配置一致；不一致或模型重名返回 `409`。名称或 token 上限非法返回 `400`。
+输出 token 必须小于上下文大小。
+
 ## 6. 发起对话和接收 SSE
 
 ### 请求

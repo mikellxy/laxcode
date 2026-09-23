@@ -28,6 +28,8 @@ func NewModelSwitcher(router RouterClientReplacer, service *reactservice.ReActSe
 // A switch waits until active calls release their read locks.
 func (s *ModelSwitcher) RLock()   { s.mu.RLock() }
 func (s *ModelSwitcher) RUnlock() { s.mu.RUnlock() }
+func (s *ModelSwitcher) Lock()    { s.mu.Lock() }
+func (s *ModelSwitcher) Unlock()  { s.mu.Unlock() }
 
 // SwitchModel affects subsequent requests. Callers with a long-lived service
 // must invoke it between Chat calls, when that service is idle.

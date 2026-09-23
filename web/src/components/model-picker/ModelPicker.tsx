@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronUp, Clock, Loader2 } from "lucide-react";
-import { listModels, modelRefs, splitModelRef, switchModelRequest } from "../../api/models";
-import type { ProviderListModelDTO } from "../../types/api";
+import { Check, ChevronDown, ChevronUp, Clock, Loader2, Plus } from "lucide-react";
+import { addModelRequest, listModels, modelRefs, splitModelRef, switchModelRequest } from "../../api/models";
+import type { AddModelInput, ProviderListModelDTO } from "../../types/api";
+import { AddModelDialog } from "./AddModelDialog";
 
 export function ModelPicker({ running }: { running: boolean }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [queued, setQueued] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const models = useQuery({ queryKey: ["models"], queryFn: listModels });
@@ -20,6 +22,14 @@ export function ModelPicker({ running }: { running: boolean }) {
       client.setQueryData(["models"], (old: ProviderListModelDTO | undefined) => (old ? { ...old, current_model: model_ref } : old));
       void client.invalidateQueries({ queryKey: ["context"] });
       setOpen(false);
+    },
+  });
+  const addModel = useMutation({
+    mutationFn: (input: AddModelInput) => addModelRequest(input),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["models"] });
+      setAdding(false);
+      setOpen(true);
     },
   });
 
@@ -60,6 +70,8 @@ export function ModelPicker({ running }: { running: boolean }) {
         {ref === current ? <Check size={14} /> : ref === queued ? <Clock size={14} /> : null}
       </li>)}
       {switchModel.isError && <li className="model-menu-state error">切换失败：{switchModel.error instanceof Error ? switchModel.error.message : "未知错误"}</li>}
+      <li className="model-add-item"><button type="button" onClick={() => { addModel.reset(); setOpen(false); setAdding(true); }}><Plus size={14} />添加模型</button></li>
     </ul>}
+    {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} />}
   </div>;
 }

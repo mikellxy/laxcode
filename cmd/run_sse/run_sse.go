@@ -119,6 +119,7 @@ func Run(router agentasm.RouterClientReplacer) {
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
+	mux.HandleFunc("POST /api/models", s.handleAddModel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。

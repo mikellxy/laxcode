@@ -210,6 +210,15 @@ type providerListModelDTO struct {
 	Providers    []providerModelsDTO `json:"providers"`
 }
 
+type addModelRequest struct {
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	APIKey          string `json:"api_key"`
+	BaseURL         string `json:"base_url"`
+	ContextWindow   int    `json:"context_window"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+}
+
 // handleListModels 处理 GET /api/models：返回 EnvAndFileConf.ProviderList 的
 // 脱敏视图（各 provider 的 ModelList）与当前生效模型引用，供客户端做模型
 // 选择、切换与展示，不暴露凭据与端点。
@@ -234,6 +243,41 @@ func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+// handleAddModel 将新模型写入用户级 settings.json，并同步更新当前进程的
+// 模型目录。写入与模型切换/对话共用 switcher 写锁，避免目录在读取中突变。
+func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
+	var req addModelRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	s.switcher.Lock()
+	model, err := config.AddModelToSettings(s.homeDir, config.AddModelInput{
+		Provider: req.Provider, Model: req.Model, APIKey: req.APIKey, BaseURL: req.BaseURL,
+		ContextWindow: req.ContextWindow, MaxOutputTokens: req.MaxOutputTokens,
+	})
+	s.switcher.Unlock()
+	if err != nil {
+		switch {
+		case errors.Is(err, config.ErrInvalidModelConfig):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, config.ErrModelAlreadyExists), errors.Is(err, config.ErrProviderCredentialsConflict):
+			writeJSONError(w, http.StatusConflict, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, "save model failed: "+err.Error())
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(modelConfigDTO{
+		ModelName: model.ModelName,
+		ModelRef:  strings.TrimSpace(req.Provider) + ":" + model.ModelName,
+	})
 }
 
 // switchModelRequest 是 POST /api/model 的请求体：provider 与 model 拼成

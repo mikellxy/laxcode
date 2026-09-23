@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -286,6 +288,52 @@ func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 		if strings.Contains(rec.Body.String(), secret) {
 			t.Fatalf("response leaks sensitive field %q: %s", secret, rec.Body.String())
 		}
+	}
+}
+
+func TestHandleAddModelPersistsWithoutReturningAPIKey(t *testing.T) {
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{{
+		ProviderName: "existing", OpenaiApiKey: "old-secret", OpenaiBaseUrl: "https://existing.example/v1",
+		ModelList: []config.ModelConfig{{ModelName: "main"}},
+	}}
+	config.EnvAndFileConf.Model = "existing:main"
+	home := t.TempDir()
+	settingsDir := filepath.Join(home, ".laxcode")
+	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"model":"existing:main","provider_list":[{"provider_name":"existing","openai_api_key":"old-secret","openai_base_url":"https://existing.example/v1","model_list":[{"model_name":"main"}]}]}`
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newServer(home, false)
+	body := `{"provider":"new-provider","model":"new-model","api_key":"new-secret","base_url":"https://new.example/v1","context_window":128000,"max_output_tokens":8192}`
+	rec := httptest.NewRecorder()
+	s.handleAddModel(rec, httptest.NewRequest(http.MethodPost, "/api/models", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "new-secret") || strings.Contains(rec.Body.String(), "base_url") {
+		t.Fatalf("response leaked sensitive configuration: %s", rec.Body.String())
+	}
+	if _, err := config.ResolveModel("new-provider:new-model"); err != nil {
+		t.Fatalf("runtime catalog was not updated: %v", err)
+	}
+	persisted, err := os.ReadFile(filepath.Join(settingsDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(persisted), `"model_name": "new-model"`) || !strings.Contains(string(persisted), `"context": 128000`) {
+		t.Fatalf("model was not persisted: %s", persisted)
+	}
+
+	duplicate := httptest.NewRecorder()
+	s.handleAddModel(duplicate, httptest.NewRequest(http.MethodPost, "/api/models", strings.NewReader(body)))
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
 	}
 }
 

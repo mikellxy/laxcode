@@ -17,21 +17,21 @@ import (
 // ModelLimit 是 model_list 条目里的模型级 token 预算（limit.context /
 // limit.output）：声明后作为该模型 LLM client 的 bucket，覆盖全局窗口配置。
 type ModelLimit struct {
-	Context int `mapstructure:"context"`
-	Output  int `mapstructure:"output"`
+	Context int `mapstructure:"context" json:"context"`
+	Output  int `mapstructure:"output" json:"output"`
 }
 
 type ModelConfig struct {
-	ModelName     string      `mapstructure:"model_name"`
-	UpstreamModel string      `mapstructure:"-"`
-	Limit         *ModelLimit `mapstructure:"limit"`
+	ModelName     string      `mapstructure:"model_name" json:"model_name"`
+	UpstreamModel string      `mapstructure:"-" json:"upstream_model,omitempty"`
+	Limit         *ModelLimit `mapstructure:"limit" json:"limit,omitempty"`
 }
 
 type ProviderConfig struct {
-	OpenaiApiKey  string        `mapstructure:"openai_api_key"`
-	OpenaiBaseUrl string        `mapstructure:"openai_base_url"`
-	ProviderName  string        `mapstructure:"provider_name"`
-	ModelList     []ModelConfig `mapstructure:"model_list"`
+	OpenaiApiKey  string        `mapstructure:"openai_api_key" json:"openai_api_key"`
+	OpenaiBaseUrl string        `mapstructure:"openai_base_url" json:"openai_base_url"`
+	ProviderName  string        `mapstructure:"provider_name" json:"provider_name"`
+	ModelList     []ModelConfig `mapstructure:"model_list" json:"model_list"`
 }
 
 type ResolvedModel struct {
