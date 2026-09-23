@@ -2,13 +2,12 @@
 // 接受 POST /chat（body 携带 session_id / task），为每个请求装配一个独立的
 // ReActService，把 ReActEventConsumerF 收到的 ReAct 事件以细粒度语义 SSE 帧流式
 // 回传，本轮结束发 done（成功）或 error（失败）帧收尾。它与交互模式
-// （cmd/run_cli）、one-shot（cmd/run_oneshot）平级，共用 cmd/agentasm 组合根与
+// （cmd/run_cli）平级，共用 cmd/agentasm 组合根与
 // application/reactservice 的 ReAct 循环，仅依赖 DDD 三层，不引用老的非 DDD 代码。
 //
 // 装配采用「每请求一次」：agentasm.Assemble 在装配时固定 Consumer 与 SessionID，
 // 且 ReActService 绑定单一 Session，故要让每个请求把事件写到自己的 SSE 流、并支持
-// 任意 session_id 续聊，只能每请求装配独立服务、跑一次 Chat 后 Cleanup（与 one-shot
-// 同构，只是从进程级一次变为请求级一次）。
+// 任意 session_id 续聊，只能每请求装配独立服务、跑一次 Chat 后 Cleanup。
 package run_sse
 
 import (

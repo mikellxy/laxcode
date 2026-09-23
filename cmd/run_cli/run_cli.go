@@ -206,12 +206,11 @@ func Run(router agentasm.RouterClientReplacer) {
 	}
 
 	// rcf：交互模式的事件呈现——把 ReAct 中间过程格式化后经 inChan 回流给 TUI 增量
-	// 渲染（替代原先直接打印 stdout）。作为 Consumer 注入装配，与 one-shot 的静默
-	// 丢弃回调形成对照。
+	// 渲染（替代原先直接打印 stdout）。作为 Consumer 注入装配。
 	rcf := newEventConsumer(sendIn)
 
 	// 装配（会话 / tracer / 工具集含子 Agent / provider / ReActService）收口到
-	// cmd/agentasm 组合根，与 one-shot 共用。Cleanup 幂等（sync.Once），defer 一次。
+	// cmd/agentasm 组合根。Cleanup 幂等（sync.Once），defer 一次。
 	assembled, err := agentasm.Assemble(ctx, agentasm.Input{
 		WorkDir:   workDir,
 		SessionID: config.CliConf.Session,

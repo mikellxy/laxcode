@@ -32,7 +32,7 @@ Python 管线目前是 CLI，不是 HTTP 服务：
 - `store/store.py`：VecWriter 固定写 documents、chunks、chunk_vectors，首批先提交文档，再逐批 embedding 和提交。
 - `splitter/by_title.py`：支持标题分节和无标题文本，可以复用。
 
-保留现有知识库导入命令和 CLI/one-shot Agent 行为。新接口默认仍选择 knowledge 目标，用户记忆走独立写入策略。
+保留现有知识库导入命令和 CLI Agent 行为。新接口默认仍选择 knowledge 目标，用户记忆走独立写入策略。
 
 ### 2.1 QA 与 SSE 的装配边界（已确定）
 
@@ -257,7 +257,7 @@ Go 后台 worker 负责生成摘要与任务状态；Python 只负责接收摘�
 
 ## 9. 验收与测试
 
-- SSE 主请求不携带工具定义；CLI/one-shot 和现有 QA 不改变行为。
+- SSE 主请求不携带工具定义；CLI 和现有 QA 不改变行为。
 - 同 session 跨 HTTP 请求在第 3、6 轮各产生一条任务；重启继续计数，压缩不重置。
 - 失败、取消、Resume 和重复提交不重复推进已完成轮次或创建任务。
 - worker 延迟执行时仍提取原定三轮；摘要排除召回 chunk 和 reasoning；空摘要跳过管线。

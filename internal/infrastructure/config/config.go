@@ -327,15 +327,12 @@ func ActiveModelBudget() (contextWindow, maxOutputTokens int) {
 type cliConf struct {
 	KB               string `mapstructure:"kb"`
 	VectorDimensions int    `mapstructure:"vector-dim"`
-	Oneshot          bool   `mapstructure:"oneshot"`
 	Evaluate         bool   `mapstructure:"evaluate"`
 	SSE              bool   `mapstructure:"sse"`
 	Code             bool   `mapstructure:"code"`
 	QA               bool   `mapstructure:"qa"`
 	Addr             string `mapstructure:"addr"`
 	WorkDir          string `mapstructure:"workdir"`
-	Task             string `mapstructure:"task"`
-	TaskFile         string `mapstructure:"task-file"`
 	Session          string `mapstructure:"session"`
 	EvalSession      string `mapstructure:"eval_session"`
 	Plan             bool   `mapstructure:"plan"`
@@ -488,7 +485,6 @@ func ParseEnvAndFile() error {
 // testing 注册 -test.* 参数之前执行 flag.Parse，遇到 -test.v 等以“未定义
 // 参数”直接退出（老 internal/config 亦是由 main 显式调用 Parse）。
 func ParseCli() error {
-	oneshot := flag.Bool("oneshot", false, "one-shot mode: run a single task and print structured JSON to stdout")
 	evaluate := flag.Bool("evaluate", false, "evaluate an existing agent session and print a structured report to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
 	code := flag.Bool("code", false, "use the coding agent in SSE mode")
@@ -496,16 +492,13 @@ func ParseCli() error {
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
 	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -qa and for -sse when OPENAI_EMBEDDING_* is configured")
 	vectorDimensions := flag.Int("vector-dim", 0, "user-memory vector dimensions; required for -sse when OPENAI_EMBEDDING_* is configured")
-	workDir := flag.String("workdir", "", "working directory; required in one-shot and evaluate modes, defaults to cwd otherwise")
-	task := flag.String("task", "", "one-shot task prompt text")
-	taskFile := flag.String("task-file", "", "one-shot task prompt file path; takes precedence over -task")
+	workDir := flag.String("workdir", "", "working directory; required in evaluate mode, defaults to cwd otherwise")
 	session := flag.String("session", "", "session id to resume; empty starts a new session")
 	evalSession := flag.String("eval_session", "", "session id to evaluate; required in evaluate mode")
 	plan := flag.Bool("plan", false, "enable plan mode")
 	tokenBudget := flag.Int("token-budget", 0, "token budget for interactive CLI or SSE code sessions; 0 disables confirmation")
 	flag.Parse()
 
-	Cli.Set("oneshot", *oneshot)
 	Cli.Set("evaluate", *evaluate)
 	Cli.Set("sse", *sse)
 	Cli.Set("code", *code)
@@ -514,8 +507,6 @@ func ParseCli() error {
 	Cli.Set("workdir", *workDir)
 	Cli.Set("kb", *kb)
 	Cli.Set("vector-dim", *vectorDimensions)
-	Cli.Set("task", *task)
-	Cli.Set("task-file", *taskFile)
 	Cli.Set("session", *session)
 	Cli.Set("eval_session", *evalSession)
 	Cli.Set("plan", *plan)
@@ -527,10 +518,10 @@ func ParseCli() error {
 	if CliConf.TokenBudget < 0 {
 		return fmt.Errorf("-token-budget must be non-negative")
 	}
-	if CliConf.Code && (!CliConf.SSE || CliConf.QA || CliConf.Oneshot || CliConf.Evaluate) {
-		return fmt.Errorf("-code requires -sse and cannot be combined with -qa, -oneshot, or -evaluate")
+	if CliConf.Code && (!CliConf.SSE || CliConf.QA || CliConf.Evaluate) {
+		return fmt.Errorf("-code requires -sse and cannot be combined with -qa or -evaluate")
 	}
-	if CliConf.TokenBudget > 0 && (CliConf.Oneshot || CliConf.Evaluate || CliConf.QA || (CliConf.SSE && !CliConf.Code)) {
+	if CliConf.TokenBudget > 0 && (CliConf.Evaluate || CliConf.QA || (CliConf.SSE && !CliConf.Code)) {
 		return fmt.Errorf("-token-budget is only supported in interactive CLI or -sse -code mode")
 	}
 	if CliConf.QA || (CliConf.SSE && !CliConf.Code && EmbeddingEnvironmentReady()) {

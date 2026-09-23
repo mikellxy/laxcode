@@ -65,8 +65,8 @@ func fatal(err error) {
 }
 
 // Run 启动 sse server 并阻塞至收到 SIGINT/SIGTERM 优雅关闭。它是 main 分发的
-// 第三种前端入口，与 run_cli.Run / run_oneshot.Run 平级：装配（session/tracer/
-// tools/provider/ReActService）经 cmd/agentasm 组合根按「每请求一次」完成（见
+// HTTP 前端入口：装配（session/tracer/tools/provider/ReActService）经
+// cmd/agentasm 组合根按「每请求一次」完成（见
 // handler），本函数只负责 server 级配置、路由注册与生命周期管理。router 是
 // main 启动的本地 LLM 路由器，供模型切换端点替换其上游 client。
 func Run(router agentasm.RouterClientReplacer) {

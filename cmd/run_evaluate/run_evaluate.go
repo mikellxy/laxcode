@@ -1,6 +1,5 @@
-// Package run_evaluate implements the single-run LLM-as-a-judge frontend. It
-// evaluates an existing session's immutable JSONL history with the same
-// ReActService assembly used by one-shot mode, while persisting the judge in a
+// Package run_evaluate implements the LLM-as-a-judge frontend. It evaluates an
+// existing session's immutable JSONL history and persists the judge in a
 // separate session so the evaluated evidence is never modified.
 package run_evaluate
 
@@ -36,9 +35,9 @@ type EvaluationError struct {
 	Message string `json:"message"`
 }
 
-// EvaluationResult keeps the one-shot result shape while making the target and
-// judge sessions explicit. SessionID is the isolated judge session; EvalSessionID
-// is the immutable source session requested with -eval_session.
+// EvaluationResult makes the target and judge sessions explicit. SessionID is
+// the isolated judge session; EvalSessionID is the immutable source session
+// requested with -eval_session.
 type EvaluationResult struct {
 	SessionID     string                       `json:"session_id"`
 	EvalSessionID string                       `json:"eval_session_id"`
@@ -52,19 +51,22 @@ type EvaluationResult struct {
 // exit code (0 success / 1 generation failure / 2 usage error). Stdout contains
 // exactly one JSON result line; ReAct intermediate events are discarded.
 func Run() int {
-	ctx := context.Background()
+	result, exitCode := evaluate(context.Background())
+	if err := writeResult(os.Stdout, result); err != nil {
+		fmt.Fprintf(os.Stderr, "write evaluation result: %v\n", err)
+		return exitRun
+	}
+	return exitCode
+}
+
+func evaluate(ctx context.Context) (EvaluationResult, int) {
 	cli := config.CliConf
 	env := config.EnvAndFileConf
+	result := EvaluationResult{EvalSessionID: cli.EvalSession}
 
-	usageFail := func(format string, args ...any) int {
-		writeResult(os.Stdout, EvaluationResult{
-			EvalSessionID: cli.EvalSession,
-			Error: &EvaluationError{
-				Type:    errTypeUsage,
-				Message: fmt.Sprintf(format, args...),
-			},
-		})
-		return exitUsage
+	usageFail := func(format string, args ...any) (EvaluationResult, int) {
+		result.Error = &EvaluationError{Type: errTypeUsage, Message: fmt.Sprintf(format, args...)}
+		return result, exitUsage
 	}
 
 	if strings.TrimSpace(cli.WorkDir) == "" {
@@ -109,22 +111,17 @@ func Run() int {
 	defer assembled.Cleanup()
 
 	msg, runErr := assembled.Service.Chat(ctx, prompt.GetEvaluateUserPrompt(historyPath))
-	res := EvaluationResult{
-		SessionID:     assembled.Session.ID,
-		EvalSessionID: cli.EvalSession,
-		TokenUsed:     assembled.Session.TokenUsed,
-		WindowToken:   assembled.Session.WindowToken,
-	}
+	result.SessionID = assembled.Session.ID
+	result.TokenUsed = assembled.Session.TokenUsed
+	result.WindowToken = assembled.Session.WindowToken
 	if runErr != nil {
-		res.Error = &EvaluationError{Type: errTypeGenerate, Message: runErr.Error()}
-		writeResult(os.Stdout, res)
-		return exitRun
+		result.Error = &EvaluationError{Type: errTypeGenerate, Message: runErr.Error()}
+		return result, exitRun
 	}
 	if msg != nil {
-		res.Result = msg.Content
+		result.Result = msg.Content
 	}
-	writeResult(os.Stdout, res)
-	return exitOK
+	return result, exitOK
 }
 
 func resolveHistoryPath(homeDir, sessionID string) (string, error) {
@@ -134,11 +131,6 @@ func resolveHistoryPath(homeDir, sessionID string) (string, error) {
 	return layout.SessionHistory(homeDir, sessionID), nil
 }
 
-func writeResult(w io.Writer, res EvaluationResult) {
-	data, err := json.Marshal(res)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "marshal evaluation result failed: %v\n", err)
-		return
-	}
-	fmt.Fprintln(w, string(data))
+func writeResult(w io.Writer, result EvaluationResult) error {
+	return json.NewEncoder(w).Encode(result)
 }

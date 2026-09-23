@@ -1,8 +1,8 @@
 package agentasm
 
 // Package agentasm 是 cmd 层的组合根（composition root）：把交互模式
-// （cmd/run_cli）、one-shot 模式（cmd/run_oneshot）与评估模式
-// （cmd/run_evaluate）共用的 Agent 装配逻辑收口到 Assemble，消除重复。装配产物
+// （cmd/run_cli）、SSE 模式（cmd/run_sse）与评估模式（cmd/run_evaluate）共用的
+// Agent 装配逻辑收口到 Assemble，消除重复。装配产物
 // 是一个可直接 Run 的 ReActService 及其会话与清理钩子；各端的输入解析、校验、
 // 事件呈现与主循环仍留在前端。
 //
@@ -32,7 +32,7 @@ import (
 
 // Input 是装配 ReActService 所需、且因前端而异的输入。
 type Input struct {
-	// WorkDir 是 Agent 工作目录（沙箱根）：交互模式取 cwd，单次运行模式取 -workdir。
+	// WorkDir 是 Agent 工作目录（沙箱根）：交互模式取 cwd，服务或评估模式取显式配置。
 	WorkDir string
 	// HomeDir 是全局数据根的用户主目录；空值使用 os.UserHomeDir。
 	// 测试可显式注入临时目录，避免触碰真实用户数据。
@@ -47,7 +47,7 @@ type Input struct {
 	// SystemPrompt 非空时替换默认 coding-agent 系统提示词。评估等复用同一
 	// ReActService、但职责不同的前端通过它注入专用角色；普通前端留空。
 	SystemPrompt string
-	// Consumer 是 ReAct 事件回调：交互模式接 stdout 彩色打印，单次模式静默丢弃。
+	// Consumer 是 ReAct 事件回调；交互模式用它渲染事件，留空时静默丢弃。
 	Consumer func(*reactservice.ReactEvent)
 	// Router 仅交互模式注入，用于 /model 在两轮 Chat 之间替换本地网关 client。
 	Router RouterClientReplacer
@@ -187,8 +187,8 @@ func resolveHomeDir(explicit string) (string, error) {
 	return homeDir, nil
 }
 
-// warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，使 one-shot 模式
-// 的 stdout JSON 契约与交互模式的彩色输出都不被污染，警告仍可被用户看到。
+// warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，使评估模式的
+// stdout JSON 契约与交互模式的彩色输出都不被污染，警告仍可被用户看到。
 // 不得把它改成空实现：技能 frontmatter 解析失败将被静默后，模型侧表现为
 // “技能没生效”而无任何线索。
 func warnSkillSkip(msg string) {

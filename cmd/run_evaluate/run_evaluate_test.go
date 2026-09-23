@@ -42,7 +42,9 @@ func TestResolveHistoryPathRejectsInvalidSessionIDs(t *testing.T) {
 
 func TestWriteResult(t *testing.T) {
 	var out bytes.Buffer
-	writeResult(&out, EvaluationResult{SessionID: "judge", EvalSessionID: "target", Result: "report"})
+	if err := writeResult(&out, EvaluationResult{SessionID: "judge", EvalSessionID: "target", Result: "report"}); err != nil {
+		t.Fatalf("writeResult: %v", err)
+	}
 	var got EvaluationResult
 	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &got); err != nil {
 		t.Fatalf("decode result: %v", err)
