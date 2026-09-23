@@ -65,6 +65,14 @@ func TestAssessBashRiskRedirectWithoutWorkDir(t *testing.T) {
 	}
 }
 
+func TestAssessBashRiskDoesNotMakeGlobalSkillsWritable(t *testing.T) {
+	workDir := t.TempDir()
+	skillFile := filepath.Join(t.TempDir(), ".laxcode", "skills", "demo", "SKILL.md")
+	if _, risky := AssessBashRisk("printf changed > "+skillFile, workDir); !risky {
+		t.Fatal("redirecting to the global skills directory must require approval")
+	}
+}
+
 // escapeTargetDir 返回一个位于放行范围（/tmp 与 workDir）之外的可写目录，
 // 用作符号链接逃逸目标。t.TempDir() 在 Linux 上位于 /tmp 内，而 /tmp 本身
 // 是放行的重定向区域，逃逸目标落在其中时不会被标记。

@@ -34,6 +34,7 @@ type Summary struct {
 	ID        string
 	UserID    string
 	Title     string
+	WorkDir   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -45,7 +46,8 @@ type SummaryPage struct {
 
 // SessionCatalogRepository 管理显式创建的空会话及按用户隔离的会话列表。
 type SessionCatalogRepository interface {
-	CreateSession(ctx context.Context, sessionID, userID, title string) (Summary, error)
+	CreateSession(ctx context.Context, sessionID, userID, title, workDir string) (Summary, error)
+	GetSession(ctx context.Context, sessionID string) (Summary, error)
 	// ListSessions 返回指定用户在 beforeSessionID 之前的一页会话，按更新时间倒序。
 	// beforeSessionID 为空表示第一页。
 	ListSessions(ctx context.Context, userID, beforeSessionID string, limit int) (SummaryPage, error)

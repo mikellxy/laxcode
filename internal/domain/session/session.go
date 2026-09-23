@@ -39,13 +39,17 @@ type Session struct {
 
 // NewSession 以 sessionID 新建空 Session；不创建任何目录或文件，
 // 从未 Append 的空会话不会在磁盘留下痕迹。
-func NewSession(sessionID string) *Session {
+func NewSession(sessionID string, workDirs ...string) *Session {
 	if sessionID == "" {
 		sessionID = time.Now().Format("20060102-150405.000")
 	}
+	workDir := ""
+	if len(workDirs) > 0 {
+		workDir = workDirs[0]
+	}
 	return &Session{
 		ID:             sessionID,
-		RequestContext: RequestContext{MemoryGeneration: 1},
+		RequestContext: RequestContext{MemoryGeneration: 1, WorkDir: workDir},
 	}
 }
 

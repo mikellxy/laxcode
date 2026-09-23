@@ -37,8 +37,10 @@ type SubAgentDeps struct {
 	// 杀掉父 Agent 尚在运行的后台进程（如开发服务器）。
 	NewShell func() tools.ShellRunner
 	// SkillSrc 是技能定义文件的发现端口，供子 Agent 的系统提示词渲染技能索引；
-	// 无状态且按调用传 workDir，可与父共享（子 Agent 可能跑在不同的 work_dir 下）。
+	// 实现绑定全局技能目录，可与父共享且不随子 Agent work_dir 改变。
 	SkillSrc prompt.SkillSource
+	// SkillsRoot 是全局技能目录；子 Agent 只能通过 read/grep/glob 读取。
+	SkillsRoot string
 }
 
 // SubAgent 把「启动一个隔离子 Agent 跑子任务」包装成 tools.BaseTool 的适配器。
@@ -112,13 +114,13 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	// 子会话：全新 id、复用父 SessRepo，使用与主 Agent 相同的快照恢复入口。
-	// 注入人格系统提示词（含 workDir 沙箱约束）与子工作目录下的技能索引；
+	// 注入人格系统提示词（含 workDir 沙箱约束）与全局技能索引；
 	// plan 传 nil（子 Agent 不支持 Plan Mode），warn 传 nil（技能警告已在主 Agent
 	// 启动时针对主工作目录输出过，此处重复输出只会淹没子任务结果）。
 	childID := "sub:" + time.Now().Format("20060102-150405.000") + "-" + s.parent.Session.ID
-	childSess := session.NewSession(childID)
+	childSess := session.NewSession(childID, workDir)
 	childSkills := prompt.LoadSkills(s.deps.SkillSrc, workDir, nil)
-	childSysPrompt := prompt.GetSysPrompt(workDir, childSkills, nil)
+	childSysPrompt := prompt.GetSysPrompt(workDir, childSkills, nil, s.deps.SkillsRoot)
 
 	// 受限工具集不含 sub-agent 自身；构造服务时另注册会话级 read_artifact。
 	// 不含 sub-agent 自身，避免递归。子 Agent
@@ -126,10 +128,10 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// 命令执行端口按子 Agent 新建，以免回收波及父 Agent 的后台进程。
 	childReg := tools.NewDefaultRegistry(s.parent.tracer)
 	childReg.Register(tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID))
-	childReg.Register(tools.NewReadFileTool(workDir, s.deps.WorkFS))
+	childReg.Register(tools.NewReadFileTool(workDir, s.deps.WorkFS, s.deps.SkillsRoot))
 	if s.deps.Ripgrep != nil {
-		childReg.Register(tools.NewGrepTool(workDir, s.deps.Ripgrep))
-		childReg.Register(tools.NewGlobTool(workDir, s.deps.Ripgrep))
+		childReg.Register(tools.NewGrepTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot))
+		childReg.Register(tools.NewGlobTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot))
 	}
 	defer childReg.Close()
 

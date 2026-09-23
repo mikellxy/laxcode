@@ -21,12 +21,12 @@ export function useWorkspace(userID: string) {
     getNextPageParam: (page) => page.has_more ? page.next_before_session_id : undefined,
   });
   const allSessions = useMemo(() => sessions.data?.pages.flatMap((page) => page.sessions) ?? [], [sessions.data]);
-  const create = useMutation({ mutationFn: () => createSession(userID), onSuccess: (created) => { client.setQueryData(["sessions", userID], (old: typeof sessions.data) => old ? { ...old, pages: [{ ...old.pages[0], sessions: [created, ...old.pages[0].sessions.filter((s) => s.session_id !== created.session_id)] }, ...old.pages.slice(1)] } : old); setSelectedID(created.session_id); } });
+  const create = useMutation({ mutationFn: (workDir: string) => createSession(userID, workDir), onSuccess: (created) => { client.setQueryData(["sessions", userID], (old: typeof sessions.data) => old ? { ...old, pages: [{ ...old.pages[0], sessions: [created, ...old.pages[0].sessions.filter((s) => s.session_id !== created.session_id)] }, ...old.pages.slice(1)] } : old); setSelectedID(created.session_id); } });
 
   useEffect(() => {
     if (!sessions.isSuccess || selectedID || bootstrapped.current) return;
     bootstrapped.current = true;
-    if (allSessions[0]) setSelectedID(allSessions[0].session_id); else create.mutate();
+    if (allSessions[0]) setSelectedID(allSessions[0].session_id);
   }, [sessions.isSuccess, selectedID, allSessions, create]);
 
   const history = useInfiniteQuery({

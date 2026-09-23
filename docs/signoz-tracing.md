@@ -80,7 +80,7 @@ LaxCode 根据 `OTEL_EXPORTER_OTLP_ENDPOINT` 判断是否启用远端 exporter�
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`。未设置通用 endpoint 时，span 会继续写入：
 
 ```text
-${workdir}/.laxcode/.session/${session_id}/log/tracing.log
+${HOME}/.laxcode/sessions/${session_id}/log/tracing.log
 ```
 
 ## 3. Docker 网络地址
@@ -124,4 +124,3 @@ echo "$OTEL_SERVICE_NAME"
 - [SigNoz Docker 自托管安装](https://signoz.io/docs/install/docker/)
 - [SigNoz 自托管数据接入](https://signoz.io/docs/ingestion/self-hosted/overview/)
 - [SigNoz Go OpenTelemetry 接入](https://signoz.io/docs/instrumentation/opentelemetry-golang/)
-

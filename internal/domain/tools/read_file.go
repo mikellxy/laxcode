@@ -21,13 +21,14 @@ type readFileToolArgs struct {
 const readFileToolMaxReadBytes = 50 * 1024
 
 type ReadFileTool struct {
-	WorkDir string `json:"work_dir"`
+	WorkDir   string   `json:"work_dir"`
+	ReadRoots []string `json:"-"`
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
 	FS WorkFS
 }
 
-func NewReadFileTool(workDir string, workFS WorkFS) *ReadFileTool {
-	return &ReadFileTool{WorkDir: workDir, FS: workFS}
+func NewReadFileTool(workDir string, workFS WorkFS, readRoots ...string) *ReadFileTool {
+	return &ReadFileTool{WorkDir: workDir, ReadRoots: append([]string(nil), readRoots...), FS: workFS}
 }
 
 func (r *ReadFileTool) AfterExecInfo(message json.RawMessage) string {
@@ -53,13 +54,13 @@ func (r *ReadFileTool) Name() string {
 func (r *ReadFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        r.Name(),
-		Description: "读取文件内容。 **严格限制**只读取你的工作目录下的文件，提供文件在工作目录的相对路径。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
+		Description: "读取文件内容。相对路径限制在工作目录内；系统明确提供的只读目录（如全局 skills）可使用绝对路径。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "要读的文件的相对路径，如 cmd/main/main.go",
+					"description": "工作目录内的相对路径，或系统明确提供的只读绝对路径",
 				},
 				"start_line_no": map[string]any{
 					"type":        "integer",
@@ -92,8 +93,11 @@ func (r *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("path required"))
 	}
 
-	pathSafe, err := safeJoinWorkDir(argsObj.Path, r.WorkDir)
+	pathSafe, root, err := resolveReadTarget(r.WorkDir, r.ReadRoots, argsObj.Path)
 	if err != nil {
+		return "", NewErrorWithPrompt(&FilePathError{}, err)
+	}
+	if err := ensureRealPathWithin(root, pathSafe); err != nil {
 		return "", NewErrorWithPrompt(&FilePathError{}, err)
 	}
 

@@ -1,5 +1,5 @@
-// Package skillrepo 是 prompt.SkillSource 端口的文件系统实现：扫描工作目录下
-// ${workDir}/.laxcode/skills/ 恰好一层子目录中的 SKILL.md，把原文交给领域层
+// Package skillrepo 是 prompt.SkillSource 端口的文件系统实现：扫描用户主目录下
+// ${HOME}/.laxcode/skills/ 恰好一层子目录中的 SKILL.md，把原文交给领域层
 // 解析校验。路径布局取自 infrastructure/layout，本包只负责「发现」，
 // 不做任何 frontmatter 解析或字段校验——那是 domain/prompt 的职责。
 package skillrepo
@@ -15,23 +15,34 @@ import (
 // skillFileName 是技能定义文件的精确名称（大小写敏感）。
 const skillFileName = "SKILL.md"
 
-// Source 是无状态的技能发现实现：workDir 由每次 List 调用传入，故同一个
-// 实例可被主 Agent 与使用不同工作目录的子 Agent 共享。
-type Source struct{}
+// Source 绑定用户主目录；List 的 workDir 参数为领域端口的兼容参数，技能不再
+// 随项目工作目录变化，主 Agent 与子 Agent 始终看到同一份全局技能。
+type Source struct{ HomeDir string }
 
 // New 返回技能发现端口的文件系统实现。
-func New() *Source { return &Source{} }
+func New(homeDirs ...string) *Source {
+	homeDir := ""
+	if len(homeDirs) > 0 {
+		homeDir = homeDirs[0]
+	} else {
+		homeDir, _ = os.UserHomeDir()
+	}
+	return &Source{HomeDir: homeDir}
+}
 
 var _ prompt.SkillSource = (*Source)(nil)
 
-// List 返回 ${workDir}/.laxcode/skills/ 下恰好一层子目录中的 SKILL.md 原文，
+// List 返回 ${HOME}/.laxcode/skills/ 下恰好一层子目录中的 SKILL.md 原文，
 // 每条带上其所在目录名（技能身份校验需要它）。
 //
 // 以下情形一律静默忽略，既不报错也不产生警告（规范要求发现层面的缺失对
 // 用户不可见）：skills 目录不存在或不可读、skills 根下的散置文件、嵌套更深
 // 层级里的 SKILL.md（不递归）、技能目录内文件名大小写不符、读取失败。
-func (Source) List(workDir string) []prompt.SkillFile {
-	skillsRoot := layout.SkillsRoot(workDir)
+func (s Source) List(_ string) []prompt.SkillFile {
+	skillsRoot := layout.SkillsRoot(s.HomeDir)
+	if err := os.MkdirAll(skillsRoot, 0o700); err != nil {
+		return nil
+	}
 	dirEntries, err := os.ReadDir(skillsRoot)
 	if err != nil {
 		return nil // skills 目录不存在（或不可读）视为没有技能

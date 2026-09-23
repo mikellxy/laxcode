@@ -35,6 +35,7 @@ type requestContextModel struct {
 	SessionID         string    `gorm:"column:session_id;type:varchar(128);primaryKey"`
 	UserID            string    `gorm:"column:user_id;type:varchar(128);not null;default:''"`
 	Title             string    `gorm:"column:title;type:text;not null;default:''"`
+	WorkDir           string    `gorm:"column:work_dir;type:text;not null;default:''"`
 	Revision          uint64    `gorm:"column:revision;not null"`
 	MemoryGeneration  uint64    `gorm:"column:memory_generation;not null"`
 	LastSeq           uint64    `gorm:"column:last_seq;not null"`
@@ -119,6 +120,7 @@ func (r *SqliteSessionRepo) migrate() error {
 				session_id VARCHAR(128) PRIMARY KEY NOT NULL,
 				user_id VARCHAR(128) NOT NULL DEFAULT '',
 				title TEXT NOT NULL DEFAULT '',
+				work_dir TEXT NOT NULL DEFAULT '',
 				revision BIGINT NOT NULL CHECK (revision >= 0),
 				memory_generation BIGINT NOT NULL CHECK (memory_generation >= 1),
 				last_seq BIGINT NOT NULL CHECK (last_seq >= 0),
@@ -183,6 +185,11 @@ func (r *SqliteSessionRepo) migrate() error {
 				return fmt.Errorf("add session title column: %w", err)
 			}
 		}
+		if !tx.Migrator().HasColumn(&requestContextModel{}, "work_dir") {
+			if err := tx.Exec("ALTER TABLE request_contexts ADD COLUMN work_dir TEXT NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add session workdir column: %w", err)
+			}
+		}
 		if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_request_contexts_user_updated
 			ON request_contexts(user_id, updated_at DESC, session_id DESC)`).Error; err != nil {
 			return fmt.Errorf("create session list index: %w", err)
@@ -191,7 +198,7 @@ func (r *SqliteSessionRepo) migrate() error {
 	})
 }
 
-func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, title string) (session.Summary, error) {
+func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, title, workDir string) (session.Summary, error) {
 	if err := validSessionID(id); err != nil {
 		return session.Summary{}, err
 	}
@@ -200,11 +207,26 @@ func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, title
 	}
 	now := time.Now().UTC()
 	row := requestContextModel{
-		SessionID: id, UserID: userID, Title: title,
+		SessionID: id, UserID: userID, Title: title, WorkDir: workDir,
 		MemoryGeneration: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
 		return session.Summary{}, fmt.Errorf("create session: %w", err)
+	}
+	return summaryFromModel(row), nil
+}
+
+func (r *SqliteSessionRepo) GetSession(ctx context.Context, id string) (session.Summary, error) {
+	if err := validSessionID(id); err != nil {
+		return session.Summary{}, err
+	}
+	var row requestContextModel
+	err := r.db.WithContext(ctx).Where("session_id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return session.Summary{}, ErrSessionNotFound
+	}
+	if err != nil {
+		return session.Summary{}, fmt.Errorf("get session: %w", err)
 	}
 	return summaryFromModel(row), nil
 }
@@ -250,7 +272,7 @@ func (r *SqliteSessionRepo) ListSessions(ctx context.Context, userID, beforeSess
 
 func summaryFromModel(row requestContextModel) session.Summary {
 	return session.Summary{
-		ID: row.SessionID, UserID: row.UserID, Title: row.Title,
+		ID: row.SessionID, UserID: row.UserID, Title: row.Title, WorkDir: row.WorkDir,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
@@ -444,6 +466,9 @@ func (r *SqliteSessionRepo) CommitUpdateMessage(ctx context.Context, id string, 
 		if !exists || current.Revision != snapshot.Revision {
 			return ErrContextConflict
 		}
+		if current.WorkDir != "" && snapshot.WorkDir != current.WorkDir {
+			return fmt.Errorf("session workdir is immutable: stored %q, requested %q", current.WorkDir, snapshot.WorkDir)
+		}
 		if snapshot.ReactTurnCount != current.ReactTurnCount {
 			return fmt.Errorf("cannot change turns outside completion")
 		}
@@ -494,6 +519,9 @@ func (r *SqliteSessionRepo) CommitNextMemoryGeneration(ctx context.Context, id s
 		}
 		if !exists || current.Revision != snapshot.Revision {
 			return ErrContextConflict
+		}
+		if current.WorkDir != "" && snapshot.WorkDir != current.WorkDir {
+			return fmt.Errorf("session workdir is immutable: stored %q, requested %q", current.WorkDir, snapshot.WorkDir)
 		}
 		if snapshot.ReactTurnCount != current.ReactTurnCount {
 			return fmt.Errorf("cannot change turns outside completion")
@@ -571,6 +599,9 @@ func validateCreateTransition(snapshot session.RequestContext, current requestCo
 		}
 		return nil
 	}
+	if current.WorkDir != "" && snapshot.WorkDir != current.WorkDir {
+		return fmt.Errorf("session workdir is immutable: stored %q, requested %q", current.WorkDir, snapshot.WorkDir)
+	}
 	if snapshot.ReactTurnCount < current.ReactTurnCount || snapshot.ReactTurnCount > current.ReactTurnCount+1 {
 		return fmt.Errorf("invalid react turn transition")
 	}
@@ -596,6 +627,7 @@ func writeContext(tx *gorm.DB, id string, snapshot session.RequestContext, revis
 		Where("session_id = ? AND revision = ?", id, snapshot.Revision).
 		Updates(map[string]any{
 			"revision": revision, "memory_generation": state.MemoryGeneration,
+			"work_dir":         state.WorkDir,
 			"react_turn_count": state.ReactTurnCount,
 			"last_seq":         state.LastSeq, "token_used_input": state.TokenUsedInput,
 			"token_used_output":   state.TokenUsedOutput,
@@ -613,7 +645,8 @@ func writeContext(tx *gorm.DB, id string, snapshot session.RequestContext, revis
 
 func contextToModel(id string, snapshot session.RequestContext, revision uint64, now time.Time) requestContextModel {
 	return requestContextModel{
-		SessionID: id, Revision: revision, MemoryGeneration: snapshot.MemoryGeneration,
+		SessionID: id, UserID: snapshot.UserID, WorkDir: snapshot.WorkDir,
+		Revision: revision, MemoryGeneration: snapshot.MemoryGeneration,
 		ReactTurnCount: snapshot.ReactTurnCount,
 		LastSeq:        snapshot.LastSeq, TokenUsedInput: int64(snapshot.TokenUsed.TokenInput),
 		TokenUsedOutput:   int64(snapshot.TokenUsed.TokenOutput),
@@ -625,7 +658,7 @@ func contextToModel(id string, snapshot session.RequestContext, revision uint64,
 func contextFromModel(state requestContextModel, msgs []sharedkernel.Message) session.RequestContext {
 	return session.RequestContext{
 		Revision: state.Revision, MemoryGeneration: state.MemoryGeneration, LastSeq: state.LastSeq,
-		UserID: state.UserID, ReactTurnCount: state.ReactTurnCount,
+		UserID: state.UserID, WorkDir: state.WorkDir, ReactTurnCount: state.ReactTurnCount,
 		Messages:    msgs,
 		TokenUsed:   sharedkernel.TokenStatistics{TokenInput: int(state.TokenUsedInput), TokenOutput: int(state.TokenUsedOutput)},
 		WindowToken: sharedkernel.TokenStatistics{TokenInput: int(state.WindowTokenInput), TokenOutput: int(state.WindowTokenOutput)},

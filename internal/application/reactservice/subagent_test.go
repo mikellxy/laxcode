@@ -11,6 +11,7 @@ import (
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
@@ -19,10 +20,12 @@ import (
 // newTestSubAgent 构造子 Agent 并按组合根的真实装配方式注入端口：子工具集
 // 虽在本组用例中不会被执行，仍注入真实现，避免 nil 端口掩盖装配缺陷。
 func newTestSubAgent(parent *ReActService, workDir string) *SubAgent {
+	homeDir := filepath.Join(workDir, "test-home")
 	return NewSubAgent(parent, workDir, SubAgentDeps{
-		WorkFS:   workfs.New(),
-		NewShell: func() tools.ShellRunner { return shell.New() },
-		SkillSrc: skillrepo.New(),
+		WorkFS:     workfs.New(),
+		NewShell:   func() tools.ShellRunner { return shell.New() },
+		SkillSrc:   skillrepo.New(homeDir),
+		SkillsRoot: layout.SkillsRoot(homeDir),
 	})
 }
 
@@ -376,12 +379,12 @@ func TestSubAgentLLMClientClearsStaleFinishReasonOnFailure(t *testing.T) {
 	}
 }
 
-// TestSubAgentChildPromptIncludesSkills 验证子 Agent 的系统提示词按子工作目录
-// 加载技能索引：SkillSrc 无状态且 workDir 按调用传入，所以子 Agent 跑在与父
-// 不同的目录时，拿到的是那个目录下的技能而非父目录的。
+// TestSubAgentChildPromptIncludesSkills 验证子 Agent 继承全局技能索引，而工作区
+// 沙箱仍使用子任务传入的 work_dir。
 func TestSubAgentChildPromptIncludesSkills(t *testing.T) {
 	childWorkDir := t.TempDir()
-	skillDir := filepath.Join(childWorkDir, ".laxcode", "skills", "pdf-tools")
+	homeDir := t.TempDir()
+	skillDir := filepath.Join(layout.SkillsRoot(homeDir), "pdf-tools")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("创建技能目录失败: %v", err)
 	}
@@ -395,8 +398,10 @@ func TestSubAgentChildPromptIncludesSkills(t *testing.T) {
 	parent := NewReActService(sess, repo, &scriptedLLM{
 		responses: []scriptedResp{{msg: assistantMsg("ok")}},
 	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	// 构造时给一个不存在技能的目录，确保索引确实来自 work_dir 入参覆盖
-	sa := newTestSubAgent(parent, t.TempDir())
+	sa := NewSubAgent(parent, t.TempDir(), SubAgentDeps{
+		WorkFS: workfs.New(), NewShell: func() tools.ShellRunner { return shell.New() },
+		SkillSrc: skillrepo.New(homeDir), SkillsRoot: layout.SkillsRoot(homeDir),
+	})
 
 	args, err := json.Marshal(map[string]string{"task": "t", "work_dir": childWorkDir})
 	if err != nil {

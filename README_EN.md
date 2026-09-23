@@ -34,7 +34,7 @@ make build
 
 In interactive mode, set a token budget for the current run with `./bin/laxcode -token-budget=100000`. Before continuing past 1, 1.5, 2, and subsequent multiples of the budget, LaxCode asks for confirmation. Enter `yes` to continue; any other input stops the run. Usage from a resumed session's history is excluded.
 
-For the browser coding mode, run `./bin/laxcode -sse -code -workdir=/path/to/project -token-budget=100000`. This mounts the CLI coding tools. The budget follows each `session_id` across requests for the lifetime of the SSE server; restarting the server establishes a new baseline. The page pauses the current stream for token-budget or risky Bash approval.
+For browser coding mode, run `./bin/laxcode -sse -code -token-budget=100000`. The page supplies the work directory when creating a session, and that directory is persisted with the `session_id`. This mounts the CLI coding tools. The budget follows each `session_id` across requests for the lifetime of the SSE server; restarting the server establishes a new baseline. The page pauses the current stream for token-budget or risky Bash approval.
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
 
 <a id="agent-session-evaluation"></a>
@@ -44,7 +44,7 @@ For the browser coding mode, run `./bin/laxcode -sse -code -workdir=/path/to/pro
 After completing a task with LaxCode, you can evaluate its outcome in an independent LLM-as-a-Judge session by specifying the task's original `workdir` and `session_id`. The evaluator reads the following immutable ReAct message log:
 
 ```text
-${workdir}/.laxcode/.session/${session_id}/history.jsonl
+${HOME}/.laxcode/sessions/${session_id}/history.jsonl
 ```
 
 Run the evaluation with the target task's `session_id` passed through `-eval_session`:

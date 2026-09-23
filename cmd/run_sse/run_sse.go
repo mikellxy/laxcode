@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -75,23 +74,11 @@ func Run(router agentasm.RouterClientReplacer) {
 		fatal(err)
 	}
 
-	// workdir 是 server 级沙箱根：所有请求共用，取自 -workdir，空则回落 cwd
-	// （对齐 run_cli；one-shot 要求必填，server 模式常驻故默认 cwd 更顺手）。
-	workDir := config.CliConf.WorkDir
-	if workDir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			fatal(err)
-		}
-		workDir = wd
-	}
-
-	absWorkDir, err := filepath.Abs(workDir)
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		fatal(err)
 	}
-	workDir = absWorkDir
-	s := newServer(workDir, config.CliConf.Plan)
+	s := newServer(homeDir, config.CliConf.Plan)
 	s.codeMode = config.CliConf.Code
 	s.tokenBudget = config.CliConf.TokenBudget
 	s.switcher = agentasm.NewModelSwitcher(router, nil)
@@ -101,7 +88,7 @@ func Run(router agentasm.RouterClientReplacer) {
 		s.assemble = agentasm.Assemble
 	}
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
-		layout.SessionDB(workDir), layout.SessionRoot(workDir))
+		layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
 	if err != nil {
 		fatal(fmt.Errorf("init session history repository: %w", err))
 	}
@@ -146,8 +133,8 @@ func Run(router agentasm.RouterClientReplacer) {
 	} else if config.CliConf.Code {
 		serviceName = "code"
 	}
-	fmt.Printf("LaxCode SSE %s listening on %s (workdir: %s)\n", serviceName, srv.Addr, workDir)
-	fmt.Printf(">>> POST /chat with {\"session_id\":\"\",\"task\":\"...\"}\n")
+	fmt.Printf("LaxCode SSE %s listening on %s (data: %s)\n", serviceName, srv.Addr, layout.Root(homeDir))
+	fmt.Printf(">>> create a session with work_dir, then POST /chat with its session_id\n")
 
 	// 监听在独立 goroutine：ListenAndServe 阻塞至服务关闭；ErrServerClosed 是
 	// Shutdown/Close 的正常结果，其余错误（如端口占用）经 errChan 回流主 goroutine。

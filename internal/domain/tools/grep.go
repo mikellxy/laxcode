@@ -47,12 +47,13 @@ type grepArgs struct {
 }
 
 type GrepTool struct {
-	WorkDir string
-	Runner  RipgrepRunner
+	WorkDir   string
+	ReadRoots []string
+	Runner    RipgrepRunner
 }
 
-func NewGrepTool(workDir string, runner RipgrepRunner) *GrepTool {
-	return &GrepTool{WorkDir: workDir, Runner: runner}
+func NewGrepTool(workDir string, runner RipgrepRunner, readRoots ...string) *GrepTool {
+	return &GrepTool{WorkDir: workDir, ReadRoots: append([]string(nil), readRoots...), Runner: runner}
 }
 
 func (g *GrepTool) Name() string { return ToolGrep }
@@ -60,12 +61,12 @@ func (g *GrepTool) Name() string { return ToolGrep }
 func (g *GrepTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        g.Name(),
-		Description: "用正则表达式搜索工作目录内的文件内容，返回匹配文件、行号和行文本。path 可为工作目录内的目录或文件，缺省为工作目录；include 用 glob 筛选文件，如 *.go 或 *.{ts,tsx}。最多返回 100 行匹配；需要精确计数时使用 bash 中的 rg。",
+		Description: "用正则表达式搜索文件内容，返回匹配文件、行号和行文本。相对 path 限制在工作目录内；系统明确提供的只读目录可使用绝对路径。include 用 glob 筛选文件，如 *.go 或 *.{ts,tsx}。最多返回 100 行匹配；需要精确计数时使用 bash 中的 rg。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "用于搜索文件内容的正则表达式"},
-				"path":    map[string]any{"type": "string", "description": "工作目录内的目录或文件路径，默认工作目录"},
+				"path":    map[string]any{"type": "string", "description": "工作目录内的路径，或系统明确提供的只读绝对路径；默认工作目录"},
 				"include": map[string]any{"type": "string", "description": "文件 glob，如 *.go 或 *.{ts,tsx}"},
 			},
 			"required": []string{"pattern"},
@@ -100,28 +101,16 @@ func (g *GrepTool) ExecuteResult(ctx context.Context, raw json.RawMessage) *shar
 		return &sharedkernel.ToolResult{Error: errors.New("grep runner is not configured")}
 	}
 
-	workDir, err := filepath.Abs(g.WorkDir)
+	requested, allowedRoot, err := resolveReadTarget(g.WorkDir, g.ReadRoots, a.Path)
 	if err != nil {
-		return &sharedkernel.ToolResult{Error: err}
+		return &sharedkernel.ToolResult{Error: NewErrorWithPrompt(&FilePathError{}, err)}
 	}
-	root, err := g.Runner.Resolve(workDir)
+	root, err := g.Runner.Resolve(allowedRoot)
 	if err != nil {
 		return &sharedkernel.ToolResult{Error: fmt.Errorf("resolve working directory: %w", err)}
 	}
 	if !root.IsDir {
 		return &sharedkernel.ToolResult{Error: errors.New("working directory is not a directory")}
-	}
-
-	requested := workDir
-	if a.Path != "" {
-		if filepath.IsAbs(a.Path) {
-			requested = filepath.Clean(a.Path)
-		} else {
-			requested = filepath.Clean(filepath.Join(workDir, a.Path))
-		}
-	}
-	if !withinSearchRoot(workDir, requested) {
-		return &sharedkernel.ToolResult{Error: NewErrorWithPrompt(&FilePathError{}, fmt.Errorf("grep path %q escapes working directory", a.Path))}
 	}
 
 	target, err := g.Runner.Resolve(requested)

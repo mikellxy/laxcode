@@ -82,9 +82,11 @@ func TestChatStreamWaitsForHTTPApproval(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workDir := t.TempDir()
+			sessionHome := t.TempDir()
 			dbPath := filepath.Join(workDir, "sessions.db")
 			historyRoot := filepath.Join(workDir, "history")
-			s := newServer(workDir, false)
+			s := newServer(sessionHome, false)
+			s.catalog = catalogWithSession("flow", workDir)
 			s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 				repo, err := sessionrepo.NewSqliteSessionRepo(dbPath, historyRoot)
 				if err != nil {

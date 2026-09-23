@@ -24,13 +24,14 @@ type editFileArgs struct {
 }
 
 type EditFileTool struct {
-	WorkDir string
+	WorkDir    string
+	WriteRoots []string
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
 	FS WorkFS
 }
 
-func NewEditFileTool(workDir string, workFS WorkFS) *EditFileTool {
-	return &EditFileTool{WorkDir: workDir, FS: workFS}
+func NewEditFileTool(workDir string, workFS WorkFS, writeRoots ...string) *EditFileTool {
+	return &EditFileTool{WorkDir: workDir, WriteRoots: append([]string(nil), writeRoots...), FS: workFS}
 }
 
 func (e *EditFileTool) AfterExecInfo(message json.RawMessage) string {
@@ -56,13 +57,13 @@ func (e *EditFileTool) Name() string {
 func (e *EditFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        e.Name(),
-		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。**严格限制**只编辑工作目录内的文件，提供相对路径",
+		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。相对路径严格限制在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。全局 skills 等只读目录不可编辑",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "要编辑的文件的相对路径，如 cmd/main/main.go",
+					"description": "工作目录内的相对路径，或 Plan Mode 明确提供的规划目录绝对路径",
 				},
 				"edits": map[string]any{
 					"type":        "array",
@@ -111,7 +112,7 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		}
 	}
 
-	target, err := safeJoinWorkDir(argsObj.Path, e.WorkDir)
+	target, displayRoot, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, argsObj.Path)
 	if err != nil {
 		return "", err
 	}
@@ -130,7 +131,7 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", err
 	}
 
-	rel, err := filepath.Rel(e.WorkDir, target)
+	rel, err := filepath.Rel(displayRoot, target)
 	if err != nil {
 		rel = target
 	}
@@ -163,28 +164,8 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 // safeJoinWorkDir 将用户提供的相对路径安全地解析到工作目录内，
 // 防止 ../ 路径穿越或绝对路径逃逸到工作目录之外。
 func safeJoinWorkDir(rel string, workDir string) (string, error) {
-	workDirAbs, err := filepath.Abs(workDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve work dir: %w", err)
-	}
-
-	// 工具契约要求相对路径，显式拒绝绝对路径，避免语义歧义
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q must be a relative path within working directory %q", rel, workDirAbs)
-	}
-
-	target := filepath.Clean(filepath.Join(workDirAbs, rel))
-
-	// 校验目标路径必须位于工作目录内
-	check, err := filepath.Rel(workDirAbs, target)
-	if err != nil {
-		return "", fmt.Errorf("resolve target path: %w", err)
-	}
-	if check == ".." || strings.HasPrefix(check, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes working directory %q", rel, workDirAbs)
-	}
-
-	return target, nil
+	target, _, err := resolveWriteTarget(workDir, nil, rel)
+	return target, err
 }
 
 // ---------- edit_file 批量精确匹配引擎 ----------

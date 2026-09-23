@@ -3,7 +3,7 @@
 .DS_Store
 bin
 
-# LaxCode: 会话目录不入库
+# Legacy project-local LaxCode data (new data lives under $HOME/.laxcode)
 .laxcode
 .laxcode/.session/
 !.laxcode/skills/

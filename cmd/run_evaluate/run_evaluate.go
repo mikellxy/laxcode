@@ -77,7 +77,11 @@ func Run() int {
 		return usageFail("openai_api_key / openai_base_url / openai_model are required")
 	}
 
-	historyPath, err := resolveHistoryPath(cli.WorkDir, cli.EvalSession)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return usageFail("resolve user home failed: %v", err)
+	}
+	historyPath, err := resolveHistoryPath(homeDir, cli.EvalSession)
 	if err != nil {
 		return usageFail("invalid -eval_session: %v", err)
 	}
@@ -88,17 +92,14 @@ func Run() int {
 	if !info.Mode().IsRegular() {
 		return usageFail("evaluation history is not a regular file: %s", historyPath)
 	}
-	historyToolPath, err := filepath.Rel(cli.WorkDir, historyPath)
-	if err != nil {
-		return usageFail("resolve evaluation history relative path failed: %v", err)
-	}
-
 	// Never reuse the target session: InitSysPrompt updates an existing session's
 	// working system message, and Chat appends messages. A UUID-backed judge
 	// session makes evidence contamination impossible even under rapid launches.
 	judgeSessionID := "evaluation-" + uuid.NewString()
 	assembled, err := agentasm.Assemble(ctx, agentasm.Input{
 		WorkDir:      cli.WorkDir,
+		HomeDir:      homeDir,
+		ReadRoots:    []string{filepath.Dir(historyPath)},
 		SessionID:    judgeSessionID,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(),
 	})
@@ -107,7 +108,7 @@ func Run() int {
 	}
 	defer assembled.Cleanup()
 
-	msg, runErr := assembled.Service.Chat(ctx, prompt.GetEvaluateUserPrompt(historyToolPath))
+	msg, runErr := assembled.Service.Chat(ctx, prompt.GetEvaluateUserPrompt(historyPath))
 	res := EvaluationResult{
 		SessionID:     assembled.Session.ID,
 		EvalSessionID: cli.EvalSession,
@@ -126,11 +127,11 @@ func Run() int {
 	return exitOK
 }
 
-func resolveHistoryPath(workDir, sessionID string) (string, error) {
+func resolveHistoryPath(homeDir, sessionID string) (string, error) {
 	if sessionID == "" || sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, "/\\\x00") {
 		return "", fmt.Errorf("session ID must be one path segment")
 	}
-	return layout.SessionHistory(workDir, sessionID), nil
+	return layout.SessionHistory(homeDir, sessionID), nil
 }
 
 func writeResult(w io.Writer, res EvaluationResult) {

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +22,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
-// chatRequest 是 POST /chat 的请求体：session_id 为空则新建会话，task 必填非空。
+// chatRequest 是 POST /chat 的请求体：session_id 与 task 均必填。
 type chatRequest struct {
 	SessionID string `json:"session_id"`
 	Task      string `json:"task"`
@@ -31,7 +34,7 @@ const maxBodyBytes = 1 << 20
 // server 承载 sse 模式的 HTTP 编排。assemble 字段默认 agentasm.Assemble，测试可
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
-	workDir     string
+	homeDir     string
 	planMode    bool
 	assemble    func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
 	locks       *sessionLocks
@@ -54,13 +57,15 @@ const (
 )
 
 type createSessionRequest struct {
-	UserID string `json:"user_id"`
+	UserID  string `json:"user_id"`
+	WorkDir string `json:"work_dir"`
 }
 
 type sessionDTO struct {
 	SessionID string    `json:"session_id"`
 	UserID    string    `json:"user_id"`
 	Title     string    `json:"title"`
+	WorkDir   string    `json:"work_dir"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -81,9 +86,27 @@ func parseUserID(raw string) (string, error) {
 
 func sessionToDTO(item session.Summary) sessionDTO {
 	return sessionDTO{
-		SessionID: item.ID, UserID: item.UserID, Title: item.Title,
+		SessionID: item.ID, UserID: item.UserID, Title: item.Title, WorkDir: item.WorkDir,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
+}
+
+func normalizeWorkDir(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", errors.New("work_dir is required")
+	}
+	workDir, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve work_dir: %w", err)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return "", fmt.Errorf("stat work_dir: %w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("work_dir must be a directory")
+	}
+	return filepath.Clean(workDir), nil
 }
 
 func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +126,12 @@ func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
 	}
-	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, "")
+	workDir, err := normalizeWorkDir(req.WorkDir)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, "", workDir)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "create session failed: "+err.Error())
 		return
@@ -330,9 +358,9 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ContextData{WindowToken: contextState.WindowToken, ContextWindow: contextWindow})
 }
 
-func newServer(workDir string, planMode bool) *server {
+func newServer(homeDir string, planMode bool) *server {
 	return &server{
-		workDir:  workDir,
+		homeDir:  homeDir,
 		planMode: planMode,
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 			return agentasm.AssembleSSE(ctx, in)
@@ -389,6 +417,7 @@ func (s *server) useQAAssembly(kbPath string, assembleQA qaAssembler) {
 		assembled, err := assembleQA(ctx, agentasm.QAInput{
 			KBPath:    kbPath,
 			WorkDir:   in.WorkDir,
+			HomeDir:   in.HomeDir,
 			SessionID: in.SessionID,
 			Consumer:  in.Consumer,
 		})
@@ -419,16 +448,30 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "task is required", "")
 		return
 	}
-
+	if strings.TrimSpace(req.SessionID) == "" {
+		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "session_id is required", "")
+		return
+	}
 	// 同会话串行：防止两个请求同时 InitSession→追加导致 history/meta 分叉。
-	// 冲突返回 409 而非排队，避免客户端无感挂起；空 session 每次新建独立会话，无需锁。
-	if req.SessionID != "" {
-		unlock, ok := s.locks.TryLock(req.SessionID)
-		if !ok {
-			writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "session is busy: "+req.SessionID, RetryActionResend)
-			return
-		}
-		defer unlock()
+	// 冲突返回 409 而非排队，避免客户端无感挂起。
+	unlock, ok := s.locks.TryLock(req.SessionID)
+	if !ok {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "session is busy: "+req.SessionID, RetryActionResend)
+		return
+	}
+	defer unlock()
+	if s.catalog == nil {
+		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "session repository is unavailable", "")
+		return
+	}
+	selected, err := s.catalog.GetSession(r.Context(), req.SessionID)
+	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		writeJSONProtocolError(w, http.StatusNotFound, ErrorCodeInvalidRequest, "session not found: "+req.SessionID, "")
+		return
+	}
+	if err != nil {
+		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), "")
+		return
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -455,7 +498,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	assembled, err := s.assemble(ctx, agentasm.Input{
-		WorkDir:   s.workDir,
+		WorkDir:   selected.WorkDir,
+		HomeDir:   s.homeDir,
 		SessionID: req.SessionID,
 		PlanMode:  s.planMode,
 		Consumer:  s.eventConsumer(sw, &activeSessionID, requestID),
@@ -514,6 +558,19 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	if s.catalog == nil {
+		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "session repository is unavailable", RetryActionResume)
+		return
+	}
+	selected, err := s.catalog.GetSession(r.Context(), sessionID)
+	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		writeJSONProtocolError(w, http.StatusNotFound, ErrorCodeNothingToResume, "session not found: "+sessionID, "")
+		return
+	}
+	if err != nil {
+		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), RetryActionResume)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -536,7 +593,7 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	assembled, err := s.assemble(ctx, agentasm.Input{
-		WorkDir: s.workDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: s.eventConsumer(sw, &activeSessionID, requestID),
+		WorkDir: selected.WorkDir, HomeDir: s.homeDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: s.eventConsumer(sw, &activeSessionID, requestID),
 	})
 	if err != nil {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResume})

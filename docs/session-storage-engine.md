@@ -84,7 +84,7 @@ SQLite 是一致性主存储。数据库事务提交后，仓储还会把 `origi
 `history.jsonl`，作为便于人工检查的 best-effort 冷备：
 
 ```text
-${workdir}/.laxcode/.session/${session_id}/history.jsonl
+${HOME}/.laxcode/sessions/${session_id}/history.jsonl
 ```
 
 JSONL 写入失败只记录警告，不回滚已成功的数据库事务。这避免辅助冷备故障影响主流程，代价是
@@ -107,4 +107,3 @@ JSONL 不能作为强一致的数据源；恢复和续聊始终以 SQLite 为准
 - `internal/application/reactservice/reactservice.go:ReActService.recoverBeforeChat`
 - `internal/application/reactservice/reactservice.go:needsRecovery`
 - `internal/application/reactservice/context_compaction.go:ReActService.compactContext`
-

@@ -6,7 +6,7 @@ import (
 )
 
 func TestAssembleSSEHasNoToolsAndDedicatedPrompt(t *testing.T) {
-	a, err := AssembleSSE(context.Background(), Input{WorkDir: t.TempDir(), SessionID: "sse"})
+	a, err := AssembleSSE(context.Background(), Input{WorkDir: t.TempDir(), HomeDir: t.TempDir(), SessionID: "sse"})
 	if err != nil {
 		t.Fatal(err)
 	}

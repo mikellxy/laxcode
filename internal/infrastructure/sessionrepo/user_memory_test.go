@@ -14,7 +14,7 @@ import (
 func TestMemoryTurnsAtomicWindowsAndLeaseRecovery(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepo(t)
-	if _, err := repo.CreateSession(ctx, "memory", "user-1", ""); err != nil {
+	if _, err := repo.CreateSession(ctx, "memory", "user-1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	s := createSystem(t, repo, "memory", "secret system")

@@ -19,6 +19,7 @@ import (
 type QAInput struct {
 	KBPath    string
 	WorkDir   string
+	HomeDir   string
 	SessionID string
 	Consumer  func(*reactservice.ReactEvent)
 }

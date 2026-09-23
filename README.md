@@ -58,17 +58,17 @@ make build
 
 交互模式可设置本次运行的 token 预算，例如 `./bin/laxcode -token-budget=100000`。输入与输出 token 合计达到预算的 1、1.5、2 倍等阈值时，继续执行前会询问是否继续；输入 `yes` 继续，其他输入停止。续接旧会话时，历史用量不计入本次预算。
 
-浏览器代码模式使用 `./bin/laxcode -sse -code -workdir=/path/to/project -token-budget=100000`。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
+浏览器代码模式使用 `./bin/laxcode -sse -code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
 
 <a id="agent-session-evaluation"></a>
 
 ### 评估 Coding Agent 任务
 
-当您使用 LaxCode 完成一个任务后，可以指定该任务原有的 `workdir` 和 `session_id`，让 LaxCode 以独立的 LLM-as-a-Judge 会话评估这次任务的完成效果。评估器会读取以下不可变 ReAct 消息日志：
+当您使用 LaxCode 完成一个任务后，可以指定该任务原有的 `workdir` 和 `session_id`，让 LaxCode 以独立的 LLM-as-a-Judge 会话评估这次任务的完成效果。会话数据统一保存在用户目录，评估器会读取以下不可变 ReAct 消息日志：
 
 ```text
-${workdir}/.laxcode/.session/${session_id}/history.jsonl
+${HOME}/.laxcode/sessions/${session_id}/history.jsonl
 ```
 
 运行评估时，通过 `-eval_session` 传入待评估任务的 `session_id`：

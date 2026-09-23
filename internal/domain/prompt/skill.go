@@ -1,6 +1,6 @@
 package prompt
 
-// 技能（skill）索引能力：在 agent 启动时发现并校验工作目录下的
+// 技能（skill）索引能力：在 agent 启动时发现并校验用户主目录下的
 // .laxcode/skills/<name>/SKILL.md 定义文件，把 frontmatter 元信息渲染为
 // system prompt 中的技能索引段，供大模型按需读取技能正文（渐进式披露）。
 //
@@ -49,17 +49,16 @@ type SkillFile struct {
 // SkillSource 是技能定义文件的发现端口：领域层只定义契约，真正的目录扫描由
 // 基础设施实现（internal/infrastructure/skillrepo）。
 //
-// workDir 作为方法参数而非构造期绑定，使同一个无状态实例可同时服务主 Agent
-// 与使用不同工作目录的子 Agent。
+// workDir 参数为旧端口的兼容上下文；全局技能实现会忽略它。
 type SkillSource interface {
-	// List 返回 workDir 下发现的技能定义文件，顺序不做保证；没有技能时返回空。
+	// List 返回全局目录中发现的技能定义文件，顺序不做保证；没有技能时返回空。
 	// 发现层面的缺失（skills 目录不存在、散置文件、嵌套更深的 SKILL.md、文件名
 	// 大小写不符）一律静默，MUST NOT 报错也 MUST NOT 产生警告——只有解析与校验
 	// 失败才需要警告，而那属领域层职责。见 openspec/specs/context/skill-index。
 	List(workDir string) []SkillFile
 }
 
-// LoadSkills 解析并校验 src 在 workDir 下发现的技能定义文件，返回有效技能集合
+// LoadSkills 解析并校验 src 发现的技能定义文件，返回有效技能集合
 // （按 Name 升序；无有效技能时返回 nil，使调用方可直接与 nil 比较）。
 //
 // src 为 nil 时返回 nil，便于未装配技能源的调用方（如测试）直接传 nil。
@@ -163,9 +162,14 @@ func extractFrontmatter(content string) (fmText, failReason string) {
 // "- <name>: <description>" 条目（description 折叠为单行）。
 // 零技能时返回空字符串，整段省略。
 //
-// 前言里的 .laxcode/skills/<技能名>/SKILL.md 是向模型描述的相对路径，属模型
-// 可见文案而非代码取路径，故必须与 infrastructure/layout 的实际布局同步修改。
+// 默认包装保留相对路径以兼容纯领域调用；组合根使用 RenderSkillIndexAt 传入
+// 全局技能根的绝对路径。
 func RenderSkillIndex(skills []Skill) string {
+	return RenderSkillIndexAt(skills, ".laxcode/skills")
+}
+
+// RenderSkillIndexAt 使用调用方提供的全局技能根渲染定义文件位置。
+func RenderSkillIndexAt(skills []Skill, skillsRoot string) string {
 	if len(skills) == 0 {
 		return ""
 	}
@@ -173,7 +177,7 @@ func RenderSkillIndex(skills []Skill) string {
 	var b strings.Builder
 	b.WriteString("## 可用技能（Skills）\n\n")
 	b.WriteString("以下是可用技能索引。技能不是工具，无法直接调用；当任务与某技能相关时，\n")
-	b.WriteString("先读取其定义文件 .laxcode/skills/<技能名>/SKILL.md，再按文件内容指引完成任务。\n")
+	fmt.Fprintf(&b, "先读取其定义文件 %s/<技能名>/SKILL.md，再按文件内容指引完成任务。\n", skillsRoot)
 	b.WriteString("与任务无关的技能请忽略。\n\n")
 	for _, skill := range skills {
 		fmt.Fprintf(&b, "- %s: %s\n", skill.Name, collapseWhitespace(skill.Description))

@@ -113,12 +113,12 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	otherUserID := "22222222-2222-4222-8222-222222222222"
 
 	for _, id := range []string{"session-a", "session-b", "session-c"} {
-		if _, err := repo.CreateSession(ctx, id, userID, ""); err != nil {
+		if _, err := repo.CreateSession(ctx, id, userID, "", "/projects/"+id); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := repo.CreateSession(ctx, "other-session", otherUserID, ""); err != nil {
+	if _, err := repo.CreateSession(ctx, "other-session", otherUserID, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,6 +128,13 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	}
 	if !page.HasMore || len(page.Sessions) != 2 || page.Sessions[0].ID != "session-c" || page.Sessions[1].ID != "session-b" {
 		t.Fatalf("unexpected first session page: %+v", page)
+	}
+	if page.Sessions[0].WorkDir != "/projects/session-c" {
+		t.Fatalf("session workdir was not listed: %+v", page.Sessions[0])
+	}
+	loaded, err := repo.GetSession(ctx, "session-a")
+	if err != nil || loaded.WorkDir != "/projects/session-a" {
+		t.Fatalf("GetSession workdir=%q err=%v", loaded.WorkDir, err)
 	}
 	older, err := repo.ListSessions(ctx, userID, page.Sessions[1].ID, 2)
 	if err != nil {
@@ -146,6 +153,9 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	if err := s.Restore(snapshot); err != nil {
 		t.Fatal(err)
 	}
+	if s.WorkDir != "/projects/session-a" {
+		t.Fatalf("restored workdir=%q", s.WorkDir)
+	}
 	sys := s.UpsertSysMessage("system")
 	revision, err := repo.CommitCreateMessage(ctx, s.ID, s.Snapshot(), sys, sys)
 	if err != nil {
@@ -160,6 +170,56 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	}
 	if len(refreshed.Sessions) != 3 || refreshed.Sessions[0].ID != "session-a" {
 		t.Fatalf("chat update should move session to front without losing ownership: %+v", refreshed)
+	}
+}
+
+func TestSessionWorkDirIsImmutableAfterFirstUpsert(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	ctx := context.Background()
+	s := session.NewSession("workdir-bound", "/projects/original")
+	sys := s.UpsertSysMessage("system")
+	revision, err := repo.CommitCreateMessage(ctx, s.ID, s.Snapshot(), sys, sys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Revision = revision
+
+	changed := s.Clone()
+	changed.WorkDir = "/projects/other"
+	msg := changed.BuildUserMessage("hello")
+	changed, err = changed.WithAppendedMessage(&msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CommitCreateMessage(ctx, changed.ID, changed.Snapshot(), msg, msg); err == nil || !strings.Contains(err.Error(), "workdir is immutable") {
+		t.Fatalf("workdir mutation err=%v", err)
+	}
+}
+
+func TestMigrationAddsWorkDirToExistingSessionTable(t *testing.T) {
+	repo, root := newTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.CreateSession(ctx, "legacy", "user", "", "/ignored-before-drop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.Exec("ALTER TABLE request_contexts DROP COLUMN work_dir").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSqliteSessionRepo(filepath.Join(root, "sessions.db"), filepath.Join(root, "history"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if !reopened.db.Migrator().HasColumn(&requestContextModel{}, "work_dir") {
+		t.Fatal("migration did not add request_contexts.work_dir")
+	}
+	loaded, err := reopened.GetSession(ctx, "legacy")
+	if err != nil || loaded.WorkDir != "" {
+		t.Fatalf("legacy workdir=%q err=%v", loaded.WorkDir, err)
 	}
 }
 

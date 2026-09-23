@@ -12,13 +12,14 @@ import (
 )
 
 type WriteFileTool struct {
-	WorkDir string
+	WorkDir    string
+	WriteRoots []string
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
 	FS WorkFS
 }
 
-func NewWriteFileTool(workDir string, workFS WorkFS) *WriteFileTool {
-	return &WriteFileTool{WorkDir: workDir, FS: workFS}
+func NewWriteFileTool(workDir string, workFS WorkFS, writeRoots ...string) *WriteFileTool {
+	return &WriteFileTool{WorkDir: workDir, WriteRoots: append([]string(nil), writeRoots...), FS: workFS}
 }
 
 func (w *WriteFileTool) AfterExecInfo(message json.RawMessage) string {
@@ -45,13 +46,13 @@ func (w *WriteFileTool) Name() string {
 func (w *WriteFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        w.Name(),
-		Description: "写入完整文件内容，创建新文件或覆写已有文件。**严格限制**只写入你的工作目录下的文件，提供文件在工作目录的相对路径；若父目录不存在会自动创建",
+		Description: "写入完整文件内容，创建新文件或覆写已有文件。相对路径严格限制在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。全局 skills 等只读目录不可写；若父目录不存在会自动创建",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "要写入的文件的相对路径，如 cmd/main/main.go",
+					"description": "工作目录内的相对路径，或 Plan Mode 明确提供的规划目录绝对路径",
 				},
 				"content": map[string]any{
 					"type":        "string",
@@ -79,7 +80,7 @@ func (w *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("content required"))
 	}
 
-	target, err := safeJoinWorkDir(path, w.WorkDir)
+	target, displayRoot, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path)
 	if err != nil {
 		return "", NewErrorWithPrompt(&FilePathError{}, err)
 	}
@@ -90,7 +91,7 @@ func (w *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	}
 
 	// 返回相对工作目录的路径，便于模型确认
-	rel, err := filepath.Rel(w.WorkDir, target)
+	rel, err := filepath.Rel(displayRoot, target)
 	if err != nil {
 		rel = target
 	}

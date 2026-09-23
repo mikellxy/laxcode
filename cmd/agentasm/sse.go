@@ -8,7 +8,7 @@ import (
 // AssembleSSE shares request resources with QA, but has its own prompt and hooks.
 // Recall and the background worker are owned by the server, never request cleanup.
 func AssembleSSE(ctx context.Context, in Input, recall ...reactservice.MemoryEnricher) (*Assembled, error) {
-	a, err := assembleToolless(ctx, QAInput{WorkDir: in.WorkDir, SessionID: in.SessionID, Consumer: in.Consumer})
+	a, err := assembleToolless(ctx, QAInput{WorkDir: in.WorkDir, HomeDir: in.HomeDir, SessionID: in.SessionID, Consumer: in.Consumer})
 	if err != nil {
 		return nil, err
 	}

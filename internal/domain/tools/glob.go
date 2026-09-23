@@ -19,12 +19,13 @@ type globArgs struct {
 }
 
 type GlobTool struct {
-	WorkDir string
-	Runner  RipgrepRunner
+	WorkDir   string
+	ReadRoots []string
+	Runner    RipgrepRunner
 }
 
-func NewGlobTool(workDir string, runner RipgrepRunner) *GlobTool {
-	return &GlobTool{WorkDir: workDir, Runner: runner}
+func NewGlobTool(workDir string, runner RipgrepRunner, readRoots ...string) *GlobTool {
+	return &GlobTool{WorkDir: workDir, ReadRoots: append([]string(nil), readRoots...), Runner: runner}
 }
 
 func (g *GlobTool) Name() string { return ToolGlob }
@@ -32,14 +33,14 @@ func (g *GlobTool) Name() string { return ToolGlob }
 func (g *GlobTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        g.Name(),
-		Description: "按文件名 glob 模式快速查找工作目录内的文件，返回绝对路径。需要按名称定位文件时使用本工具，不要用 bash 或 find。支持 **/*.go、src/**/*.ts 等模式，最多返回 100 个文件；结果截断时请缩小 path 或使用更具体的 pattern。path 必须是目录，缺省为工作目录；需要多轮开放式搜索时使用 run_sub_agent。",
+		Description: "按文件名 glob 模式快速查找文件，返回绝对路径。相对 path 限制在工作目录内；系统明确提供的只读目录可使用绝对路径。需要按名称定位文件时使用本工具，不要用 bash 或 find。支持 **/*.go、src/**/*.ts 等模式，最多返回 100 个文件；结果截断时请缩小 path 或使用更具体的 pattern。path 必须是目录，缺省为工作目录；需要多轮开放式搜索时使用 run_sub_agent。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "用于匹配文件路径的 glob 模式"},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "工作目录内要搜索的目录；不传则使用工作目录，不要传 undefined 或 null",
+					"description": "工作目录内的目录，或系统明确提供的只读绝对目录；不传则使用工作目录",
 				},
 			},
 			"required": []string{"pattern"},
@@ -74,28 +75,16 @@ func (g *GlobTool) ExecuteResult(ctx context.Context, raw json.RawMessage) *shar
 		return &sharedkernel.ToolResult{Error: errors.New("ripgrep runner is not configured")}
 	}
 
-	workDir, err := filepath.Abs(g.WorkDir)
+	requested, allowedRoot, err := resolveReadTarget(g.WorkDir, g.ReadRoots, a.Path)
 	if err != nil {
-		return &sharedkernel.ToolResult{Error: err}
+		return &sharedkernel.ToolResult{Error: NewErrorWithPrompt(&FilePathError{}, err)}
 	}
-	root, err := g.Runner.Resolve(workDir)
+	root, err := g.Runner.Resolve(allowedRoot)
 	if err != nil {
 		return &sharedkernel.ToolResult{Error: fmt.Errorf("resolve working directory: %w", err)}
 	}
 	if !root.IsDir {
 		return &sharedkernel.ToolResult{Error: errors.New("working directory is not a directory")}
-	}
-
-	requested := workDir
-	if a.Path != "" {
-		if filepath.IsAbs(a.Path) {
-			requested = filepath.Clean(a.Path)
-		} else {
-			requested = filepath.Clean(filepath.Join(workDir, a.Path))
-		}
-	}
-	if !withinSearchRoot(workDir, requested) {
-		return &sharedkernel.ToolResult{Error: NewErrorWithPrompt(&FilePathError{}, fmt.Errorf("glob path %q escapes working directory", a.Path))}
 	}
 
 	target, err := g.Runner.Resolve(requested)
@@ -117,7 +106,7 @@ func (g *GlobTool) ExecuteResult(ctx context.Context, raw json.RawMessage) *shar
 	result := &sharedkernel.ToolResult{
 		Metadata: map[string]any{"count": len(search.Files), "truncated": search.Truncated},
 	}
-	result.Title, err = filepath.Rel(workDir, requested)
+	result.Title, err = filepath.Rel(allowedRoot, requested)
 	if err != nil {
 		result.Title = requested
 	}

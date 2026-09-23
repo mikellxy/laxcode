@@ -13,19 +13,16 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
-	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
-	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
@@ -37,6 +34,12 @@ import (
 type Input struct {
 	// WorkDir 是 Agent 工作目录（沙箱根）：交互模式取 cwd，单次运行模式取 -workdir。
 	WorkDir string
+	// HomeDir 是全局数据根的用户主目录；空值使用 os.UserHomeDir。
+	// 测试可显式注入临时目录，避免触碰真实用户数据。
+	HomeDir string
+	// ReadRoots are additional absolute, read-only roots for command-specific
+	// workflows such as evaluating one immutable session history.
+	ReadRoots []string
 	// SessionID 为空则由 session 层以毫秒精度时间串新建；非空则续聊该会话。
 	SessionID string
 	// PlanMode 为真时在系统提示词追加 Plan Mode 工作流段。
@@ -90,36 +93,30 @@ func newMainProvider() *llmprovider.OpenApiProvider {
 // SystemPrompt 为空时生成默认 coding-agent prompt，非空时原样采用调用方的专用
 // prompt。返回的 error 仅来自会话初始化 / 系统提示词写入。
 func Assemble(ctx context.Context, in Input) (*Assembled, error) {
-	// session：状态与完整历史写 SQLite；JSONL 冷备及 artifact 仍按 session
-	// 写入本地目录。SessionID 为空则新建。
-	sessRepo, err := sessionrepo.NewSqliteSessionRepo(
-		layout.SessionDB(in.WorkDir), layout.SessionRoot(in.WorkDir))
+	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, true)
 	if err != nil {
 		return nil, err
 	}
-	artifactStore := artifactstore.New(layout.SessionRoot(in.WorkDir))
-	sess := session.NewSession(in.SessionID)
+	homeDir, sess := core.homeDir, core.session
 	// 系统提示词：技能索引在启动时快照一次（会话期内不刷新）；技能发现端口
 	// 以领域类型接收即完成编译期断言（同 workFS）。Plan Mode 的会话规划目录
 	// 由布局包算好后注入，领域层不再自行拼路径。
-	var skillSrc prompt.SkillSource = skillrepo.New()
+	var skillSrc prompt.SkillSource = skillrepo.New(homeDir)
 	skills := prompt.LoadSkills(skillSrc, in.WorkDir, warnSkillSkip)
+	skillsRoot := layout.SkillsRoot(homeDir)
+	readRoots := append([]string{skillsRoot}, in.ReadRoots...)
+	var writeRoots []string
 	var plan *prompt.PlanMode
 	if in.PlanMode {
-		plan = &prompt.PlanMode{SessionDir: layout.SessionDir(in.WorkDir, sess.ID)}
+		planDir := layout.SessionDir(homeDir, sess.ID)
+		plan = &prompt.PlanMode{SessionDir: planDir}
+		readRoots = append(readRoots, planDir)
+		writeRoots = append(writeRoots, planDir)
 	}
 	sysPrompt := in.SystemPrompt
 	if sysPrompt == "" {
-		sysPrompt = prompt.GetSysPrompt(in.WorkDir, skills, plan)
+		sysPrompt = prompt.GetSysPrompt(in.WorkDir, skills, plan, skillsRoot)
 	}
-
-	// tracer：配置 OTLP endpoint 时上报远端，否则维持 filetrace 本地落盘。
-	traceHandle, err := newTraceHandle(ctx, layout.TracingLog(in.WorkDir, sess.ID))
-	if err != nil {
-		_ = sessRepo.Close()
-		return nil, fmt.Errorf("init tracing: %w", err)
-	}
-	tracer := traceHandle.Tracer
 
 	// tools：默认工具集；子 Agent 须在 svc 建好后注册进同一 registry（见下）。
 	// workFS 是文件类工具（read/write/edit）唯一的 os 触点实现，此处以领域
@@ -129,32 +126,26 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	// shellRunner 与本次运行同生命周期：登记命令派生的后台进程与输出临时
 	// 文件，由 Cleanup 里的 toolReg.Close() 统一回收。
 	shellRunner := shell.New()
-	toolReg := tools.NewDefaultRegistry(tracer)
-	toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, artifactStore, sess.ID))
-	toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS))
-	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS))
-	toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS))
+	toolReg := core.registry
+	toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, core.artifacts, sess.ID))
+	toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS, writeRoots...))
+	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS, readRoots...))
+	toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS, writeRoots...))
 	ripgrepRunner := ripgrep.New()
-	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner))
-	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner))
+	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
+	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
 
 	// provider + service：主 provider 按当前活跃模型构建，token 预算取该
 	// 模型的 limit（未声明时回退全局窗口配置，见 newMainProvider）。
-	c := config.EnvAndFileConf
-	llmClient := newMainProvider()
-	contextSummaryLLMClient := llmprovider.NewOpenApiProvider(
-		c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel,
-		c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)
-	svc := reactservice.NewReActService(sess, sessRepo, llmClient, contextSummaryLLMClient, toolReg,
-		in.Consumer, tracer, artifactStore)
-	svc.SetWorkDir(in.WorkDir)
+	svc := core.service
 	// 子 Agent 复用 svc 的 LLMClient/tracer/Repo 派生隔离子服务，注册进同一
 	// toolReg（svc 持其引用，late register 对 svc 可见）。
 	toolReg.Register(reactservice.NewSubAgent(svc, in.WorkDir,
 		reactservice.SubAgentDeps{
-			WorkFS:   workFS,
-			Ripgrep:  ripgrepRunner,
-			SkillSrc: skillSrc,
+			WorkFS:     workFS,
+			Ripgrep:    ripgrepRunner,
+			SkillSrc:   skillSrc,
+			SkillsRoot: skillsRoot,
 			// 每个子 Agent 各自新建：其 childReg.Close() 只回收自己派生的
 			// 后台进程，不会波及主 Agent 尚在运行的后台服务
 			NewShell: func() tools.ShellRunner { return shell.New() },
@@ -163,14 +154,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	// cleanup 必须在任何可能失败的初始化之前建好：会话加载 / 系统提示词写盘
 	// 失败时调用方拿不到 Assembled，已获取的资源（filetrace 日志句柄、工具
 	// 注册表里的 bash 后台进程与临时文件）只能由本函数负责回收。
-	var once sync.Once
-	cleanup := func() {
-		once.Do(func() {
-			_ = toolReg.Close()
-			_ = sessRepo.Close()
-			_ = traceHandle.Shutdown(ctx)
-		})
-	}
+	cleanup := core.cleanup
 
 	// 会话初始化放在资源装配之后：子 Agent 工具需先注册进 toolReg，而
 	// InitSysPrompt 写入的系统提示词含技能索引，与工具集属于同一份启动快照。
@@ -190,6 +174,17 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		Cleanup:  cleanup,
 		Switcher: NewModelSwitcher(in.Router, svc),
 	}, nil
+}
+
+func resolveHomeDir(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
+	}
+	return homeDir, nil
 }
 
 // warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，使 one-shot 模式

@@ -15,6 +15,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
 type contextReaderStub struct {
@@ -65,15 +66,28 @@ type fakeSessionCatalog struct {
 	page          session.SummaryPage
 }
 
-func (f *fakeSessionCatalog) CreateSession(_ context.Context, id, userID, title string) (session.Summary, error) {
+func (f *fakeSessionCatalog) CreateSession(_ context.Context, id, userID, title, workDir string) (session.Summary, error) {
 	f.createdUserID = userID
 	now := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
-	return session.Summary{ID: id, UserID: userID, Title: title, CreatedAt: now, UpdatedAt: now}, nil
+	return session.Summary{ID: id, UserID: userID, Title: title, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (f *fakeSessionCatalog) GetSession(_ context.Context, id string) (session.Summary, error) {
+	for _, item := range f.page.Sessions {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return session.Summary{}, sessionrepo.ErrSessionNotFound
 }
 
 func (f *fakeSessionCatalog) ListSessions(_ context.Context, userID, beforeID string, limit int) (session.SummaryPage, error) {
 	f.listUserID, f.beforeID, f.limit = userID, beforeID, limit
 	return f.page, nil
+}
+
+func catalogWithSession(id, workDir string) *fakeSessionCatalog {
+	return &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{ID: id, WorkDir: workDir}}}}
 }
 
 func TestHandleCreateAndListSessions(t *testing.T) {
@@ -93,7 +107,8 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 
 	created := httptest.NewRecorder()
-	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(`{"user_id":"`+userID+`"}`)))
+	workDir := t.TempDir()
+	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(`{"user_id":"`+userID+`","work_dir":"`+workDir+`"}`)))
 	if created.Code != http.StatusCreated || catalog.createdUserID != userID {
 		t.Fatalf("create status=%d user=%q body=%s", created.Code, catalog.createdUserID, created.Body.String())
 	}
@@ -101,7 +116,7 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &createdDTO); err != nil {
 		t.Fatal(err)
 	}
-	if createdDTO.SessionID == "" || createdDTO.UserID != userID {
+	if createdDTO.SessionID == "" || createdDTO.UserID != userID || createdDTO.WorkDir != workDir {
 		t.Fatalf("unexpected create response: %+v", createdDTO)
 	}
 
@@ -333,7 +348,7 @@ func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
 }
 
 func TestUseQAAssemblyAdaptsSSERequestToQACompositionRoot(t *testing.T) {
-	s := newServer("/server/workdir", true)
+	s := newServer("/server/home", true)
 	wantSession := session.NewSession("qa-session")
 	cleanupCalled := false
 	var got agentasm.QAInput
@@ -347,12 +362,12 @@ func TestUseQAAssemblyAdaptsSSERequestToQACompositionRoot(t *testing.T) {
 
 	consumer := newEventConsumer(newSSEWriter(httptest.NewRecorder(), nil))
 	assembled, err := s.assemble(context.Background(), agentasm.Input{
-		WorkDir: "/request/workdir", SessionID: "qa-session", PlanMode: true, Consumer: consumer,
+		WorkDir: "/request/workdir", HomeDir: "/request/home", SessionID: "qa-session", PlanMode: true, Consumer: consumer,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.KBPath != "/tmp/laxcode-qa/kb.sqlite" || got.WorkDir != "/request/workdir" || got.SessionID != "qa-session" {
+	if got.KBPath != "/tmp/laxcode-qa/kb.sqlite" || got.WorkDir != "/request/workdir" || got.HomeDir != "/request/home" || got.SessionID != "qa-session" {
 		t.Fatalf("unexpected QA assembly input: %+v", got)
 	}
 	if got.Consumer == nil {
@@ -429,8 +444,10 @@ func (n *nonFlusherWriter) WriteHeader(code int)        { n.code = code }
 
 // TestHandleChatNoFlusher 验证 ResponseWriter 不支持 Flusher 时返回 500（仍在进入流之前）。
 func TestHandleChatNoFlusher(t *testing.T) {
+	workDir := t.TempDir()
 	s := newServer(t.TempDir(), false)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"task":"hi"}`))
+	s.catalog = catalogWithSession("s1", workDir)
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`))
 	w := newNonFlusherWriter()
 	s.handleChat(w, req)
 
@@ -442,11 +459,13 @@ func TestHandleChatNoFlusher(t *testing.T) {
 // TestHandleChatAssembleError 验证装配失败时已进入 SSE 流（状态码固定 200、
 // Content-Type 为 event-stream），错误经 event: error 帧回传，且此前不发 start 帧。
 func TestHandleChatAssembleError(t *testing.T) {
+	workDir := t.TempDir()
 	s := newServer(t.TempDir(), false)
+	s.catalog = catalogWithSession("s1", workDir)
 	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
 		return nil, errors.New("boom")
 	}
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"task":"hi"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`))
 	rec := httptest.NewRecorder()
 	s.handleChat(rec, req)
 
@@ -469,7 +488,9 @@ func TestHandleChatAssembleError(t *testing.T) {
 }
 
 func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
+	workDir := t.TempDir()
 	s := newServer(t.TempDir(), false)
+	s.catalog = catalogWithSession("s1", workDir)
 	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
 		return nil, errors.New("boom")
 	}

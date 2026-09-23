@@ -10,6 +10,7 @@ import (
 // LastSeq 不因压缩改变，避免重启后复用历史消息的标识。
 type RequestContext struct {
 	UserID         string `json:"user_id,omitempty"`
+	WorkDir        string `json:"work_dir,omitempty"`
 	ReactTurnCount uint64 `json:"react_turn_count"`
 	// Revision 是仓储乐观锁版本，不参与 JSON 冷备；首次保存为 0，每次数据库
 	// 提交成功后加一。
@@ -78,6 +79,12 @@ func (s *Session) Snapshot() RequestContext { return s.RequestContext.Clone() }
 func (s *Session) Restore(snapshot RequestContext) error {
 	if err := snapshot.Validate(); err != nil {
 		return err
+	}
+	if s.WorkDir != "" && snapshot.WorkDir != "" && s.WorkDir != snapshot.WorkDir {
+		return fmt.Errorf("session: workdir mismatch: stored %q, requested %q", snapshot.WorkDir, s.WorkDir)
+	}
+	if snapshot.WorkDir == "" {
+		snapshot.WorkDir = s.WorkDir
 	}
 	s.RequestContext = snapshot.Clone()
 	s.refreshSysToken()

@@ -1,7 +1,7 @@
 package layout
 
 // 布局函数的行为测试：把每条路径的拼装结果逐个钉死。这些字符串是磁盘契约，
-// 改动即意味着既有会话数据与技能目录失联（用户的 .laxcode/.session 历史读不
+// 改动即意味着既有会话数据与技能目录失联（用户的 .laxcode/sessions 历史读不
 // 回来），所以宁可写几条看起来"显而易见"的断言，也不让它被无意改掉。
 
 import (
@@ -20,7 +20,7 @@ func TestDirNames(t *testing.T) {
 		want string
 	}{
 		{"RootDirName", RootDirName, ".laxcode"},
-		{"SessionDirName", SessionDirName, ".session"},
+		{"SessionDirName", SessionDirName, "sessions"},
 		{"SkillsDirName", SkillsDirName, "skills"},
 	}
 	for _, tt := range tests {
@@ -46,7 +46,7 @@ func TestPaths(t *testing.T) {
 		{
 			name: "SessionDB",
 			got:  SessionDB(workDir),
-			want: filepath.Join(workDir, ".laxcode", "sessions.db"),
+			want: filepath.Join(workDir, ".laxcode", "sessions", "sessions.db"),
 		},
 		{
 			name: "KnowledgeBaseDB",
@@ -56,22 +56,22 @@ func TestPaths(t *testing.T) {
 		{
 			name: "SessionRoot",
 			got:  SessionRoot(workDir),
-			want: filepath.Join(workDir, ".laxcode", ".session"),
+			want: filepath.Join(workDir, ".laxcode", "sessions"),
 		},
 		{
 			name: "SessionDir",
 			got:  SessionDir(workDir, "sess-1"),
-			want: filepath.Join(workDir, ".laxcode", ".session", "sess-1"),
+			want: filepath.Join(workDir, ".laxcode", "sessions", "sess-1"),
 		},
 		{
 			name: "SessionHistory",
 			got:  SessionHistory(workDir, "sess-1"),
-			want: filepath.Join(workDir, ".laxcode", ".session", "sess-1", "history.jsonl"),
+			want: filepath.Join(workDir, ".laxcode", "sessions", "sess-1", "history.jsonl"),
 		},
 		{
 			name: "TracingLog",
 			got:  TracingLog(workDir, "sess-1"),
-			want: filepath.Join(workDir, ".laxcode", ".session", "sess-1", "log", "tracing.log"),
+			want: filepath.Join(workDir, ".laxcode", "sessions", "sess-1", "log", "tracing.log"),
 		},
 		{
 			name: "SkillsRoot",
@@ -105,8 +105,8 @@ func TestHierarchy(t *testing.T) {
 	if got := filepath.Dir(SessionRoot(workDir)); got != Root(workDir) {
 		t.Errorf("SessionRoot 的父目录 = %q, want Root = %q", got, Root(workDir))
 	}
-	if got := filepath.Dir(SessionDB(workDir)); got != Root(workDir) {
-		t.Errorf("SessionDB 的父目录 = %q, want Root = %q", got, Root(workDir))
+	if got := filepath.Dir(SessionDB(workDir)); got != SessionRoot(workDir) {
+		t.Errorf("SessionDB 的父目录 = %q, want SessionRoot = %q", got, SessionRoot(workDir))
 	}
 	if got := filepath.Dir(SkillsRoot(workDir)); got != Root(workDir) {
 		t.Errorf("SkillsRoot 的父目录 = %q, want Root = %q", got, Root(workDir))

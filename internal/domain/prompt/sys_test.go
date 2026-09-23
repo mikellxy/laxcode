@@ -14,8 +14,8 @@ import (
 const testWorkDir = "/tmp/lax-proj"
 
 // testSessionDir 是 Plan Mode 规划文件的落盘目录，等价于组合根调用
-// layout.SessionDir(testWorkDir, "sess-abc") 的结果。
-var testSessionDir = filepath.Join(testWorkDir, ".laxcode", ".session", "sess-abc")
+// layout.SessionDir(testHomeDir, "sess-abc") 的结果。
+var testSessionDir = filepath.Join("/home/test", ".laxcode", "sessions", "sess-abc")
 
 func TestGetSysPromptPersonalityAndWorkDir(t *testing.T) {
 	out := GetSysPrompt(testWorkDir, nil, nil)
@@ -133,7 +133,7 @@ func TestGetEvaluatePrompts(t *testing.T) {
 		t.Errorf("evaluation system prompt must not inherit coding-agent workflows: %s", sys)
 	}
 
-	const historyPath = "/tmp/project/.laxcode/.session/sess-1/history.jsonl"
+	const historyPath = "/home/test/.laxcode/sessions/sess-1/history.jsonl"
 	user := GetEvaluateUserPrompt(historyPath)
 	for _, want := range []string{historyPath, `"tool_calls"`, `"tool_call_id"`, `"token_used"`, "JSONL"} {
 		if !strings.Contains(user, want) {
