@@ -33,6 +33,7 @@ type SessionHistoryRepository interface {
 type Summary struct {
 	ID        string
 	UserID    string
+	ProjectID string
 	Title     string
 	WorkDir   string
 	CreatedAt time.Time
@@ -44,13 +45,29 @@ type SummaryPage struct {
 	HasMore  bool
 }
 
+// Project 是一组共享工作目录的会话容器。
+type Project struct {
+	ID        string
+	UserID    string
+	Name      string
+	WorkDir   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ProjectRepository interface {
+	CreateProject(ctx context.Context, projectID, userID, name, workDir string) (Project, error)
+	GetProject(ctx context.Context, projectID string) (Project, error)
+	ListProjects(ctx context.Context, userID string) ([]Project, error)
+}
+
 // SessionCatalogRepository 管理显式创建的空会话及按用户隔离的会话列表。
 type SessionCatalogRepository interface {
-	CreateSession(ctx context.Context, sessionID, userID, title, workDir string) (Summary, error)
+	CreateSession(ctx context.Context, sessionID, userID, projectID, title, workDir string) (Summary, error)
 	GetSession(ctx context.Context, sessionID string) (Summary, error)
-	// ListSessions 返回指定用户在 beforeSessionID 之前的一页会话，按更新时间倒序。
+	// ListSessions 返回指定用户及项目在 beforeSessionID 之前的一页会话，按更新时间倒序。
 	// beforeSessionID 为空表示第一页。
-	ListSessions(ctx context.Context, userID, beforeSessionID string, limit int) (SummaryPage, error)
+	ListSessions(ctx context.Context, userID, projectID, beforeSessionID string, limit int) (SummaryPage, error)
 }
 
 // SessionRepository 是会话持久化端口：domain 只声明“要存什么、要读回什么”，

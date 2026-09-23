@@ -61,17 +61,20 @@ type fakeHistoryRepo struct {
 }
 
 type fakeSessionCatalog struct {
-	createdUserID string
-	listUserID    string
-	beforeID      string
-	limit         int
-	page          session.SummaryPage
+	createdUserID    string
+	createdProjectID string
+	listUserID       string
+	listProjectID    string
+	beforeID         string
+	limit            int
+	page             session.SummaryPage
+	projects         []session.Project
 }
 
-func (f *fakeSessionCatalog) CreateSession(_ context.Context, id, userID, title, workDir string) (session.Summary, error) {
-	f.createdUserID = userID
+func (f *fakeSessionCatalog) CreateSession(_ context.Context, id, userID, projectID, title, workDir string) (session.Summary, error) {
+	f.createdUserID, f.createdProjectID = userID, projectID
 	now := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
-	return session.Summary{ID: id, UserID: userID, Title: title, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}, nil
+	return session.Summary{ID: id, UserID: userID, ProjectID: projectID, Title: title, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (f *fakeSessionCatalog) GetSession(_ context.Context, id string) (session.Summary, error) {
@@ -83,9 +86,35 @@ func (f *fakeSessionCatalog) GetSession(_ context.Context, id string) (session.S
 	return session.Summary{}, sessionrepo.ErrSessionNotFound
 }
 
-func (f *fakeSessionCatalog) ListSessions(_ context.Context, userID, beforeID string, limit int) (session.SummaryPage, error) {
-	f.listUserID, f.beforeID, f.limit = userID, beforeID, limit
+func (f *fakeSessionCatalog) ListSessions(_ context.Context, userID, projectID, beforeID string, limit int) (session.SummaryPage, error) {
+	f.listUserID, f.listProjectID, f.beforeID, f.limit = userID, projectID, beforeID, limit
 	return f.page, nil
+}
+
+func (f *fakeSessionCatalog) CreateProject(_ context.Context, id, userID, name, workDir string) (session.Project, error) {
+	now := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
+	project := session.Project{ID: id, UserID: userID, Name: name, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}
+	f.projects = append([]session.Project{project}, f.projects...)
+	return project, nil
+}
+
+func (f *fakeSessionCatalog) GetProject(_ context.Context, id string) (session.Project, error) {
+	for _, project := range f.projects {
+		if project.ID == id {
+			return project, nil
+		}
+	}
+	return session.Project{}, sessionrepo.ErrProjectNotFound
+}
+
+func (f *fakeSessionCatalog) ListProjects(_ context.Context, userID string) ([]session.Project, error) {
+	var projects []session.Project
+	for _, project := range f.projects {
+		if project.UserID == userID {
+			projects = append(projects, project)
+		}
+	}
+	return projects, nil
 }
 
 func catalogWithSession(id, workDir string) *fakeSessionCatalog {
@@ -101,31 +130,32 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 			{ID: "s1", UserID: userID, CreatedAt: now, UpdatedAt: now},
 		},
 		HasMore: true,
-	}}
+	}, projects: []session.Project{{ID: "project-1", UserID: userID, Name: "Project", WorkDir: t.TempDir()}}}
 	s := newServer(t.TempDir(), false)
 	s.catalog = catalog
+	s.projects = catalog
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 
 	created := httptest.NewRecorder()
-	workDir := t.TempDir()
-	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(`{"user_id":"`+userID+`","work_dir":"`+workDir+`"}`)))
-	if created.Code != http.StatusCreated || catalog.createdUserID != userID {
+	workDir := catalog.projects[0].WorkDir
+	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(`{"user_id":"`+userID+`","project_id":"project-1"}`)))
+	if created.Code != http.StatusCreated || catalog.createdUserID != userID || catalog.createdProjectID != "project-1" {
 		t.Fatalf("create status=%d user=%q body=%s", created.Code, catalog.createdUserID, created.Body.String())
 	}
 	var createdDTO sessionDTO
 	if err := json.Unmarshal(created.Body.Bytes(), &createdDTO); err != nil {
 		t.Fatal(err)
 	}
-	if createdDTO.SessionID == "" || createdDTO.UserID != userID || createdDTO.WorkDir != workDir {
+	if createdDTO.SessionID == "" || createdDTO.UserID != userID || createdDTO.ProjectID != "project-1" || createdDTO.WorkDir != workDir {
 		t.Fatalf("unexpected create response: %+v", createdDTO)
 	}
 
 	listed := httptest.NewRecorder()
 	mux.ServeHTTP(listed, httptest.NewRequest(http.MethodGet,
-		"/api/sessions?user_id="+userID+"&before_session_id=s3&limit=2", nil))
-	if listed.Code != http.StatusOK || catalog.listUserID != userID || catalog.beforeID != "s3" || catalog.limit != 2 {
+		"/api/sessions?user_id="+userID+"&project_id=project-1&before_session_id=s3&limit=2", nil))
+	if listed.Code != http.StatusOK || catalog.listUserID != userID || catalog.listProjectID != "project-1" || catalog.beforeID != "s3" || catalog.limit != 2 {
 		t.Fatalf("list status=%d user=%q before=%q limit=%d body=%s",
 			listed.Code, catalog.listUserID, catalog.beforeID, catalog.limit, listed.Body.String())
 	}
@@ -135,6 +165,51 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 	}
 	if !page.HasMore || page.NextBeforeSessionID != "s1" || len(page.Sessions) != 2 {
 		t.Fatalf("unexpected list response: %+v", page)
+	}
+}
+
+func TestHandleCreateAndListProjects(t *testing.T) {
+	userID := "11111111-1111-4111-8111-111111111111"
+	catalog := &fakeSessionCatalog{}
+	s := newServer(t.TempDir(), false)
+	s.projects = catalog
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+	mux.HandleFunc("GET /api/projects", s.handleListProjects)
+
+	workDir := t.TempDir()
+	created := httptest.NewRecorder()
+	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/projects",
+		strings.NewReader(`{"user_id":"`+userID+`","name":"LaxCode","work_dir":"`+workDir+`"}`)))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var project projectDTO
+	if err := json.Unmarshal(created.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if project.ProjectID == "" || project.Name != "LaxCode" || project.WorkDir != workDir {
+		t.Fatalf("project=%+v", project)
+	}
+
+	listed := httptest.NewRecorder()
+	mux.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/api/projects?user_id="+userID, nil))
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var list projectListDTO
+	if err := json.Unmarshal(listed.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Projects) != 1 || list.Projects[0].ProjectID != project.ProjectID {
+		t.Fatalf("projects=%+v", list.Projects)
+	}
+
+	relative := httptest.NewRecorder()
+	mux.ServeHTTP(relative, httptest.NewRequest(http.MethodPost, "/api/projects",
+		strings.NewReader(`{"user_id":"`+userID+`","name":"Relative","work_dir":"relative/path"}`)))
+	if relative.Code != http.StatusBadRequest {
+		t.Fatalf("relative path status=%d body=%s", relative.Code, relative.Body.String())
 	}
 }
 

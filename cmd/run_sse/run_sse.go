@@ -95,6 +95,7 @@ func Run(router agentasm.RouterClientReplacer) {
 	defer historyRepo.Close()
 	s.history = historyRepo
 	s.catalog = historyRepo
+	s.projects = historyRepo
 	s.contextRepo = historyRepo
 	cleanupMemory := func() {}
 	// Combined -sse -qa mode serves the document knowledge-base QA service.
@@ -116,6 +117,9 @@ func Run(router agentasm.RouterClientReplacer) {
 	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+	mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	mux.HandleFunc("POST /api/directory-picker", s.handlePickDirectory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
 	mux.HandleFunc("GET /api/models", s.handleListModels)

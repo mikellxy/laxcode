@@ -77,7 +77,7 @@ func TestUserMemoryChatResumeAndReclaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	repo.CreateSession(ctx, "test", "user", "", "")
+	repo.CreateSession(ctx, "test", "user", "", "", "")
 	llm := &memoryTestLLM{reason: "max_output_tokens"}
 	recall := &memoryTestRecall{}
 	service := NewReActService(session.NewSession("test"), repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)

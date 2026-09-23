@@ -137,7 +137,50 @@ export type ChatMessage = {
 
 历史数据属于服务端状态，推荐使用 TanStack Query 管理；当前 SSE 流属于临时状态，可以使用 `useReducer` 或 Zustand 管理。
 
-## 3. 新建 Session
+## 3. 项目与 Session
+
+### 选择项目目录
+
+```http
+POST /api/directory-picker
+Content-Type: application/json
+```
+
+请求体为空对象 `{}`。服务在所在的 macOS 主机上打开系统目录选择器，成功时返回绝对路径：
+
+```json
+{"path":"/Users/example/project/"}
+```
+
+用户取消时返回 `{"path":null}`。同一时间只允许一个选择器；重复请求返回 `409 Conflict`。非 macOS 主机返回 `501 Not Implemented`。该窗口出现在 Go 服务所在设备，因此本接口仅适用于本机 Web 模式。
+
+### 新建项目
+
+```http
+POST /api/projects
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "11111111-1111-4111-8111-111111111111",
+  "name": "LaxCode",
+  "work_dir": "/absolute/path/to/LaxCode"
+}
+```
+
+`work_dir` 必须是服务端本机已存在的绝对目录。成功返回 `201 Created`，响应包含
+`project_id`、`user_id`、`name`、`work_dir`、`created_at` 和 `updated_at`。
+
+### 查询项目
+
+```http
+GET /api/projects?user_id={UUID}
+```
+
+响应为 `{"projects": [...]}`，项目按更新时间倒序排列。
+
+### 新建 Session
 
 ### 请求
 
@@ -148,11 +191,13 @@ Content-Type: application/json
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111"
+  "user_id": "11111111-1111-4111-8111-111111111111",
+  "project_id": "5ec09acd-c646-40cd-b364-ccfbe182fa09"
 }
 ```
 
-`user_id` 必须是合法 UUID。请求体包含未知字段时返回 `400`。
+`user_id` 必须是合法 UUID，`project_id` 必须属于该用户。Session 的 `work_dir`
+由服务端从项目读取，不接受客户端覆盖。请求体包含未知字段时返回 `400`。
 
 ### 成功响应
 
@@ -162,7 +207,9 @@ Content-Type: application/json
 {
   "session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
   "user_id": "11111111-1111-4111-8111-111111111111",
+  "project_id": "5ec09acd-c646-40cd-b364-ccfbe182fa09",
   "title": "",
+  "work_dir": "/absolute/path/to/LaxCode",
   "created_at": "2026-09-20T01:02:03Z",
   "updated_at": "2026-09-20T01:02:03Z"
 }
@@ -175,16 +222,17 @@ Content-Type: application/json
 ### 请求
 
 ```http
-GET /api/sessions?user_id={UUID}&limit=20
+GET /api/sessions?user_id={UUID}&project_id={PROJECT_ID}&limit=20
 ```
 
 继续加载更早的 Session：
 
 ```http
-GET /api/sessions?user_id={UUID}&limit=20&before_session_id={上一页的next_before_session_id}
+GET /api/sessions?user_id={UUID}&project_id={PROJECT_ID}&limit=20&before_session_id={上一页的next_before_session_id}
 ```
 
 - `user_id`：必填，必须是 UUID。
+- `project_id`：必填，只返回该项目下的 Session。
 - `limit`：可选，默认 `20`，范围 `1..100`。
 - `before_session_id`：可选，排他游标。
 - 结果按 `updated_at DESC, session_id DESC` 排列，即最近活动的 Session 在前。
@@ -197,7 +245,9 @@ GET /api/sessions?user_id={UUID}&limit=20&before_session_id={上一页的next_be
     {
       "session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
       "user_id": "11111111-1111-4111-8111-111111111111",
+      "project_id": "5ec09acd-c646-40cd-b364-ccfbe182fa09",
       "title": "",
+      "work_dir": "/absolute/path/to/LaxCode",
       "created_at": "2026-09-20T01:02:03Z",
       "updated_at": "2026-09-20T01:05:03Z"
     }
@@ -312,7 +362,7 @@ Accept: text/event-stream
 }
 ```
 
-Web 前端应先调用 `POST /api/sessions`，再使用返回的 `session_id` 发起对话。虽然 `/chat` 仍允许传空 `session_id` 自动创建会话，但该会话的 `user_id` 为空，不会出现在游客的 Session 列表中。
+Web 前端应先创建项目，再调用 `POST /api/sessions`，最后使用返回的 `session_id` 发起对话。`/chat` 要求 `session_id` 必填。
 
 这是 POST SSE，不能直接使用浏览器原生 `EventSource`。使用 `fetch` 读取 `Response.body`，或使用支持 POST 的 SSE 客户端库。SSE 帧可能跨多个网络 chunk，不能把每个 `ReadableStream` chunk 当作一条完整事件。
 
@@ -472,8 +522,9 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
 ```text
 页面启动
   → 读取或创建游客 UUID Cookie
-  → GET /api/sessions?user_id=...
-  → 选择最近 Session；列表为空则 POST /api/sessions
+  → GET /api/projects?user_id=...
+  → 对每个项目 GET /api/sessions?user_id=...&project_id=...
+  → 选择最近 Session
   → GET /api/sessions/{id}/messages
   → 渲染历史
 
@@ -490,9 +541,16 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
   → 将返回消息插到列表头部
   → 恢复加载前的视觉滚动位置
 
-用户新建标签
-  → POST /api/sessions
-  → 将新 Session 插到标签列表顶部并选中
+用户新建项目
+  → POST /api/directory-picker
+  → 在 Go 服务所在的 Mac 上选择目录
+  → 输入项目名称
+  → POST /api/projects
+  → 刷新项目列表
+
+用户在项目中新建会话
+  → POST /api/sessions（携带 project_id）
+  → 将新 Session 插到对应项目下并选中
   → 空历史区等待用户输入
 ```
 
@@ -501,5 +559,6 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
 - 每个 Session 同时只允许一轮 `/chat`；并发请求返回 `409`。
 - 前端发送期间应禁用该 Session 的发送按钮，但其他 Session 可以并行对话。
 - 使用 `AbortController` 可以中断浏览器请求；连接断开会取消服务端当前请求。
+- 目录选择器打开期间前端应禁用“新项目”按钮；服务端也会拒绝并发的第二个选择请求。
 - 切换 Session 时可以让后台流继续并按 Session 保存状态，也可以显式 abort；两种策略必须保持一致。
 - `done` 或 `error` 后必须释放发送中状态，避免输入框永久锁定。

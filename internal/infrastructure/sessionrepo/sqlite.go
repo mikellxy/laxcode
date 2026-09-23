@@ -28,12 +28,14 @@ var (
 	ErrStaleSequence   = errors.New("sessionrepo: stale message sequence")
 	ErrStaleGeneration = errors.New("sessionrepo: stale memory generation")
 	ErrSessionNotFound = errors.New("sessionrepo: session not found")
+	ErrProjectNotFound = errors.New("sessionrepo: project not found")
 )
 
 type requestContextModel struct {
 	ReactTurnCount    uint64    `gorm:"column:react_turn_count;not null;default:0"`
 	SessionID         string    `gorm:"column:session_id;type:varchar(128);primaryKey"`
 	UserID            string    `gorm:"column:user_id;type:varchar(128);not null;default:''"`
+	ProjectID         string    `gorm:"column:project_id;type:varchar(128);not null;default:''"`
 	Title             string    `gorm:"column:title;type:text;not null;default:''"`
 	WorkDir           string    `gorm:"column:work_dir;type:text;not null;default:''"`
 	Revision          uint64    `gorm:"column:revision;not null"`
@@ -48,6 +50,17 @@ type requestContextModel struct {
 }
 
 func (requestContextModel) TableName() string { return "request_contexts" }
+
+type projectModel struct {
+	ProjectID string    `gorm:"column:project_id;type:varchar(128);primaryKey"`
+	UserID    string    `gorm:"column:user_id;type:varchar(128);not null"`
+	Name      string    `gorm:"column:name;type:text;not null"`
+	WorkDir   string    `gorm:"column:work_dir;type:text;not null"`
+	CreatedAt time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (projectModel) TableName() string { return "projects" }
 
 // messageModel 同时承载不可变 original 与各代工作集消息。复合主键使 original
 // 和每一代 memory 在同一 session/seq 下各有且只有一条，无需额外关联表。
@@ -79,8 +92,9 @@ type messageModel struct {
 
 func (messageModel) TableName() string { return "messages" }
 
-// SqliteSessionRepo 以两张表保存当前 context head、不可变 original 和按代封存
-// 的 memory。historyRoot 只用于事务提交后的 best-effort JSONL 冷备。
+// SqliteSessionRepo 以 projects、request_contexts、messages 保存项目、当前
+// context head、不可变 original 和按代封存的 memory。historyRoot 只用于事务
+// 提交后的 best-effort JSONL 冷备。
 type SqliteSessionRepo struct {
 	db          *gorm.DB
 	historyRoot string
@@ -116,9 +130,18 @@ func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error
 func (r *SqliteSessionRepo) migrate() error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		statements := []string{
+			`CREATE TABLE IF NOT EXISTS projects (
+				project_id VARCHAR(128) PRIMARY KEY NOT NULL,
+				user_id VARCHAR(128) NOT NULL,
+				name TEXT NOT NULL,
+				work_dir TEXT NOT NULL,
+				created_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL
+			)`,
 			`CREATE TABLE IF NOT EXISTS request_contexts (
 				session_id VARCHAR(128) PRIMARY KEY NOT NULL,
 				user_id VARCHAR(128) NOT NULL DEFAULT '',
+				project_id VARCHAR(128) NOT NULL DEFAULT '',
 				title TEXT NOT NULL DEFAULT '',
 				work_dir TEXT NOT NULL DEFAULT '',
 				revision BIGINT NOT NULL CHECK (revision >= 0),
@@ -180,6 +203,11 @@ func (r *SqliteSessionRepo) migrate() error {
 				return fmt.Errorf("add session user id column: %w", err)
 			}
 		}
+		if !tx.Migrator().HasColumn(&requestContextModel{}, "project_id") {
+			if err := tx.Exec("ALTER TABLE request_contexts ADD COLUMN project_id VARCHAR(128) NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add session project id column: %w", err)
+			}
+		}
 		if !tx.Migrator().HasColumn(&requestContextModel{}, "title") {
 			if err := tx.Exec("ALTER TABLE request_contexts ADD COLUMN title TEXT NOT NULL DEFAULT ''").Error; err != nil {
 				return fmt.Errorf("add session title column: %w", err)
@@ -194,11 +222,19 @@ func (r *SqliteSessionRepo) migrate() error {
 			ON request_contexts(user_id, updated_at DESC, session_id DESC)`).Error; err != nil {
 			return fmt.Errorf("create session list index: %w", err)
 		}
+		if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_request_contexts_user_project_updated
+			ON request_contexts(user_id, project_id, updated_at DESC, session_id DESC)`).Error; err != nil {
+			return fmt.Errorf("create project session list index: %w", err)
+		}
+		if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_projects_user_updated
+			ON projects(user_id, updated_at DESC, project_id DESC)`).Error; err != nil {
+			return fmt.Errorf("create project list index: %w", err)
+		}
 		return migrateUserMemory(tx)
 	})
 }
 
-func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, title, workDir string) (session.Summary, error) {
+func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, projectID, title, workDir string) (session.Summary, error) {
 	if err := validSessionID(id); err != nil {
 		return session.Summary{}, err
 	}
@@ -207,7 +243,7 @@ func (r *SqliteSessionRepo) CreateSession(ctx context.Context, id, userID, title
 	}
 	now := time.Now().UTC()
 	row := requestContextModel{
-		SessionID: id, UserID: userID, Title: title, WorkDir: workDir,
+		SessionID: id, UserID: userID, ProjectID: projectID, Title: title, WorkDir: workDir,
 		MemoryGeneration: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
@@ -231,21 +267,21 @@ func (r *SqliteSessionRepo) GetSession(ctx context.Context, id string) (session.
 	return summaryFromModel(row), nil
 }
 
-func (r *SqliteSessionRepo) ListSessions(ctx context.Context, userID, beforeSessionID string, limit int) (session.SummaryPage, error) {
+func (r *SqliteSessionRepo) ListSessions(ctx context.Context, userID, projectID, beforeSessionID string, limit int) (session.SummaryPage, error) {
 	if strings.TrimSpace(userID) == "" {
 		return session.SummaryPage{}, fmt.Errorf("user ID is required")
 	}
 	if limit <= 0 {
 		return session.SummaryPage{}, fmt.Errorf("session list limit must be positive")
 	}
-	query := r.db.WithContext(ctx).Model(&requestContextModel{}).Where("user_id = ?", userID)
+	query := r.db.WithContext(ctx).Model(&requestContextModel{}).Where("user_id = ? AND project_id = ?", userID, projectID)
 	if beforeSessionID != "" {
 		if err := validSessionID(beforeSessionID); err != nil {
 			return session.SummaryPage{}, err
 		}
 		var cursor requestContextModel
 		err := r.db.WithContext(ctx).Select("session_id", "updated_at").
-			Where("session_id = ? AND user_id = ?", beforeSessionID, userID).Take(&cursor).Error
+			Where("session_id = ? AND user_id = ? AND project_id = ?", beforeSessionID, userID, projectID).Take(&cursor).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return session.SummaryPage{}, ErrSessionNotFound
 		}
@@ -272,9 +308,59 @@ func (r *SqliteSessionRepo) ListSessions(ctx context.Context, userID, beforeSess
 
 func summaryFromModel(row requestContextModel) session.Summary {
 	return session.Summary{
-		ID: row.SessionID, UserID: row.UserID, Title: row.Title, WorkDir: row.WorkDir,
+		ID: row.SessionID, UserID: row.UserID, ProjectID: row.ProjectID, Title: row.Title, WorkDir: row.WorkDir,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
+}
+
+func (r *SqliteSessionRepo) CreateProject(ctx context.Context, id, userID, name, workDir string) (session.Project, error) {
+	if err := validSessionID(id); err != nil {
+		return session.Project{}, err
+	}
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(name) == "" || strings.TrimSpace(workDir) == "" {
+		return session.Project{}, fmt.Errorf("user ID, project name and workdir are required")
+	}
+	now := time.Now().UTC()
+	row := projectModel{ProjectID: id, UserID: userID, Name: name, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}
+	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+		return session.Project{}, fmt.Errorf("create project: %w", err)
+	}
+	return projectFromModel(row), nil
+}
+
+func (r *SqliteSessionRepo) GetProject(ctx context.Context, id string) (session.Project, error) {
+	if err := validSessionID(id); err != nil {
+		return session.Project{}, err
+	}
+	var row projectModel
+	err := r.db.WithContext(ctx).Where("project_id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return session.Project{}, ErrProjectNotFound
+	}
+	if err != nil {
+		return session.Project{}, fmt.Errorf("get project: %w", err)
+	}
+	return projectFromModel(row), nil
+}
+
+func (r *SqliteSessionRepo) ListProjects(ctx context.Context, userID string) ([]session.Project, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+	var rows []projectModel
+	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).
+		Order("updated_at DESC, project_id DESC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	projects := make([]session.Project, len(rows))
+	for i := range rows {
+		projects[i] = projectFromModel(rows[i])
+	}
+	return projects, nil
+}
+
+func projectFromModel(row projectModel) session.Project {
+	return session.Project{ID: row.ProjectID, UserID: row.UserID, Name: row.Name, WorkDir: row.WorkDir, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 // ListOriginalHistory 读取不可变 original 历史，并在仓储边界完成行级过滤和

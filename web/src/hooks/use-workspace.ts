@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createSession, listSessions } from "../api/sessions";
+import { createSession, listAllSessions } from "../api/sessions";
+import { createProject, listProjects } from "../api/projects";
 import { listHistory } from "../api/history";
 import { answerApproval, resumeChat, streamChat } from "../api/chat-stream";
 import { getSessionContext } from "../api/context";
 import { ApiError } from "../api/client";
 import { streamReducer, type StreamState } from "../features/chat/reducer";
-import type { ContextData, StreamEvent } from "../types/api";
+import type { ContextData, SessionDTO, StreamEvent } from "../types/api";
 
 const emptyStream = (): StreamState => ({ messages: [], running: false });
 
@@ -16,21 +17,50 @@ export function useWorkspace(userID: string) {
   const [streams, setStreams] = useState<Record<string, StreamState>>({});
   const controllers = useRef(new Map<string, AbortController>());
   const bootstrapped = useRef(false);
-  const sessions = useInfiniteQuery({
-    queryKey: ["sessions", userID], queryFn: ({ pageParam }) => listSessions(userID, pageParam), initialPageParam: undefined as string | undefined,
-    getNextPageParam: (page) => page.has_more ? page.next_before_session_id : undefined,
+
+  const projects = useQuery({ queryKey: ["projects", userID], queryFn: () => listProjects(userID) });
+  const projectIDs = useMemo(() => projects.data?.projects.map((project) => project.project_id) ?? [], [projects.data]);
+  const sessions = useQuery({
+    queryKey: ["project-sessions", userID, projectIDs],
+    enabled: projects.isSuccess,
+    queryFn: async () => {
+      const entries = await Promise.all(projectIDs.map(async (projectID) =>
+        [projectID, await listAllSessions(userID, projectID)] as const));
+      return Object.fromEntries(entries) as Record<string, SessionDTO[]>;
+    },
   });
-  const allSessions = useMemo(() => sessions.data?.pages.flatMap((page) => page.sessions) ?? [], [sessions.data]);
-  const create = useMutation({ mutationFn: (workDir: string) => createSession(userID, workDir), onSuccess: (created) => { client.setQueryData(["sessions", userID], (old: typeof sessions.data) => old ? { ...old, pages: [{ ...old.pages[0], sessions: [created, ...old.pages[0].sessions.filter((s) => s.session_id !== created.session_id)] }, ...old.pages.slice(1)] } : old); setSelectedID(created.session_id); } });
+  const sessionsByProject = useMemo(() => sessions.data ?? {}, [sessions.data]);
+  const allSessions = useMemo(
+    () => projectIDs.flatMap((projectID) => sessionsByProject[projectID] ?? []),
+    [projectIDs, sessionsByProject],
+  );
+
+  const createProjectMutation = useMutation({
+    mutationFn: ({ name, workDir }: { name: string; workDir: string }) => createProject(userID, name, workDir),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["projects", userID] }); },
+  });
+  const createSessionMutation = useMutation({
+    mutationFn: (projectID: string) => createSession(userID, projectID),
+    onSuccess: (created) => {
+      client.setQueriesData<Record<string, SessionDTO[]>>(
+        { queryKey: ["project-sessions", userID] },
+        (old) => ({ ...old, [created.project_id]: [created, ...(old?.[created.project_id] ?? []).filter((item) => item.session_id !== created.session_id)] }),
+      );
+      setSelectedID(created.session_id);
+      void client.invalidateQueries({ queryKey: ["project-sessions", userID] });
+    },
+  });
 
   useEffect(() => {
     if (!sessions.isSuccess || selectedID || bootstrapped.current) return;
     bootstrapped.current = true;
     if (allSessions[0]) setSelectedID(allSessions[0].session_id);
-  }, [sessions.isSuccess, selectedID, allSessions, create]);
+  }, [sessions.isSuccess, selectedID, allSessions]);
 
   const history = useInfiniteQuery({
-    queryKey: ["history", selectedID], enabled: Boolean(selectedID), queryFn: ({ pageParam }) => listHistory(selectedID!, pageParam), initialPageParam: undefined as number | undefined,
+    queryKey: ["history", selectedID], enabled: Boolean(selectedID),
+    queryFn: ({ pageParam }) => listHistory(selectedID!, pageParam),
+    initialPageParam: undefined as number | undefined,
     getNextPageParam: (page) => page.has_more ? page.next_before_seq : undefined,
   });
   const historyMessages = history.data?.pages.slice().reverse().flatMap((page) => page.messages) ?? [];
@@ -46,7 +76,7 @@ export function useWorkspace(userID: string) {
     await client.invalidateQueries({ queryKey: ["history", sessionID] });
     if (preserveError) await client.invalidateQueries({ queryKey: ["context", sessionID] });
     updateStream(sessionID, { type: "reconciled", preserveError });
-    await client.invalidateQueries({ queryKey: ["sessions", userID] });
+    await client.invalidateQueries({ queryKey: ["project-sessions", userID] });
   }, [client, updateStream, userID]);
 
   const execute = useCallback(async (sessionID: string, mode: "send" | "resume", task?: string) => {
@@ -104,5 +134,11 @@ export function useWorkspace(userID: string) {
   const cancel = useCallback(() => { if (selectedID) controllers.current.get(selectedID)?.abort(); }, [selectedID]);
   useEffect(() => () => { controllers.current.forEach((controller) => controller.abort()); }, []);
 
-  return { sessions, allSessions, create, selectedID, select: setSelectedID, history, historyMessages, contextUsage, stream: selectedID ? streams[selectedID] ?? emptyStream() : emptyStream(), send, retry, cancel, approve };
+  return {
+    projects, sessions, sessionsByProject, allSessions,
+    createProject: createProjectMutation, createSession: createSessionMutation,
+    selectedID, select: setSelectedID, history, historyMessages, contextUsage,
+    stream: selectedID ? streams[selectedID] ?? emptyStream() : emptyStream(),
+    send, retry, cancel, approve,
+  };
 }

@@ -113,16 +113,16 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	otherUserID := "22222222-2222-4222-8222-222222222222"
 
 	for _, id := range []string{"session-a", "session-b", "session-c"} {
-		if _, err := repo.CreateSession(ctx, id, userID, "", "/projects/"+id); err != nil {
+		if _, err := repo.CreateSession(ctx, id, userID, "project-a", "", "/projects/"+id); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := repo.CreateSession(ctx, "other-session", otherUserID, "", ""); err != nil {
+	if _, err := repo.CreateSession(ctx, "other-session", otherUserID, "project-a", "", ""); err != nil {
 		t.Fatal(err)
 	}
 
-	page, err := repo.ListSessions(ctx, userID, "", 2)
+	page, err := repo.ListSessions(ctx, userID, "project-a", "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	if err != nil || loaded.WorkDir != "/projects/session-a" {
 		t.Fatalf("GetSession workdir=%q err=%v", loaded.WorkDir, err)
 	}
-	older, err := repo.ListSessions(ctx, userID, page.Sessions[1].ID, 2)
+	older, err := repo.ListSessions(ctx, userID, "project-a", page.Sessions[1].ID, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,12 +164,42 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	if revision != 1 {
 		t.Fatalf("first revision=%d, want 1", revision)
 	}
-	refreshed, err := repo.ListSessions(ctx, userID, "", 10)
+	refreshed, err := repo.ListSessions(ctx, userID, "project-a", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(refreshed.Sessions) != 3 || refreshed.Sessions[0].ID != "session-a" {
 		t.Fatalf("chat update should move session to front without losing ownership: %+v", refreshed)
+	}
+}
+
+func TestCreateAndListProjectsAndProjectSessions(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	ctx := context.Background()
+	project, err := repo.CreateProject(ctx, "project-1", "user-1", "LaxCode", "/projects/laxcode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Name != "LaxCode" || project.WorkDir != "/projects/laxcode" {
+		t.Fatalf("unexpected project: %+v", project)
+	}
+	if _, err := repo.CreateProject(ctx, "project-2", "user-2", "Other", "/projects/other"); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := repo.ListProjects(ctx, "user-1")
+	if err != nil || len(projects) != 1 || projects[0].ID != project.ID {
+		t.Fatalf("projects=%+v err=%v", projects, err)
+	}
+	loaded, err := repo.GetProject(ctx, project.ID)
+	if err != nil || loaded.ID != project.ID || loaded.UserID != project.UserID || loaded.Name != project.Name || loaded.WorkDir != project.WorkDir {
+		t.Fatalf("loaded=%+v err=%v", loaded, err)
+	}
+	if _, err := repo.CreateSession(ctx, "session-1", "user-1", project.ID, "", project.WorkDir); err != nil {
+		t.Fatal(err)
+	}
+	page, err := repo.ListSessions(ctx, "user-1", project.ID, "", 10)
+	if err != nil || len(page.Sessions) != 1 || page.Sessions[0].ProjectID != project.ID {
+		t.Fatalf("sessions=%+v err=%v", page, err)
 	}
 }
 
@@ -199,7 +229,7 @@ func TestSessionWorkDirIsImmutableAfterFirstUpsert(t *testing.T) {
 func TestMigrationAddsWorkDirToExistingSessionTable(t *testing.T) {
 	repo, root := newTestRepo(t)
 	ctx := context.Background()
-	if _, err := repo.CreateSession(ctx, "legacy", "user", "", "/ignored-before-drop"); err != nil {
+	if _, err := repo.CreateSession(ctx, "legacy", "user", "", "", "/ignored-before-drop"); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.db.Exec("ALTER TABLE request_contexts DROP COLUMN work_dir").Error; err != nil {
@@ -348,7 +378,7 @@ func TestSchemaContainsSessionAndMemoryTables(t *testing.T) {
 	if err := repo.db.Raw(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).Scan(&names).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(names, []string{"messages", "react_turns", "request_contexts", "user_memory_jobs"}) {
+	if !reflect.DeepEqual(names, []string{"messages", "projects", "react_turns", "request_contexts", "user_memory_jobs"}) {
 		t.Fatalf("tables=%v", names)
 	}
 }

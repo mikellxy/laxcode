@@ -34,17 +34,20 @@ const maxBodyBytes = 1 << 20
 // server 承载 sse 模式的 HTTP 编排。assemble 字段默认 agentasm.Assemble，测试可
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
-	homeDir     string
-	planMode    bool
-	assemble    func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
-	locks       *sessionLocks
-	approvals   *approvalBroker
-	budgets     *budgetStates
-	codeMode    bool
-	tokenBudget int
-	history     session.SessionHistoryRepository
-	contextRepo session.SessionRepository
-	catalog     session.SessionCatalogRepository
+	homeDir           string
+	planMode          bool
+	assemble          func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
+	locks             *sessionLocks
+	approvals         *approvalBroker
+	budgets           *budgetStates
+	codeMode          bool
+	tokenBudget       int
+	history           session.SessionHistoryRepository
+	contextRepo       session.SessionRepository
+	catalog           session.SessionCatalogRepository
+	projects          session.ProjectRepository
+	pickDirectory     func(context.Context) (string, error)
+	directoryPickerMu sync.Mutex
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
 	switcher *agentasm.ModelSwitcher
 }
@@ -57,13 +60,14 @@ const (
 )
 
 type createSessionRequest struct {
-	UserID  string `json:"user_id"`
-	WorkDir string `json:"work_dir"`
+	UserID    string `json:"user_id"`
+	ProjectID string `json:"project_id"`
 }
 
 type sessionDTO struct {
 	SessionID string    `json:"session_id"`
 	UserID    string    `json:"user_id"`
+	ProjectID string    `json:"project_id"`
 	Title     string    `json:"title"`
 	WorkDir   string    `json:"work_dir"`
 	CreatedAt time.Time `json:"created_at"`
@@ -86,14 +90,18 @@ func parseUserID(raw string) (string, error) {
 
 func sessionToDTO(item session.Summary) sessionDTO {
 	return sessionDTO{
-		SessionID: item.ID, UserID: item.UserID, Title: item.Title, WorkDir: item.WorkDir,
+		SessionID: item.ID, UserID: item.UserID, ProjectID: item.ProjectID, Title: item.Title, WorkDir: item.WorkDir,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
 }
 
 func normalizeWorkDir(raw string) (string, error) {
-	if strings.TrimSpace(raw) == "" {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return "", errors.New("work_dir is required")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", errors.New("work_dir must be an absolute path")
 	}
 	workDir, err := filepath.Abs(raw)
 	if err != nil {
@@ -126,12 +134,25 @@ func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
 	}
-	workDir, err := normalizeWorkDir(req.WorkDir)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+	projectID := strings.TrimSpace(req.ProjectID)
+	if projectID == "" {
+		writeJSONError(w, http.StatusBadRequest, "project_id is required")
 		return
 	}
-	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, "", workDir)
+	if s.projects == nil {
+		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
+		return
+	}
+	project, err := s.projects.GetProject(r.Context(), projectID)
+	if errors.Is(err, sessionrepo.ErrProjectNotFound) || (err == nil && project.UserID != userID) {
+		writeJSONError(w, http.StatusNotFound, "project not found: "+projectID)
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "load project failed: "+err.Error())
+		return
+	}
+	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, project.ID, "", project.WorkDir)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "create session failed: "+err.Error())
 		return
@@ -151,6 +172,11 @@ func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
 	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+	if projectID == "" {
+		writeJSONError(w, http.StatusBadRequest, "project_id is required")
+		return
+	}
 	limit := defaultSessionLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		value, parseErr := strconv.Atoi(raw)
@@ -161,7 +187,7 @@ func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		limit = value
 	}
 	beforeSessionID := r.URL.Query().Get("before_session_id")
-	page, err := s.catalog.ListSessions(r.Context(), userID, beforeSessionID, limit)
+	page, err := s.catalog.ListSessions(r.Context(), userID, projectID, beforeSessionID, limit)
 	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
 		writeJSONError(w, http.StatusBadRequest, "invalid session cursor")
 		return
@@ -179,6 +205,125 @@ func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+type createProjectRequest struct {
+	UserID  string `json:"user_id"`
+	Name    string `json:"name"`
+	WorkDir string `json:"work_dir"`
+}
+
+type projectDTO struct {
+	ProjectID string    `json:"project_id"`
+	UserID    string    `json:"user_id"`
+	Name      string    `json:"name"`
+	WorkDir   string    `json:"work_dir"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type projectListDTO struct {
+	Projects []projectDTO `json:"projects"`
+}
+
+func projectToDTO(item session.Project) projectDTO {
+	return projectDTO{ProjectID: item.ID, UserID: item.UserID, Name: item.Name, WorkDir: item.WorkDir, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+}
+
+func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
+		return
+	}
+	var req createProjectRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	userID, err := parseUserID(req.UserID)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeJSONError(w, http.StatusBadRequest, "project name is required")
+		return
+	}
+	if len([]rune(name)) > 120 {
+		writeJSONError(w, http.StatusBadRequest, "project name must not exceed 120 characters")
+		return
+	}
+	workDir, err := normalizeWorkDir(req.WorkDir)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	created, err := s.projects.CreateProject(r.Context(), uuid.NewString(), userID, name, workDir)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "create project failed: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(projectToDTO(created))
+}
+
+func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
+		return
+	}
+	userID, err := parseUserID(r.URL.Query().Get("user_id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
+		return
+	}
+	projects, err := s.projects.ListProjects(r.Context(), userID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list projects failed: "+err.Error())
+		return
+	}
+	response := projectListDTO{Projects: make([]projectDTO, len(projects))}
+	for i := range projects {
+		response.Projects[i] = projectToDTO(projects[i])
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+type directoryPickerResponse struct {
+	Path *string `json:"path"`
+}
+
+func (s *server) handlePickDirectory(w http.ResponseWriter, r *http.Request) {
+	if s.pickDirectory == nil {
+		writeJSONError(w, http.StatusInternalServerError, "directory picker is unavailable")
+		return
+	}
+	if !s.directoryPickerMu.TryLock() {
+		writeJSONError(w, http.StatusConflict, "directory picker is already open")
+		return
+	}
+	defer s.directoryPickerMu.Unlock()
+
+	path, err := s.pickDirectory(r.Context())
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if errors.Is(err, errDirectoryPickerCancelled) {
+		_ = json.NewEncoder(w).Encode(directoryPickerResponse{})
+		return
+	}
+	if errors.Is(err, errDirectoryPickerUnsupported) {
+		writeJSONError(w, http.StatusNotImplemented, err.Error())
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = json.NewEncoder(w).Encode(directoryPickerResponse{Path: &path})
 }
 
 type historyMessageDTO struct {
@@ -404,8 +549,9 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 
 func newServer(homeDir string, planMode bool) *server {
 	return &server{
-		homeDir:  homeDir,
-		planMode: planMode,
+		homeDir:       homeDir,
+		planMode:      planMode,
+		pickDirectory: pickNativeDirectory,
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 			return agentasm.AssembleSSE(ctx, in)
 		},
