@@ -67,7 +67,8 @@ func TestAssessBashRiskRedirectWithoutWorkDir(t *testing.T) {
 
 func TestAssessBashRiskDoesNotMakeGlobalSkillsWritable(t *testing.T) {
 	workDir := t.TempDir()
-	skillFile := filepath.Join(t.TempDir(), ".laxcode", "skills", "demo", "SKILL.md")
+	homeDir := escapeTargetDir(t, workDir)
+	skillFile := filepath.Join(homeDir, ".laxcode", "skills", "demo", "SKILL.md")
 	if _, risky := AssessBashRisk("printf changed > "+skillFile, workDir); !risky {
 		t.Fatal("redirecting to the global skills directory must require approval")
 	}
