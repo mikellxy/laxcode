@@ -1,7 +1,7 @@
 import { ApiError } from "./client";
-import type { ErrorPayload, StreamEvent } from "../types/api";
+import type { ApprovalRequiredData, ErrorPayload, StreamEvent } from "../types/api";
 
-const eventNames = new Set(["start", "reasoning", "message", "tool_call", "done", "error"]);
+const eventNames = new Set(["start", "reasoning", "message", "tool_call", "done", "error", "approval_required"]);
 
 export function parseSSEFrame(frame: string): StreamEvent | null {
   let event = "message";
@@ -42,3 +42,10 @@ async function consumeSSE(url: string, init: RequestInit, signal: AbortSignal, o
 
 export const streamChat = (sessionID: string, task: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void) => consumeSSE("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionID, task }) }, signal, onEvent);
 export const resumeChat = (sessionID: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void) => consumeSSE(`/api/sessions/${encodeURIComponent(sessionID)}/resume`, { method: "POST" }, signal, onEvent);
+
+export async function answerApproval(approval: ApprovalRequiredData, approved: boolean): Promise<void> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(approval.session_id)}/approvals/${encodeURIComponent(approval.approval_id)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved }),
+  });
+  if (!response.ok) throw new ApiError(`确认提交失败 (${response.status})`, response.status);
+}

@@ -13,8 +13,42 @@ import (
 	"github.com/mikellxy/laxcode/cmd/agentasm"
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/session"
+	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
+
+type contextReaderStub struct {
+	session.SessionRepository
+	state session.RequestContext
+}
+
+func (c contextReaderStub) GetRequestContext(context.Context, string) (session.RequestContext, error) {
+	return c.state, nil
+}
+
+func TestHandleSessionContext(t *testing.T) {
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.OpenaiContextWindow = 128000
+	config.EnvAndFileConf.Model = ""
+	config.EnvAndFileConf.ProviderList = nil
+	s := newServer(t.TempDir(), false)
+	s.contextRepo = contextReaderStub{state: session.RequestContext{WindowToken: sharedkernel.TokenStatistics{TokenInput: 12000, TokenOutput: 932}}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/s1/context", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got ContextData
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.WindowToken.Total() != 12932 || got.ContextWindow != 128000 {
+		t.Fatalf("context response = %+v", got)
+	}
+}
 
 type fakeHistoryRepo struct {
 	page      session.HistoryPage
@@ -274,6 +308,9 @@ func TestHandleHistoryReturnsPagedDTO(t *testing.T) {
 	}
 	if got.Messages[0].ToolSummary != "bash(go test ./...)" || got.Messages[0].Content != "" {
 		t.Fatalf("unexpected tool DTO: %+v", got.Messages[0])
+	}
+	if got.Messages[1].Content != "answer" || got.Messages[1].ReasoningContent != "thinking" {
+		t.Fatalf("unexpected assistant DTO: %+v", got.Messages[1])
 	}
 }
 

@@ -81,6 +81,30 @@ func TestGenerateStreamUsesLocalRouter(t *testing.T) {
 	}
 }
 
+func TestGenerateStreamPersistsReasoningFromDeltaWithoutDoneItemContent(t *testing.T) {
+	p := newStreamTestProvider(t, "event: response.reasoning_text.delta\n"+
+		"data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"先检查历史写入\",\"sequence_number\":1,\"item_id\":\"rsn-1\",\"output_index\":0,\"content_index\":0}\n\n"+
+		"event: response.completed\n"+
+		"data: {\"type\":\"response.completed\",\"sequence_number\":2,"+
+		"\"response\":{\"id\":\"resp-reasoning\",\"status\":\"completed\","+
+		"\"usage\":{\"input_tokens\":10,\"output_tokens\":4}}}\n\n")
+
+	var emitted []sharedkernel.StreamChunk
+	msg, err := p.GenerateStream(context.Background(), []sharedkernel.Message{{
+		Role: sharedkernel.RoleUser, Content: "检查",
+	}}, nil, func(chunk sharedkernel.StreamChunk) { emitted = append(emitted, chunk) })
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	if msg.ReasoningContent != "先检查历史写入" {
+		t.Fatalf("reasoning content 未从增量归并到最终消息: %q", msg.ReasoningContent)
+	}
+	if len(emitted) != 2 || emitted[0].Kind != sharedkernel.ChunkReasoningStart ||
+		emitted[1].Kind != sharedkernel.ChunkReasoningDelta || emitted[1].Delta != "先检查历史写入" {
+		t.Fatalf("reasoning SSE 事件不符: %+v", emitted)
+	}
+}
+
 // TestGenerateStreamCapturesIncompleteFinishReason 复现评估事故：输出顶到
 // max_output_tokens 时 Responses API 发 response.incomplete（携带 usage 与
 // incomplete_details.reason），此前被忽略导致 usage=0、截断被伪装成成功。

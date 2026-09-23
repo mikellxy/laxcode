@@ -39,7 +39,7 @@ func checkConfig() error {
 		if c.EmbedOpenaiApiKey == "" || c.EmbedOpenaiBaseUrl == "" || c.EmbedOpenaiModel == "" {
 			return errors.New("OPENAI_EMBEDDING_API_KEY / OPENAI_EMBEDDING_BASE_URL / OPENAI_EMBEDDING_MODEL_NAME are required")
 		}
-	} else if config.EmbeddingEnvironmentReady() {
+	} else if !config.CliConf.Code && config.EmbeddingEnvironmentReady() {
 		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
 			return err
 		}
@@ -92,9 +92,13 @@ func Run(router agentasm.RouterClientReplacer) {
 	}
 	workDir = absWorkDir
 	s := newServer(workDir, config.CliConf.Plan)
+	s.codeMode = config.CliConf.Code
+	s.tokenBudget = config.CliConf.TokenBudget
 	s.switcher = agentasm.NewModelSwitcher(router, nil)
 	if config.CliConf.QA {
 		s.useQAAssembly(config.CliConf.KB, agentasm.AssembleQA)
+	} else if config.CliConf.Code {
+		s.assemble = agentasm.Assemble
 	}
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(workDir), layout.SessionRoot(workDir))
@@ -104,11 +108,12 @@ func Run(router agentasm.RouterClientReplacer) {
 	defer historyRepo.Close()
 	s.history = historyRepo
 	s.catalog = historyRepo
+	s.contextRepo = historyRepo
 	cleanupMemory := func() {}
 	// Combined -sse -qa mode serves the document knowledge-base QA service.
 	// User-memory recall/worker belongs to plain SSE mode and must not mutate or
 	// interpret the QA knowledge database.
-	if !config.CliConf.QA {
+	if !config.CliConf.QA && !config.CliConf.Code {
 		cleanupMemory, err = s.startUserMemory(historyRepo)
 		if err != nil {
 			fatal(err)
@@ -120,10 +125,12 @@ func Run(router agentasm.RouterClientReplacer) {
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	mux.HandleFunc("POST /api/sessions/{session_id}/approvals/{approval_id}", s.handleApproval)
 	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
+	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
@@ -136,6 +143,8 @@ func Run(router agentasm.RouterClientReplacer) {
 	serviceName := "agent"
 	if config.CliConf.QA {
 		serviceName = "QA"
+	} else if config.CliConf.Code {
+		serviceName = "code"
 	}
 	fmt.Printf("LaxCode SSE %s listening on %s (workdir: %s)\n", serviceName, srv.Addr, workDir)
 	fmt.Printf(">>> POST /chat with {\"session_id\":\"\",\"task\":\"...\"}\n")

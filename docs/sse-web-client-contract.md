@@ -415,7 +415,7 @@ assistant(final)
 
 1. 发送请求前，立即插入一条 `status=completed` 的本地 user 消息。
 2. 收到首个 `reasoning` 或 `message` 时，创建 `status=streaming` 的 assistant 消息。
-3. 收到 `tool_call` 时，保留当前 assistant 消息，并在其后插入 tool 消息。
+3. 收到 `tool_call` 时，将当前 assistant 消息标记为 `completed`（reasoning 已结束），保留该消息并在其后插入 tool 消息；SSE 整体仍保持运行。
 4. tool 之后再次收到 `reasoning` 或 `message` 时，创建下一条 assistant 消息，不要继续追加到工具调用前的 assistant 消息。
 5. 收到 `done` 时，将最后一条 streaming assistant 标记为 completed。
 6. 收到 `error` 时，将 streaming assistant 标记为 error。

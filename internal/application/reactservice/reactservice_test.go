@@ -74,6 +74,83 @@ func TestRequestHumanConfirmationHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestTokenBudgetExcludesRestoredUsageAndChecksHalfSteps(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	sess := newTestSession("s-budget", repo)
+	historical := assistantMsg("old answer")
+	historical.TokenUsed = sharedkernel.TokenStatistics{TokenInput: 180, TokenOutput: 20}
+	oldSvc := NewReActService(sess, repo, &scriptedLLM{responses: []scriptedResp{{msg: historical}}}, nil, tools.NewDefaultRegistry(nil), nil, nil)
+	if _, err := oldSvc.Chat(ctx, "old question"); err != nil {
+		t.Fatalf("historical Chat: %v", err)
+	}
+
+	usage := []int{60, 45, 50}
+	responses := make([]scriptedResp, len(usage))
+	for i, n := range usage {
+		msg := assistantMsg("answer")
+		msg.TokenUsed.TokenInput = n
+		responses[i] = scriptedResp{msg: msg}
+	}
+	llm := &scriptedLLM{responses: responses}
+	var prompts []string
+	answers := []string{"yes", "no"}
+	svc := NewReActService(session.NewSession(sess.ID), repo, llm, nil, tools.NewDefaultRegistry(nil), func(event *ReactEvent) {
+		if event.Type != ReActEventTypeHumanInTheLoop {
+			return
+		}
+		prompts = append(prompts, event.Content)
+		event.HumanConfirmChan <- answers[len(prompts)-1]
+	}, nil)
+	if err := svc.InitSession(ctx); err != nil {
+		t.Fatalf("InitSession: %v", err)
+	}
+	svc.SetTokenBudget(100)
+	for i := 0; i < 3; i++ {
+		if _, err := svc.Chat(ctx, "question"); err != nil {
+			t.Fatalf("Chat %d: %v", i+1, err)
+		}
+	}
+	if llm.calls != 3 || len(prompts) != 1 || !strings.Contains(prompts[0], "1.0 倍") {
+		t.Fatalf("calls=%d prompts=%q", llm.calls, prompts)
+	}
+	messageCount := len(svc.Session.Messages)
+	if _, err := svc.Chat(ctx, "next question"); !errors.Is(err, ErrTokenBudgetDeclined) {
+		t.Fatalf("declined Chat error = %v", err)
+	}
+	if llm.calls != 3 || len(svc.Session.Messages) != messageCount || len(prompts) != 2 || !strings.Contains(prompts[1], "1.5 倍") {
+		t.Fatalf("calls=%d messages=%d prompts=%q", llm.calls, len(svc.Session.Messages), prompts)
+	}
+	if _, err := svc.Chat(ctx, "retry"); !errors.Is(err, ErrTokenBudgetDeclined) || len(prompts) != 2 {
+		t.Fatalf("retry error=%v prompts=%q", err, prompts)
+	}
+}
+
+func TestTokenBudgetChecksBeforeToolExecution(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	sess := newTestSession("s-budget-tool", repo)
+	msg := assistantMsgWithTool(sharedkernel.ToolCall{ID: "echo-1", Name: "echo_tool", Arguments: []byte(`{"msg":"hello"}`)})
+	msg.TokenUsed.TokenInput = 120
+	llm := &scriptedLLM{responses: []scriptedResp{{msg: msg}}}
+	reg := tools.NewDefaultRegistry(nil)
+	reg.Register(echoTool{})
+	svc := NewReActService(sess, repo, llm, nil, reg, func(event *ReactEvent) {
+		if event.Type == ReActEventTypeHumanInTheLoop {
+			event.HumanConfirmChan <- "no"
+		}
+	}, nil)
+	svc.SetTokenBudget(100)
+	if _, err := svc.Chat(ctx, "question"); !errors.Is(err, ErrTokenBudgetDeclined) {
+		t.Fatalf("Chat error = %v", err)
+	}
+	for _, message := range sess.Messages {
+		if message.Role == sharedkernel.RoleTool {
+			t.Fatal("tool executed after budget was declined")
+		}
+	}
+}
+
 type promptEnricherFunc func(context.Context, string) ([]sharedkernel.MemoryChunk, error)
 
 func (f promptEnricherFunc) Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error) {

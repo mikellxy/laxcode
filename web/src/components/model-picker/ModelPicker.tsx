@@ -18,6 +18,7 @@ export function ModelPicker({ running }: { running: boolean }) {
     },
     onSuccess: ({ model_ref }) => {
       client.setQueryData(["models"], (old: ProviderListModelDTO | undefined) => (old ? { ...old, current_model: model_ref } : old));
+      void client.invalidateQueries({ queryKey: ["context"] });
       setOpen(false);
     },
   });

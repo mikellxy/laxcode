@@ -19,15 +19,16 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
 
-// SSE 事件名：客户端按 event 名分流。reasoning / message 承载增量文本，
-// tool_call 承载工具执行提示，start / done / error 承载会话生命周期与结果。
+// SSE 事件名：客户端按 event 名分流。approval_required 保持当前流打开，
+// 等待另一个 HTTP 请求提交决定后继续发送后续事件。
 const (
-	EventStart     = "start"
-	EventReasoning = "reasoning"
-	EventMessage   = "message"
-	EventToolCall  = "tool_call"
-	EventDone      = "done"
-	EventError     = "error"
+	EventStart            = "start"
+	EventReasoning        = "reasoning"
+	EventMessage          = "message"
+	EventToolCall         = "tool_call"
+	EventDone             = "done"
+	EventError            = "error"
+	EventApprovalRequired = "approval_required"
 )
 
 const (
@@ -35,6 +36,7 @@ const (
 	ErrorCodeSessionBusy     = "SESSION_BUSY"
 	ErrorCodeAssemblyFailed  = "AGENT_ASSEMBLY_FAILED"
 	ErrorCodeChatFailed      = "CHAT_FAILED"
+	ErrorCodeChatStopped     = "CHAT_STOPPED"
 	ErrorCodeResumeFailed    = "RESUME_FAILED"
 	ErrorCodeNothingToResume = "NOTHING_TO_RESUME"
 	ErrorCodeInternal        = "INTERNAL_ERROR"
@@ -59,14 +61,25 @@ type ToolCallData struct {
 	Info string `json:"info"`
 }
 
-// DoneData 是 done 帧载荷：本轮最终结果与 token 账目。字段对齐 run_oneshot 的
-// 成功语义（session_id / result / token_used / window_token），使两种模式的
-// 结果契约一致，客户端可复用同一套解析。
+// DoneData 是 done 帧载荷：本轮最终结果、token 账目和当前模型上下文窗口。
 type DoneData struct {
-	SessionID   string                       `json:"session_id"`
-	Result      string                       `json:"result"`
-	TokenUsed   sharedkernel.TokenStatistics `json:"token_used"`
-	WindowToken sharedkernel.TokenStatistics `json:"window_token"`
+	SessionID     string                       `json:"session_id"`
+	Result        string                       `json:"result"`
+	TokenUsed     sharedkernel.TokenStatistics `json:"token_used"`
+	WindowToken   sharedkernel.TokenStatistics `json:"window_token"`
+	ContextWindow int                          `json:"context_window"`
+}
+
+type ApprovalRequiredData struct {
+	ApprovalID string `json:"approval_id"`
+	SessionID  string `json:"session_id"`
+	Kind       string `json:"kind"`
+	Content    string `json:"content"`
+}
+
+type ContextData struct {
+	WindowToken   sharedkernel.TokenStatistics `json:"window_token"`
+	ContextWindow int                          `json:"context_window"`
 }
 
 // ErrorData 是 error 帧载荷：进入 SSE 流之后的失败（装配 / Chat）一律经它回传，
@@ -81,10 +94,9 @@ type ErrorData struct {
 // sseWriter 把事件序列化为 SSE 帧写入 ResponseWriter 并立即 Flush，使客户端
 // 逐帧收到而非等响应结束。
 //
-// 无需并发保护：ReActEventConsumerF 在 Chat 调用 goroutine 内同步触发
-// （GenerateStream 的 emit 回调与工具执行前提示均同步），handler 又在 Chat 返回后
-// 于同一 goroutine 发 done / error，全程单 goroutine 顺序访问；子 Agent 事件静默
-// 丢弃，不入本流。
+// 无需并发保护：ReActEventConsumerF 在 Chat 调用 goroutine 内同步触发，
+// handler 又在 Chat 返回后于同一 goroutine 发 done / error。独立的 HTTP
+// 确认处理器只向回复 channel 发送，不写此流。
 type sseWriter struct {
 	w http.ResponseWriter
 	f http.Flusher

@@ -223,6 +223,9 @@ func Run(router agentasm.RouterClientReplacer) {
 		fatal(err)
 	}
 	defer assembled.Cleanup()
+	if config.CliConf.TokenBudget > 0 {
+		assembled.Service.SetTokenBudget(config.CliConf.TokenBudget)
+	}
 
 	// 会话标识与就绪提示在 TUI 接管终端前打印，固定显示在交互区上方。
 	fmt.Printf("session_id: %s\n", assembled.Session.ID)

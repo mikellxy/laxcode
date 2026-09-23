@@ -148,7 +148,8 @@ func TestDangerousBashRequiresExplicitYes(t *testing.T) {
 					event.HumanConfirmChan <- tt.answer
 				}
 			}, nil)
-			if _, err := svc.think(context.Background()); err != nil {
+			_, err := svc.think(context.Background())
+			if tt.wantCalls == 0 && !errors.Is(err, ErrDangerousCommandDeclined) || tt.wantCalls > 0 && err != nil {
 				t.Fatalf("think: %v", err)
 			}
 			if len(shell.calls) != tt.wantCalls || !strings.Contains(prompt, "rm -rf build") || !strings.Contains(prompt, "输入 yes") {
@@ -156,6 +157,9 @@ func TestDangerousBashRequiresExplicitYes(t *testing.T) {
 			}
 			if tt.wantCalls == 0 && !strings.Contains(sess.Messages[2].Content, "未执行") {
 				t.Fatalf("denial must be visible to model: %q", sess.Messages[2].Content)
+			}
+			if tt.wantCalls == 0 && (sess.Messages[2].Role != sharedkernel.RoleTool || llm.calls != 1) {
+				t.Fatalf("denial must persist one tool result then stop: messages=%+v calls=%d", sess.Messages, llm.calls)
 			}
 		})
 	}
@@ -169,8 +173,33 @@ func TestDangerousBashWithoutConsumerFailsClosed(t *testing.T) {
 	reg.Register(tools.NewBashTool(t.TempDir(), shell, nil, sess.ID))
 	svc := NewReActService(sess, repo, &scriptedLLM{}, nil, reg, nil, nil)
 	result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "c1", Name: "bash", Arguments: json.RawMessage(`{"command":"rm -rf build"}`)})
-	if err != nil || len(shell.calls) != 0 || !strings.Contains(result.Output, "未执行") {
+	if !errors.Is(err, ErrDangerousCommandDeclined) || len(shell.calls) != 0 || !strings.Contains(result.Output, "未执行") {
 		t.Fatalf("result=%+v err=%v calls=%v", result, err, shell.calls)
+	}
+}
+
+func TestDangerousBashDenialStopsRemainingToolCalls(t *testing.T) {
+	repo := newMemRepo()
+	sess := newTestSession("bash-denial-stops-group", repo)
+	shell := &recordingShell{}
+	reg := tools.NewDefaultRegistry(nil)
+	reg.Register(tools.NewBashTool(t.TempDir(), shell, nil, sess.ID))
+	reg.Register(echoTool{})
+	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsgWithTool(
+		sharedkernel.ToolCall{ID: "bash-1", Name: "bash", Arguments: json.RawMessage(`{"command":"rm -rf build"}`)},
+		sharedkernel.ToolCall{ID: "echo-2", Name: "echo_tool", Arguments: json.RawMessage(`{"msg":"later"}`)},
+	)}}}
+	svc := NewReActService(sess, repo, llm, nil, reg, func(event *ReactEvent) {
+		if event.Type == ReActEventTypeHumanInTheLoop {
+			event.HumanConfirmChan <- "no"
+		}
+	}, nil)
+	if _, err := svc.think(context.Background()); !errors.Is(err, ErrDangerousCommandDeclined) {
+		t.Fatalf("think error = %v", err)
+	}
+	if len(shell.calls) != 0 || llm.calls != 1 || len(sess.Messages) != 3 || sess.Messages[2].Role != sharedkernel.RoleTool ||
+		sess.Messages[2].ToolCallID != "bash-1" || !strings.Contains(sess.Messages[2].DisplayContent, "未执行") {
+		t.Fatalf("denial must persist one visible tool result and stop: calls=%v llm=%d messages=%+v", shell.calls, llm.calls, sess.Messages)
 	}
 }
 
@@ -199,7 +228,7 @@ func TestBashRedirectOutsideWorkDirRequiresConfirmation(t *testing.T) {
 	svc := NewReActService(sess, repo, &scriptedLLM{}, nil, reg, nil, nil)
 	svc.SetWorkDir(wd)
 	result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "c1", Name: "bash", Arguments: json.RawMessage(`{"command":"echo hi > /etc/nope.txt"}`)})
-	if err != nil || len(shell.calls) != 0 || !strings.Contains(result.Output, "未执行") {
+	if !errors.Is(err, ErrDangerousCommandDeclined) || len(shell.calls) != 0 || !strings.Contains(result.Output, "未执行") {
 		t.Fatalf("result=%+v err=%v calls=%v", result, err, shell.calls)
 	}
 }

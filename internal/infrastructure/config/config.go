@@ -330,6 +330,7 @@ type cliConf struct {
 	Oneshot          bool   `mapstructure:"oneshot"`
 	Evaluate         bool   `mapstructure:"evaluate"`
 	SSE              bool   `mapstructure:"sse"`
+	Code             bool   `mapstructure:"code"`
 	QA               bool   `mapstructure:"qa"`
 	Addr             string `mapstructure:"addr"`
 	WorkDir          string `mapstructure:"workdir"`
@@ -338,6 +339,7 @@ type cliConf struct {
 	Session          string `mapstructure:"session"`
 	EvalSession      string `mapstructure:"eval_session"`
 	Plan             bool   `mapstructure:"plan"`
+	TokenBudget      int    `mapstructure:"token-budget"`
 }
 
 // DefaultSSEAddr 是 sse server 模式的缺省监听地址：仅绑定本地回环，因为
@@ -489,6 +491,7 @@ func ParseCli() error {
 	oneshot := flag.Bool("oneshot", false, "one-shot mode: run a single task and print structured JSON to stdout")
 	evaluate := flag.Bool("evaluate", false, "evaluate an existing agent session and print a structured report to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
+	code := flag.Bool("code", false, "use the coding agent in SSE mode")
 	qa := flag.Bool("qa", false, "knowledge-base question answering mode; combine with -sse to serve QA over SSE")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
 	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -qa and for -sse when OPENAI_EMBEDDING_* is configured")
@@ -499,11 +502,13 @@ func ParseCli() error {
 	session := flag.String("session", "", "session id to resume; empty starts a new session")
 	evalSession := flag.String("eval_session", "", "session id to evaluate; required in evaluate mode")
 	plan := flag.Bool("plan", false, "enable plan mode")
+	tokenBudget := flag.Int("token-budget", 0, "token budget for interactive CLI or SSE code sessions; 0 disables confirmation")
 	flag.Parse()
 
 	Cli.Set("oneshot", *oneshot)
 	Cli.Set("evaluate", *evaluate)
 	Cli.Set("sse", *sse)
+	Cli.Set("code", *code)
 	Cli.Set("qa", *qa)
 	Cli.Set("addr", *addr)
 	Cli.Set("workdir", *workDir)
@@ -514,11 +519,21 @@ func ParseCli() error {
 	Cli.Set("session", *session)
 	Cli.Set("eval_session", *evalSession)
 	Cli.Set("plan", *plan)
+	Cli.Set("token-budget", *tokenBudget)
 
 	if err := Cli.Unmarshal(&CliConf); err != nil {
 		return err
 	}
-	if CliConf.QA || (CliConf.SSE && EmbeddingEnvironmentReady()) {
+	if CliConf.TokenBudget < 0 {
+		return fmt.Errorf("-token-budget must be non-negative")
+	}
+	if CliConf.Code && (!CliConf.SSE || CliConf.QA || CliConf.Oneshot || CliConf.Evaluate) {
+		return fmt.Errorf("-code requires -sse and cannot be combined with -qa, -oneshot, or -evaluate")
+	}
+	if CliConf.TokenBudget > 0 && (CliConf.Oneshot || CliConf.Evaluate || CliConf.QA || (CliConf.SSE && !CliConf.Code)) {
+		return fmt.Errorf("-token-budget is only supported in interactive CLI or -sse -code mode")
+	}
+	if CliConf.QA || (CliConf.SSE && !CliConf.Code && EmbeddingEnvironmentReady()) {
 		if err := ValidateKBPath(CliConf.KB); err != nil {
 			return err
 		}
@@ -526,7 +541,7 @@ func ParseCli() error {
 	// -sse -qa serves the regular QA service over HTTP. It uses the dimensions
 	// from embedding_vec_dim and therefore must not inherit the
 	// user-memory-only -vector-dim requirement from plain SSE mode.
-	if CliConf.SSE && !CliConf.QA && EmbeddingEnvironmentReady() {
+	if CliConf.SSE && !CliConf.QA && !CliConf.Code && EmbeddingEnvironmentReady() {
 		return ValidateVectorDimensions(CliConf.VectorDimensions)
 	}
 	return nil

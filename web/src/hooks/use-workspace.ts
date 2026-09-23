@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSession, listSessions } from "../api/sessions";
 import { listHistory } from "../api/history";
-import { resumeChat, streamChat } from "../api/chat-stream";
+import { answerApproval, resumeChat, streamChat } from "../api/chat-stream";
+import { getSessionContext } from "../api/context";
 import { ApiError } from "../api/client";
 import { streamReducer, type StreamState } from "../features/chat/reducer";
-import type { StreamEvent } from "../types/api";
+import type { ContextData, StreamEvent } from "../types/api";
 
 const emptyStream = (): StreamState => ({ messages: [], running: false });
 
@@ -33,6 +34,9 @@ export function useWorkspace(userID: string) {
     getNextPageParam: (page) => page.has_more ? page.next_before_seq : undefined,
   });
   const historyMessages = history.data?.pages.slice().reverse().flatMap((page) => page.messages) ?? [];
+  const contextUsage = useQuery({
+    queryKey: ["context", selectedID], enabled: Boolean(selectedID), queryFn: () => getSessionContext(selectedID!),
+  });
 
   const updateStream = useCallback((sessionID: string, action: Parameters<typeof streamReducer>[1]) => {
     setStreams((current) => ({ ...current, [sessionID]: streamReducer(current[sessionID] ?? emptyStream(), action) }));
@@ -40,6 +44,7 @@ export function useWorkspace(userID: string) {
 
   const reconcile = useCallback(async (sessionID: string, preserveError: boolean) => {
     await client.invalidateQueries({ queryKey: ["history", sessionID] });
+    if (preserveError) await client.invalidateQueries({ queryKey: ["context", sessionID] });
     updateStream(sessionID, { type: "reconciled", preserveError });
     await client.invalidateQueries({ queryKey: ["sessions", userID] });
   }, [client, updateStream, userID]);
@@ -52,6 +57,9 @@ export function useWorkspace(userID: string) {
       let terminal = false;
       const onEvent = (event: StreamEvent) => {
         updateStream(sessionID, { type: "event", event });
+        if (event.type === "done") client.setQueryData<ContextData>(["context", sessionID], {
+          window_token: event.data.window_token, context_window: event.data.context_window,
+        });
         if (event.type === "done" || event.type === "error") terminal = true;
         if (event.type === "error") failed = true;
       };
@@ -70,7 +78,15 @@ export function useWorkspace(userID: string) {
       controllers.current.delete(sessionID);
       await reconcile(sessionID, failed);
     }
-  }, [updateStream, reconcile]);
+  }, [updateStream, reconcile, client]);
+
+  const approve = useCallback(async (approved: boolean) => {
+    if (!selectedID) return;
+    const approval = streams[selectedID]?.approval;
+    if (!approval) return;
+    await answerApproval(approval, approved);
+    updateStream(selectedID, { type: "approval_resolved", approvalID: approval.approval_id });
+  }, [selectedID, streams, updateStream]);
 
   const send = useCallback(async (task: string) => {
     if (!selectedID || streams[selectedID]?.running) return;
@@ -88,5 +104,5 @@ export function useWorkspace(userID: string) {
   const cancel = useCallback(() => { if (selectedID) controllers.current.get(selectedID)?.abort(); }, [selectedID]);
   useEffect(() => () => { controllers.current.forEach((controller) => controller.abort()); }, []);
 
-  return { sessions, allSessions, create, selectedID, select: setSelectedID, history, historyMessages, stream: selectedID ? streams[selectedID] ?? emptyStream() : emptyStream(), send, retry, cancel };
+  return { sessions, allSessions, create, selectedID, select: setSelectedID, history, historyMessages, contextUsage, stream: selectedID ? streams[selectedID] ?? emptyStream() : emptyStream(), send, retry, cancel, approve };
 }

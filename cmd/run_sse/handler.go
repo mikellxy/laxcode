@@ -31,12 +31,17 @@ const maxBodyBytes = 1 << 20
 // server 承载 sse 模式的 HTTP 编排。assemble 字段默认 agentasm.Assemble，测试可
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
-	workDir  string
-	planMode bool
-	assemble func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
-	locks    *sessionLocks
-	history  session.SessionHistoryRepository
-	catalog  session.SessionCatalogRepository
+	workDir     string
+	planMode    bool
+	assemble    func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
+	locks       *sessionLocks
+	approvals   *approvalBroker
+	budgets     *budgetStates
+	codeMode    bool
+	tokenBudget int
+	history     session.SessionHistoryRepository
+	contextRepo session.SessionRepository
+	catalog     session.SessionCatalogRepository
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
 	switcher *agentasm.ModelSwitcher
 }
@@ -303,6 +308,28 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(response)
 }
 
+func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
+	if s.contextRepo == nil {
+		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("session_id"))
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+	contextState, err := s.contextRepo.GetRequestContext(r.Context(), sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "load context failed: "+err.Error())
+		return
+	}
+	s.switcher.RLock()
+	contextWindow, _ := config.ActiveModelBudget()
+	s.switcher.RUnlock()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(ContextData{WindowToken: contextState.WindowToken, ContextWindow: contextWindow})
+}
+
 func newServer(workDir string, planMode bool) *server {
 	return &server{
 		workDir:  workDir,
@@ -310,8 +337,44 @@ func newServer(workDir string, planMode bool) *server {
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 			return agentasm.AssembleSSE(ctx, in)
 		},
-		locks:    newSessionLocks(),
-		switcher: agentasm.NewModelSwitcher(nil, nil),
+		locks:     newSessionLocks(),
+		approvals: newApprovalBroker(),
+		budgets:   newBudgetStates(),
+		switcher:  agentasm.NewModelSwitcher(nil, nil),
+	}
+}
+
+func (s *server) eventConsumer(sw *sseWriter, sessionID *string, requestID string) func(*reactservice.ReactEvent) {
+	base := newEventConsumer(sw)
+	return func(event *reactservice.ReactEvent) {
+		if event.Type != reactservice.ReActEventTypeHumanInTheLoop {
+			base(event)
+			return
+		}
+		if event.HumanConfirmChan == nil {
+			return
+		}
+		id := s.approvals.register(*sessionID, requestID, event.HumanConfirmChan)
+		sw.Send(EventApprovalRequired, ApprovalRequiredData{
+			ApprovalID: id, SessionID: *sessionID, Kind: event.HumanConfirmKind, Content: event.Content,
+		})
+	}
+}
+
+func (s *server) configureBudget(assembled *agentasm.Assembled) {
+	if !s.codeMode || s.tokenBudget <= 0 {
+		return
+	}
+	if state, ok := s.budgets.get(assembled.Session.ID); ok {
+		assembled.Service.RestoreTokenBudget(state)
+	} else {
+		assembled.Service.SetTokenBudget(s.tokenBudget)
+	}
+}
+
+func (s *server) saveBudget(assembled *agentasm.Assembled) {
+	if s.codeMode && s.tokenBudget > 0 {
+		s.budgets.put(assembled.Session.ID, assembled.Service.TokenBudgetState())
 	}
 }
 
@@ -385,6 +448,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context() // 客户端断开即取消，驱动 Chat 从 LLM/工具调用收敛
+	requestID := uuid.NewString()
+	defer s.approvals.clearRequest(requestID)
+	var activeSessionID string
 
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
@@ -392,19 +458,26 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		WorkDir:   s.workDir,
 		SessionID: req.SessionID,
 		PlanMode:  s.planMode,
-		Consumer:  newEventConsumer(sw),
+		Consumer:  s.eventConsumer(sw, &activeSessionID, requestID),
 	})
 	if err != nil {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResend})
 		return
 	}
 	defer assembled.Cleanup()
+	activeSessionID = assembled.Session.ID
+	s.configureBudget(assembled)
+	defer s.saveBudget(assembled)
 
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
 	userCountBeforeChat := countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser)
 	msg, err := assembled.Service.Chat(ctx, req.Task)
 	if err != nil {
+		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) || errors.Is(err, reactservice.ErrTokenBudgetDeclined) {
+			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
+			return
+		}
 		retryAction := RetryActionResend
 		// recoverBeforeChat 可能先补写 tool result；只有 user 数量增加才能证明
 		// 本次 query 已提交，不能用总消息数判断。
@@ -457,16 +530,21 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context()
+	requestID := uuid.NewString()
+	defer s.approvals.clearRequest(requestID)
+	activeSessionID := sessionID
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	assembled, err := s.assemble(ctx, agentasm.Input{
-		WorkDir: s.workDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: newEventConsumer(sw),
+		WorkDir: s.workDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: s.eventConsumer(sw, &activeSessionID, requestID),
 	})
 	if err != nil {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResume})
 		return
 	}
 	defer assembled.Cleanup()
+	s.configureBudget(assembled)
+	defer s.saveBudget(assembled)
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
 	msg, err := assembled.Service.Resume(ctx)
@@ -475,6 +553,10 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) || errors.Is(err, reactservice.ErrTokenBudgetDeclined) {
+			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
+			return
+		}
 		sw.Send(EventError, ErrorData{Code: ErrorCodeResumeFailed, Message: err.Error(), RetryAction: RetryActionResume})
 		return
 	}
@@ -483,9 +565,10 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 func doneData(assembled *agentasm.Assembled, msg *sharedkernel.Message) DoneData {
 	done := DoneData{
-		SessionID:   assembled.Session.ID,
-		TokenUsed:   assembled.Session.TokenUsed,
-		WindowToken: assembled.Session.WindowToken,
+		SessionID:     assembled.Session.ID,
+		TokenUsed:     assembled.Session.TokenUsed,
+		WindowToken:   assembled.Session.WindowToken,
+		ContextWindow: assembled.Service.LLMClient.ContextBudget().ContextWindow,
 	}
 	if msg != nil {
 		done.Result = msg.Content

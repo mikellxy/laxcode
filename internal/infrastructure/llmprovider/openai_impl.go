@@ -221,6 +221,10 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 	msg := &sharedkernel.Message{Role: sharedkernel.RoleAssistant}
 	// 三段式边界：首个 delta 惰性触发 start，对应 done 事件触发 end
 	var textStarted, reasoningStarted bool
+	// 部分 Responses 兼容端点会发送 reasoning delta，却在
+	// response.output_item.done 中省略 reasoning content。先按 item 缓存增量；
+	// done 有完整内容时以完整内容为准，否则使用缓存，避免 SSE 可见但落库为空。
+	var pendingReasoning strings.Builder
 
 	for stream.Next() {
 		ev := stream.Current()
@@ -244,6 +248,7 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 				emit(sharedkernel.StreamChunk{Kind: sharedkernel.ChunkReasoningStart})
 				reasoningStarted = true
 			}
+			pendingReasoning.WriteString(delta)
 			emit(sharedkernel.StreamChunk{Kind: sharedkernel.ChunkReasoningDelta, Delta: delta})
 		case "response.reasoning_summary_text.delta":
 			delta := ev.AsResponseReasoningSummaryTextDelta().Delta
@@ -251,6 +256,7 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 				emit(sharedkernel.StreamChunk{Kind: sharedkernel.ChunkReasoningStart})
 				reasoningStarted = true
 			}
+			pendingReasoning.WriteString(delta)
 			emit(sharedkernel.StreamChunk{Kind: sharedkernel.ChunkReasoningDelta, Delta: delta})
 		case "response.output_item.done":
 			item := ev.AsResponseOutputItemDone().Item
@@ -258,9 +264,16 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 			case "reasoning":
 				r := item.AsReasoning()
 				msg.ReasoningID = r.ID
+				var completedReasoning strings.Builder
 				for _, c := range r.Content {
-					msg.ReasoningContent += c.Text
+					completedReasoning.WriteString(c.Text)
 				}
+				if completedReasoning.Len() > 0 {
+					msg.ReasoningContent += completedReasoning.String()
+				} else {
+					msg.ReasoningContent += pendingReasoning.String()
+				}
+				pendingReasoning.Reset()
 				if reasoningStarted {
 					emit(sharedkernel.StreamChunk{Kind: sharedkernel.ChunkReasoningEnd})
 					reasoningStarted = false
@@ -306,6 +319,9 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 			}
 		}
 	}
+	// 裸流或兼容端点可能没有 output_item.done；仍需把已推给 SSE 的 reasoning
+	// 保存到最终消息，供 original 历史持久化及 GET messages 返回。
+	msg.ReasoningContent += pendingReasoning.String()
 	// 终止事件从未出现（兼容端点不发 completed/incomplete/failed）或出现但
 	// 未携带 usage：显式降级为 usage_unavailable，消费方不会把零值 usage
 	// 误读成一次正常的免费生成。正常 stop 覆盖不了这里，因为该路径只在

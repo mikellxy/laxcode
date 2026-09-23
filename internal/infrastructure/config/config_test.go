@@ -472,6 +472,48 @@ func TestParseCliDefaults(t *testing.T) {
 	}
 }
 
+func TestParseCliTokenBudgetInteractiveOnly(t *testing.T) {
+	t.Run("interactive", func(t *testing.T) {
+		swapCliGlobals(t, "-token-budget", "1000")
+		if err := ParseCli(); err != nil {
+			t.Fatalf("ParseCli: %v", err)
+		}
+		if CliConf.TokenBudget != 1000 {
+			t.Fatalf("token budget = %d, want 1000", CliConf.TokenBudget)
+		}
+	})
+	t.Run("negative", func(t *testing.T) {
+		swapCliGlobals(t, "-token-budget", "-1")
+		if err := ParseCli(); err == nil {
+			t.Fatal("negative token budget should fail")
+		}
+	})
+	t.Run("oneshot", func(t *testing.T) {
+		swapCliGlobals(t, "-oneshot", "-token-budget", "1000")
+		if err := ParseCli(); err == nil {
+			t.Fatal("token budget should be interactive only")
+		}
+	})
+	t.Run("sse code", func(t *testing.T) {
+		swapCliGlobals(t, "-sse", "-code", "-token-budget", "1000")
+		if err := ParseCli(); err != nil || !CliConf.Code || CliConf.TokenBudget != 1000 {
+			t.Fatalf("ParseCli SSE code: config=%+v err=%v", CliConf, err)
+		}
+	})
+	t.Run("code without sse", func(t *testing.T) {
+		swapCliGlobals(t, "-code")
+		if err := ParseCli(); err == nil {
+			t.Fatal("-code without -sse should fail")
+		}
+	})
+	t.Run("code and qa", func(t *testing.T) {
+		swapCliGlobals(t, "-sse", "-code", "-qa")
+		if err := ParseCli(); err == nil {
+			t.Fatal("-code and -qa should be mutually exclusive")
+		}
+	})
+}
+
 func TestParseCliCombinedSSEQADoesNotRequireUserMemoryVectorDimensions(t *testing.T) {
 	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
 		t.Setenv(key, "configured")
