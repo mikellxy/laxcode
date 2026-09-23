@@ -146,13 +146,13 @@ POST /api/directory-picker
 Content-Type: application/json
 ```
 
-请求体为空对象 `{}`。服务在所在的 macOS 主机上打开系统目录选择器，成功时返回绝对路径：
+请求体为空对象 `{}`。服务在所在的原生主机（macOS / Windows）上打开系统目录选择器，成功时返回绝对路径：
 
 ```json
 {"path":"/Users/example/project/"}
 ```
 
-用户取消时返回 `{"path":null}`。同一时间只允许一个选择器；重复请求返回 `409 Conflict`。非 macOS 主机返回 `501 Not Implemented`。该窗口出现在 Go 服务所在设备，因此本接口仅适用于本机 Web 模式。
+用户取消时返回 `{"path":null}`。同一时间只允许一个选择器；重复请求返回 `409 Conflict`。其他操作系统（如 Linux）返回 `501 Not Implemented`。该窗口出现在 Go 服务所在设备，因此本接口仅适用于本机 Web 模式。
 
 ### 新建项目
 
@@ -543,7 +543,7 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
 
 用户新建项目
   → POST /api/directory-picker
-  → 在 Go 服务所在的 Mac 上选择目录
+  → 在 Go 服务所在的设备（Mac / Windows）上选择目录
   → 输入项目名称
   → POST /api/projects
   → 刷新项目列表

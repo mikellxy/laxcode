@@ -2,6 +2,7 @@ package run_sse
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -33,6 +34,68 @@ func TestPickNativeDirectoryUsesMacOSChooser(t *testing.T) {
 	}
 	if command != "osascript" || !slices.Contains(args, "POSIX path of selectedFolder") {
 		t.Fatalf("command=%q args=%q", command, args)
+	}
+}
+
+func TestPickNativeDirectoryUsesWindowsChooser(t *testing.T) {
+	var command string
+	var args []string
+	run := func(_ context.Context, name string, values ...string) (string, string, error) {
+		command = name
+		args = append([]string(nil), values...)
+		return base64.StdEncoding.EncodeToString([]byte("C:\\Users\\测试\\项目")) + "\r\n", "", nil
+	}
+
+	path, err := pickNativeDirectoryWithRunner(context.Background(), "windows", run)
+	if err != nil || path != "C:\\Users\\测试\\项目" {
+		t.Fatalf("path=%q err=%v", path, err)
+	}
+	if command != "powershell" {
+		t.Fatalf("command=%q", command)
+	}
+	for _, flag := range []string{"-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand"} {
+		if !slices.Contains(args, flag) {
+			t.Fatalf("args=%q missing %s", args, flag)
+		}
+	}
+	encoded := args[slices.Index(args, "-EncodedCommand")+1]
+	if encoded != encodePowerShellScript(windowsDirectoryPickerScript) {
+		t.Fatalf("encoded command does not match windowsDirectoryPickerScript")
+	}
+	for _, fragment := range []string{"FolderBrowserDialog", "Select Project Directory"} {
+		if !strings.Contains(windowsDirectoryPickerScript, fragment) {
+			t.Fatalf("script missing %q", fragment)
+		}
+	}
+}
+
+func TestPickNativeDirectoryWindowsOutcomes(t *testing.T) {
+	cancelled := func(context.Context, string, ...string) (string, string, error) {
+		return "", "", pickerExitError{code: windowsPickerCancelledExitCode}
+	}
+	if _, err := pickNativeDirectoryWithRunner(context.Background(), "windows", cancelled); !errors.Is(err, errDirectoryPickerCancelled) {
+		t.Fatalf("cancel error=%v", err)
+	}
+
+	broken := func(context.Context, string, ...string) (string, string, error) {
+		return "", "Add-Type : cannot load System.Windows.Forms", pickerExitError{code: 1}
+	}
+	if _, err := pickNativeDirectoryWithRunner(context.Background(), "windows", broken); err == nil || !strings.Contains(err.Error(), "System.Windows.Forms") {
+		t.Fatalf("failure=%v", err)
+	}
+
+	empty := func(context.Context, string, ...string) (string, string, error) {
+		return "", "", nil
+	}
+	if _, err := pickNativeDirectoryWithRunner(context.Background(), "windows", empty); err == nil || !strings.Contains(err.Error(), "empty path") {
+		t.Fatalf("empty error=%v", err)
+	}
+
+	garbled := func(context.Context, string, ...string) (string, string, error) {
+		return "not-base64!", "", nil
+	}
+	if _, err := pickNativeDirectoryWithRunner(context.Background(), "windows", garbled); err == nil || !strings.Contains(err.Error(), "decode directory picker output") {
+		t.Fatalf("decode error=%v", err)
 	}
 }
 
