@@ -48,9 +48,17 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
   // 父组件递增 bounceKey（用户点击了锁定中的输入框）时让齿轮跳动一次。
   useEffect(() => {
     if (!bounceKey) return;
-    setBouncing(true);
-    const timer = setTimeout(() => setBouncing(false), 700);
-    return () => clearTimeout(timer);
+    // 先移除再于下一帧恢复 class，使上一轮尚未结束时再次点击也能从头播放。
+    setBouncing(false);
+    let timer: number | undefined;
+    const frame = window.requestAnimationFrame(() => {
+      setBouncing(true);
+      timer = window.setTimeout(() => setBouncing(false), 700);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [bounceKey]);
 
   useEffect(() => {
@@ -75,7 +83,7 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
       {label}
       {switchModel.isPending ? <Loader2 size={13} className="spin" /> : queued ? <Clock size={13} /> : open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
     </button>
-    <button type="button" className={`model-gear ${bouncing ? "bounce" : ""}`} onClick={() => { addModel.reset(); setAdding(true); }} aria-label="添加模型" title="添加模型"><Settings size={14} /></button>
+    <button type="button" className={`model-gear ${bouncing ? "bounce" : ""}`} onClick={() => { addModel.reset(); setOpen(false); setAdding(true); }} aria-label="添加模型" aria-haspopup="dialog" title="添加模型"><Settings size={14} /></button>
     {open && <ul className="model-menu" role="listbox">
       {models.isError && <li className="model-menu-state" onClick={() => models.refetch()}>加载失败，点击重试</li>}
       {!models.isError && refs.length === 0 && <li className="model-menu-state">还没有模型，点击齿轮按钮添加</li>}

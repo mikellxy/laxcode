@@ -61,6 +61,13 @@ export function App() {
   const selected = workspace.allSessions.find((session) => session.session_id === workspace.selectedID);
   const projects = workspace.projects.data?.projects ?? [];
   const isFirstRun = workspace.projects.isSuccess && projects.length === 0;
+  // 主工作区首次确认尚未配置模型后，稍作停顿再提示一次，避免页面刚加载时
+  // 与其他入场动画争抢注意力；项目引导页不展示模型控件，故不提前触发。
+  useEffect(() => {
+    if (!modelLocked || !workspace.projects.isSuccess || isFirstRun) return;
+    const timer = window.setTimeout(() => setGearBounce((value) => value + 1), 500);
+    return () => window.clearTimeout(timer);
+  }, [modelLocked, workspace.projects.isSuccess, isFirstRun]);
   const connectionError = workspace.projects.error ?? workspace.sessions.error;
   if (workspace.projects.isError || workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{connectionError instanceof Error ? connectionError.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => { void workspace.projects.refetch(); void workspace.sessions.refetch(); }}>重新连接</button></div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarOpen ? "mobile-sidebar-open" : ""}`}>

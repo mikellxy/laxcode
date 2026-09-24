@@ -11,12 +11,14 @@ export function ChatComposer({ running, disabled, locked, onLockedClick, onSend,
   const composing = useRef(false);
   useEffect(() => { const el = ref.current; if (el) { el.style.height = "0"; el.style.height = `${Math.min(el.scrollHeight, 160)}px`; } }, [value]);
   const submit = () => { const task = value.trim(); if (!task || running || disabled || locked) return; setValue(""); onSend(task); };
-  return <div className="composer-wrap"><div className={`composer ${running ? "running" : ""} ${locked ? "locked" : ""}`} onClick={locked ? onLockedClick : undefined}><textarea
+  return <div className="composer-wrap"><div className={`composer ${running ? "running" : ""} ${locked ? "locked" : ""}`}><textarea
     ref={ref}
     rows={1}
     value={value}
-    disabled={disabled || locked}
+    disabled={disabled && !locked}
+    readOnly={locked}
     placeholder={locked ? "请先点击齿轮按钮配置模型…" : "给 LaxCode 发送任务…"}
+    onPointerDown={locked ? (event) => { event.preventDefault(); onLockedClick?.(); } : undefined}
     onChange={(event) => setValue(event.target.value)}
     onCompositionStart={() => { composing.current = true; }}
     onCompositionEnd={() => { composing.current = false; }}
