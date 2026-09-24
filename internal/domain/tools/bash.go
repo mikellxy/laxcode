@@ -20,6 +20,8 @@ const (
 	ToolEditFile       = "edit_file"
 	ToolGrep           = "grep"
 	ToolGlob           = "glob"
+	ToolCreateSkill    = "create_skill"
+	ToolUpdateSkill    = "update_skill"
 	ToolRunSubAgent    = "run_sub_agent"
 	defaultBashTimeout = 30 * time.Second
 	maxBashTimeout     = 60 * time.Second

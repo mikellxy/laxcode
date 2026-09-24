@@ -243,6 +243,7 @@ func TestCompositionRootWiresEveryAdapter(t *testing.T) {
 		modulePath + "internal/infrastructure/workfs",
 		modulePath + "internal/infrastructure/shell",
 		modulePath + "internal/infrastructure/skillrepo",
+		modulePath + "internal/infrastructure/skillstore",
 		modulePath + "internal/infrastructure/layout",
 	}
 	for _, w := range want {

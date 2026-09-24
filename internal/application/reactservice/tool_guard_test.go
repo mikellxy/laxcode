@@ -122,6 +122,69 @@ func (s *recordingShell) Run(_ context.Context, _, command string, _ time.Durati
 }
 func (*recordingShell) Close() error { return nil }
 
+type confirmableTool struct {
+	calls      int
+	confirmErr error
+}
+
+func (*confirmableTool) Name() string { return "confirmable" }
+func (*confirmableTool) Definition() sharedkernel.ToolDefinition {
+	return sharedkernel.ToolDefinition{Name: "confirmable"}
+}
+func (t *confirmableTool) Execute(context.Context, json.RawMessage) (string, error) {
+	t.calls++
+	return "changed", nil
+}
+func (*confirmableTool) BeforeExecInfo(json.RawMessage) string { return "confirmable()" }
+func (*confirmableTool) AfterExecInfo(json.RawMessage) string  { return "" }
+func (t *confirmableTool) Confirmation(context.Context, json.RawMessage) (*tools.ToolConfirmation, error) {
+	if t.confirmErr != nil {
+		return nil, t.confirmErr
+	}
+	return &tools.ToolConfirmation{Kind: HumanConfirmKindSkillWrite, Content: "confirm skill write"}, nil
+}
+
+func TestConfirmableToolRequiresExplicitYes(t *testing.T) {
+	for _, tt := range []struct {
+		answer    string
+		wantCalls int
+		wantErr   error
+	}{
+		{answer: "yes", wantCalls: 1},
+		{answer: "no", wantErr: ErrSensitiveToolDeclined},
+	} {
+		t.Run(tt.answer, func(t *testing.T) {
+			tool := &confirmableTool{}
+			reg := tools.NewDefaultRegistry(nil)
+			reg.Register(tool)
+			var kind string
+			repo := newMemRepo()
+			svc := NewReActService(newTestSession("confirm-"+tt.answer, repo), repo, &scriptedLLM{}, nil, reg, func(event *ReactEvent) {
+				if event.Type == ReActEventTypeHumanInTheLoop {
+					kind = event.HumanConfirmKind
+					event.HumanConfirmChan <- tt.answer
+				}
+			}, nil)
+			result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "c1", Name: tool.Name(), Arguments: json.RawMessage(`{}`)})
+			if !errors.Is(err, tt.wantErr) || tool.calls != tt.wantCalls || kind != HumanConfirmKindSkillWrite {
+				t.Fatalf("result=%+v err=%v calls=%d kind=%q", result, err, tool.calls, kind)
+			}
+		})
+	}
+}
+
+func TestConfirmableToolPreflightFailureFailsClosed(t *testing.T) {
+	tool := &confirmableTool{confirmErr: errors.New("invalid package")}
+	reg := tools.NewDefaultRegistry(nil)
+	reg.Register(tool)
+	repo := newMemRepo()
+	svc := NewReActService(newTestSession("confirm-preflight", repo), repo, &scriptedLLM{}, nil, reg, nil, nil)
+	result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "c1", Name: tool.Name(), Arguments: json.RawMessage(`{}`)})
+	if err != nil || tool.calls != 0 || result == nil || !result.IsError || !strings.Contains(result.Output, "未执行") {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, tool.calls)
+	}
+}
+
 func TestDangerousBashRequiresExplicitYes(t *testing.T) {
 	for _, tt := range []struct {
 		name, answer string

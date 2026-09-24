@@ -11,7 +11,7 @@ export type SwitchModelDTO = { model_ref: string };
 export type AddModelInput = { provider: string; model: string; api_key: string; base_url: string; context_window: number; max_output_tokens: number };
 export type TokenStatistics = { token_input: number; token_output: number };
 export type ContextData = { window_token: TokenStatistics; context_window: number };
-export type ApprovalRequiredData = { approval_id: string; session_id: string; kind: "token_budget" | "bash_command"; content: string };
+export type ApprovalRequiredData = { approval_id: string; session_id: string; kind: "token_budget" | "bash_command" | "skill_write"; content: string };
 export type RetryAction = "resume" | "resend";
 export type ErrorPayload = { code: string; message: string; retry_action?: RetryAction };
 

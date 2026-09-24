@@ -189,6 +189,7 @@ LaxCode/
 │       ├── shell/                   # Shell 执行、超时与进程管理
 │       ├── ripgrep/                 # 文件搜索与内容检索适配
 │       ├── skillrepo/               # 本地 Skill 扫描与加载
+│       ├── skillstore/              # 全局 Skill 包的受限暂存与原子提交
 │       ├── memorypipeline/          # Python 记忆入库管线的进程适配
 │       ├── config/                  # 配置加载与模型目录
 │       ├── layout/                  # 用户数据与会话磁盘布局

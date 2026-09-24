@@ -25,6 +25,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
+	"github.com/mikellxy/laxcode/internal/infrastructure/skillstore"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
@@ -59,8 +60,8 @@ type RouterClientReplacer interface {
 
 // Assembled 是装配产物。
 type Assembled struct {
-	// Service 是已完成会话初始化的主 Agent 服务（已注册 bash/write/read/edit +
-	// 子 Agent），前端直接调 Chat 发一轮对话。
+	// Service 是已完成会话初始化的主 Agent 服务（已注册 bash/write/read/edit、
+	// Skill 管理与子 Agent），前端直接调 Chat 发一轮对话。
 	Service *reactservice.ReActService
 	// Session 是 Service 持有的主会话，供前端读取 ID / token 统计。
 	Session *session.Session
@@ -134,6 +135,13 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	ripgrepRunner := ripgrep.New()
 	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
 	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
+	// Skill 管理只属于使用默认 Coding Agent 提示词的主 Agent。评估器等通过
+	// SystemPrompt 注入专用角色时不暴露跨项目持久化能力。
+	if in.SystemPrompt == "" {
+		skillStore := skillstore.New(skillsRoot)
+		toolReg.Register(tools.NewCreateSkillTool(skillsRoot, skillStore))
+		toolReg.Register(tools.NewUpdateSkillTool(skillsRoot, skillStore))
+	}
 
 	// provider + service：主 provider 按当前活跃模型构建，token 预算取该
 	// 模型的 limit（未声明时回退全局窗口配置，见 newMainProvider）。

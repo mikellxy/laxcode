@@ -61,6 +61,7 @@ var (
 	ErrRepeatedToolCall         = errors.New("连续 3 次相同工具调用，已中断本轮推理")
 	ErrTokenBudgetDeclined      = errors.New("用户选择停止：已达到 token 预算")
 	ErrDangerousCommandDeclined = errors.New("用户拒绝危险 Bash 命令，已终止本轮推理")
+	ErrSensitiveToolDeclined    = errors.New("用户拒绝敏感工具操作，已终止本轮推理")
 )
 
 const (
@@ -70,6 +71,7 @@ const (
 	ReActEventTypeHumanInTheLoop = "human_in_the_loop"
 	HumanConfirmKindTokenBudget  = "token_budget"
 	HumanConfirmKindBashCommand  = "bash_command"
+	HumanConfirmKindSkillWrite   = "skill_write"
 	contextTriggerPercent        = 80
 	contextTargetPercent         = 60
 	recoveryToolResultPrompt     = "上一次工具调用未获得可确认的结果；它可能尚未执行，也可能已经执行但结果未被保存。请先检查当前状态，再决定是否重试。"
@@ -607,6 +609,23 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 					return rejectedToolResult(call.ID, "用户未批准危险 Bash 命令，命令未执行。"), ErrDangerousCommandDeclined
 				}
 			}
+		}
+	}
+	confirmation, confirmErr := r.ToolRegistry.Confirmation(ctx, call)
+	if confirmErr != nil {
+		message := "敏感工具操作审批预检失败，操作未执行：" + confirmErr.Error()
+		return &sharedkernel.ToolResult{
+			ToolCallID: call.ID, IsError: true, Error: confirmErr,
+			Output: message, CompactContent: message,
+		}, nil
+	}
+	if confirmation != nil {
+		answer, err := r.requestHumanConfirmationKind(ctx, confirmation.Kind, confirmation.Content)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(strings.TrimSpace(answer), "yes") {
+			return rejectedToolResult(call.ID, "用户未批准敏感工具操作，操作未执行。"), ErrSensitiveToolDeclined
 		}
 	}
 	return r.ToolRegistry.Execute(ctx, call), nil

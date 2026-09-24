@@ -21,6 +21,7 @@ type Registry interface {
 	Execute(ctx context.Context, toolCall *sharedkernel.ToolCall) *sharedkernel.ToolResult
 	Register(tool BaseTool)
 	BeforeExecInfo(toolCall *sharedkernel.ToolCall) string
+	Confirmation(ctx context.Context, toolCall *sharedkernel.ToolCall) (*ToolConfirmation, error)
 }
 
 type BaseTool interface {
@@ -34,6 +35,20 @@ type BaseTool interface {
 // ResultTool 可同时返回正文、压缩文本及归档引用；其他工具继续使用 Execute。
 type ResultTool interface {
 	ExecuteResult(ctx context.Context, args json.RawMessage) *sharedkernel.ToolResult
+}
+
+// ToolConfirmation describes a single human approval requested immediately
+// before a persistent or otherwise sensitive tool mutation.
+type ToolConfirmation struct {
+	Kind    string
+	Content string
+}
+
+// ConfirmableTool performs a read-only preflight and supplies the approval
+// message. Execute repeats validation after approval so state changes cannot
+// bypass the tool's safety checks.
+type ConfirmableTool interface {
+	Confirmation(context.Context, json.RawMessage) (*ToolConfirmation, error)
 }
 
 type DefaultRegistry struct {
@@ -64,6 +79,18 @@ func (d *DefaultRegistry) BeforeExecInfo(toolCall *sharedkernel.ToolCall) string
 		return ""
 	}
 	return tool.BeforeExecInfo(toolCall.Arguments)
+}
+
+func (d *DefaultRegistry) Confirmation(ctx context.Context, toolCall *sharedkernel.ToolCall) (*ToolConfirmation, error) {
+	tool, ok := d.db[toolCall.Name]
+	if !ok {
+		return nil, nil
+	}
+	confirmable, ok := tool.(ConfirmableTool)
+	if !ok {
+		return nil, nil
+	}
+	return confirmable.Confirmation(ctx, toolCall.Arguments)
 }
 
 func (d *DefaultRegistry) Execute(ctx context.Context, toolCall *sharedkernel.ToolCall) *sharedkernel.ToolResult {

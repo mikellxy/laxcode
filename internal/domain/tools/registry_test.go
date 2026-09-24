@@ -234,6 +234,8 @@ func TestToolNameConstants(t *testing.T) {
 		ToolEditFile:    "edit_file",
 		ToolGrep:        "grep",
 		ToolGlob:        "glob",
+		ToolCreateSkill: "create_skill",
+		ToolUpdateSkill: "update_skill",
 		ToolRunSubAgent: "run_sub_agent",
 	}
 	for got, w := range want {

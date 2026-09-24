@@ -10,6 +10,7 @@ package prompt
 // 任何单个技能校验失败只跳过该技能，绝不阻断 agent 启动。
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -37,6 +38,30 @@ var skillNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // skillNameMaxLen 是技能名长度上限。
 const skillNameMaxLen = 64
+
+// ValidateSkillName validates the stable directory/frontmatter identity shared
+// by skill discovery and the skill-management tools.
+func ValidateSkillName(name string) error {
+	if len(name) > skillNameMaxLen {
+		return fmt.Errorf("name 长度 %d 超过上限 %d（命名规则：%s，且长度不超过 %d）",
+			len(name), skillNameMaxLen, skillNameRule, skillNameMaxLen)
+	}
+	if !skillNamePattern.MatchString(name) {
+		return fmt.Errorf("name %q 不符合命名规则（%s）", name, skillNameRule)
+	}
+	return nil
+}
+
+// ValidateSkillDefinition applies the same frontmatter and identity checks used
+// during startup discovery. It prevents management tools from persisting a
+// package that the next LaxCode session would silently skip.
+func ValidateSkillDefinition(content, dirName string) error {
+	_, reason := parseSkill(content, dirName)
+	if reason != "" {
+		return errors.New(reason)
+	}
+	return nil
+}
 
 // SkillFile 是一份「已被发现、尚未解析」的技能定义文件：DirName 是其所在
 // 目录名（技能身份的一部分，须与 frontmatter 的 name 完全一致），Content 是
@@ -114,14 +139,8 @@ func parseSkill(content, dirName string) (Skill, string) {
 	}
 
 	// 长度与字符集分开判定，跳过行为一致，但警告可指出究竟违反了哪一条。
-	if len(fm.Name) > skillNameMaxLen {
-		return Skill{}, skipMsg(dirName, fmt.Sprintf(
-			"name 长度 %d 超过上限 %d（命名规则：%s，且长度不超过 %d）",
-			len(fm.Name), skillNameMaxLen, skillNameRule, skillNameMaxLen))
-	}
-	if !skillNamePattern.MatchString(fm.Name) {
-		return Skill{}, skipMsg(dirName, fmt.Sprintf(
-			"name %q 不符合命名规则（%s）", fm.Name, skillNameRule))
+	if err := ValidateSkillName(fm.Name); err != nil {
+		return Skill{}, skipMsg(dirName, err.Error())
 	}
 
 	return Skill{Name: fm.Name, Description: fm.Description, Definition: content}, ""

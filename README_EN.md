@@ -189,6 +189,7 @@ LaxCode/
 │       ├── shell/                  # Shell execution, timeouts, and process management
 │       ├── ripgrep/                # File search and content retrieval adapter
 │       ├── skillrepo/              # Local Skill scanning and loading
+│       ├── skillstore/             # Restricted staging and atomic commits for global Skills
 │       ├── memorypipeline/         # Process adapter for the Python memory ingestion pipeline
 │       ├── config/                 # Config loading and model catalog
 │       ├── layout/                 # User data and session disk layout
