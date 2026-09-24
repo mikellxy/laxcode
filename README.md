@@ -67,6 +67,14 @@ brew install pnpm
 
 `web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 `-sse -code`，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
 
+Windows PowerShell 使用 Node.js LTS 安装 pnpm，然后运行对等的启动脚本：
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+npx get-pnpm
+.\web.ps1
+```
+
 手动启动时仍可使用 `./bin/laxcode -sse -code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
 

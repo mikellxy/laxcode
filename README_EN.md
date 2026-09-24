@@ -43,6 +43,14 @@ brew install pnpm
 
 The script installs frontend dependencies, builds LaxCode, starts the code SSE backend on a random loopback port, and starts Vite on `127.0.0.1:5173`. It opens the default browser only after both services pass their health checks. Press `Ctrl-C` to stop both services.
 
+On Windows PowerShell, install pnpm through Node.js LTS and run the equivalent launcher:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+npx get-pnpm
+.\web.ps1
+```
+
 For manual startup, run `./bin/laxcode -sse -code -token-budget=100000`. The page supplies the work directory when creating a session, and that directory is persisted with the `session_id`. This mounts the CLI coding tools. The budget follows each `session_id` across requests for the lifetime of the SSE server; restarting the server establishes a new baseline. The page pauses the current stream for token-budget or risky Bash approval.
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
 

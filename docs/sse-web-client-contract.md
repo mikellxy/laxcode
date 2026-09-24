@@ -85,9 +85,10 @@ export default defineConfig(({ mode }) => {
 });
 ```
 
-`web.sh` 启动后端时使用 `127.0.0.1:0`，后端在持有
-`${HOME}/.laxcode/sse-code.instance` 排他锁的同时写入实际地址。脚本从该文件
-读取与子进程 PID 匹配的地址，再通过 `LAXCODE_PROXY_TARGET` 传给 Vite。
+`web.sh` 与 `web.ps1` 启动后端时使用 `127.0.0.1:0`，后端在持有
+用户目录下 `.laxcode/sse-code.instance` 排他锁的同时写入实际地址。脚本
+从该文件读取与子进程 PID 匹配的地址，再通过
+`LAXCODE_PROXY_TARGET` 传给 Vite。
 
 前端 API 地址始终使用相对路径，例如 `/api/sessions` 和 `/chat`，不要在组件中硬编码主机或端口。
 
