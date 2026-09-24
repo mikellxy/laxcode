@@ -21,6 +21,8 @@ brew install pnpm
   
 <img src="./examples/laxcode_web.png">  
   
+支持上报 trace 至 OTel 服务  
+  
 <img src="./examples/otel.png">
 
 ## 特性
@@ -41,6 +43,7 @@ brew install pnpm
 - [**Coding Agent CLI**](#coding-agent-cli)
 - [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
 - [**Agentic RAG**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
+- [**架构**](#architecture) 
 
 ### 创建配置文件
 
@@ -143,6 +146,8 @@ npm --prefix web run dev
 ```
 
 打开 <http://127.0.0.1:5173>。
+
+<a id="architecture"></a>
 
 ### 架构
 

@@ -21,6 +21,8 @@ By default, this command starts the Web UI at http://127.0.0.1:5173 and opens th
   
 <img src="./examples/laxcode_web.png">  
   
+Supports exporting traces to an OTel service  
+  
 <img src="./examples/otel.png">
 
 ## Features
@@ -41,6 +43,7 @@ By default, this command starts the Web UI at http://127.0.0.1:5173 and opens th
 - [**Coding Agent CLI**](#coding-agent-cli)
 - [**Agent Session Evaluation**](#agent-session-evaluation) — Evaluate how well a task was completed based on its full ReAct log (LLM-as-a-Judge)
 - [**Agentic RAG**](#agentic-rag-qa) — Knowledge-base retrieval with an SSE interaction page
+- [**Architecture**](#architecture) 
 
 ### Creating the configuration file
 
@@ -143,6 +146,8 @@ npm --prefix web run dev
 ```
 
 Open <http://127.0.0.1:5173>.
+
+<a id="architecture"></a>
 
 ### Architecture
 
