@@ -58,7 +58,16 @@ make build
 
 交互模式可设置本次运行的 token 预算，例如 `./bin/laxcode -token-budget=100000`。输入与输出 token 合计达到预算的 1、1.5、2 倍等阈值时，继续执行前会询问是否继续；输入 `yes` 继续，其他输入停止。续接旧会话时，历史用量不计入本次预算。
 
-浏览器代码模式使用 `./bin/laxcode -sse -code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
+浏览器代码模式可在 macOS 上两步启动：
+
+```shell
+brew install pnpm
+./web.sh
+```
+
+`web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 `-sse -code`，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
+
+手动启动时仍可使用 `./bin/laxcode -sse -code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
 
 <a id="agent-session-evaluation"></a>

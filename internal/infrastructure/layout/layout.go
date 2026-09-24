@@ -32,6 +32,9 @@ const (
 	// sessionDBFileName 是全局 SQLite 会话数据库文件名。
 	sessionDBFileName = "sessions.db"
 
+	// sseCodeInstanceFileName 是浏览器代码模式的单实例锁与地址发布文件。
+	sseCodeInstanceFileName = "sse-code.instance"
+
 	// knowledgeBaseDirName 与 knowledgeBaseFileName 定位项目内的向量知识库。
 	knowledgeBaseDirName  = "kb"
 	knowledgeBaseFileName = "kb.sqlite"
@@ -93,4 +96,10 @@ func SkillsRoot(homeDir string) string {
 // 与工作目录布局共用 RootDirName 但根不同，故单列一个函数而非复用 Root。
 func UserSettings(homeDir string) string {
 	return filepath.Join(homeDir, RootDirName, settingsFileName)
+}
+
+// SSECodeInstance 返回浏览器代码模式的单实例文件路径。文件在服务
+// 运行期间持有排他锁，同时保存当前进程和实际 HTTP 地址。
+func SSECodeInstance(homeDir string) string {
+	return filepath.Join(Root(homeDir), sseCodeInstanceFileName)
 }

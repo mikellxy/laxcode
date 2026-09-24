@@ -62,20 +62,32 @@ Vite 开发服务器使用 `5173`，通过代理访问 Go SSE 服务，避免开
 
 ```ts
 // web/vite.config.ts
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    proxy: {
-      "/api": "http://127.0.0.1:8090",
-      "/chat": "http://127.0.0.1:8090",
-      "/healthz": "http://127.0.0.1:8090",
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, ".", "LAXCODE_");
+  const backend = env.LAXCODE_PROXY_TARGET || "http://127.0.0.1:8090";
+
+  return {
+    plugins: [react()],
+    server: {
+      host: "127.0.0.1",
+      port: 5173,
+      strictPort: true,
+      proxy: {
+        "/api": backend,
+        "/chat": backend,
+        "/healthz": backend,
+      },
     },
-  },
+  };
 });
 ```
+
+`web.sh` 启动后端时使用 `127.0.0.1:0`，后端在持有
+`${HOME}/.laxcode/sse-code.instance` 排他锁的同时写入实际地址。脚本从该文件
+读取与子进程 PID 匹配的地址，再通过 `LAXCODE_PROXY_TARGET` 传给 Vite。
 
 前端 API 地址始终使用相对路径，例如 `/api/sessions` 和 `/chat`，不要在组件中硬编码主机或端口。
 

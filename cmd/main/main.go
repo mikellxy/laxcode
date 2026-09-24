@@ -19,13 +19,6 @@ import (
 const llmRouterShutdownTimeout = 5 * time.Second
 
 func main() {
-	logFile, err := configureSlog(appLogPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "initialize log %s: %v\n", appLogPath, err)
-		os.Exit(1)
-	}
-	defer logFile.Close()
-
 	if err := config.ParseEnvAndFile(); err != nil {
 		panic(err)
 	}
@@ -38,6 +31,32 @@ func main() {
 		panic("no model configured: interactive, QA and evaluate modes require a model; " +
 			"add provider_list to ~/.laxcode/settings.json or set OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME")
 	}
+
+	// Browser code mode is intentionally single-instance per user. Acquire the
+	// guard before starting the local LLM router or any other server resource;
+	// run_sse publishes the resolved random port through the locked file later.
+	var codeInstance *run_sse.CodeInstanceGuard
+	if config.CliConf.SSE && config.CliConf.Code {
+		homeDir, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			fmt.Fprintln(os.Stderr, homeErr)
+			return
+		}
+		var acquireErr error
+		codeInstance, acquireErr = run_sse.AcquireCodeInstanceGuard(homeDir)
+		if acquireErr != nil {
+			fmt.Fprintln(os.Stderr, acquireErr)
+			return
+		}
+		defer codeInstance.Close()
+	}
+
+	logFile, err := configureSlog(appLogPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "initialize log %s: %v\n", appLogPath, err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
 
 	// 模型路由器独立使用 llmrouter.log；任何启动模式都先在 goroutine 中启动
 	// 本地 HTTP server，再把实际端点写入运行时配置供 agentasm 注入 provider。
@@ -83,7 +102,7 @@ func main() {
 		// sse server：阻塞式监听，接受 POST /chat 并把 ReAct 事件以 SSE 流式回传；
 		// SIGINT/SIGTERM 触发优雅关闭后 Run 返回。routerServer 一并注入，供
 		// POST /api/model 切换模型时替换路由器的上游 client。
-		run_sse.Run(routerServer)
+		run_sse.Run(routerServer, codeInstance)
 	case config.CliConf.QA:
 		run_qa.Run()
 	default:

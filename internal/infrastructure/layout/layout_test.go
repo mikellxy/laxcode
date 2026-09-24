@@ -83,6 +83,11 @@ func TestPaths(t *testing.T) {
 			got:  UserSettings("/home/u"),
 			want: filepath.Join("/home/u", ".laxcode", "settings.json"),
 		},
+		{
+			name: "SSECodeInstance",
+			got:  SSECodeInstance("/home/u"),
+			want: filepath.Join("/home/u", ".laxcode", "sse-code.instance"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

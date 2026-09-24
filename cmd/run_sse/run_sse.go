@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -63,7 +64,7 @@ func fatal(err error) {
 // cmd/agentasm 组合根按「每请求一次」完成（见
 // handler），本函数只负责 server 级配置、路由注册与生命周期管理。router 是
 // main 启动的本地 LLM 路由器，供模型切换端点替换其上游 client。
-func Run(router agentasm.RouterClientReplacer) {
+func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) {
 	if err := checkConfig(); err != nil {
 		fatal(err)
 	}
@@ -124,7 +125,18 @@ func Run(router agentasm.RouterClientReplacer) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := &http.Server{Addr: config.CliConf.Addr, Handler: mux}
+	listener, err := net.Listen("tcp", config.CliConf.Addr)
+	if err != nil {
+		fatal(fmt.Errorf("listen SSE server on %s: %w", config.CliConf.Addr, err))
+	}
+	actualAddr := listener.Addr().String()
+	srv := &http.Server{Addr: actualAddr, Handler: mux}
+	if config.CliConf.Code {
+		if err := codeInstance.Publish("http://" + actualAddr); err != nil {
+			_ = listener.Close()
+			fatal(err)
+		}
+	}
 
 	serviceName := "agent"
 	if config.CliConf.QA {
@@ -132,14 +144,14 @@ func Run(router agentasm.RouterClientReplacer) {
 	} else if config.CliConf.Code {
 		serviceName = "code"
 	}
-	fmt.Printf("LaxCode SSE %s listening on %s (data: %s)\n", serviceName, srv.Addr, layout.Root(homeDir))
+	fmt.Printf("LaxCode SSE %s listening on %s (data: %s)\n", serviceName, actualAddr, layout.Root(homeDir))
 	fmt.Printf(">>> create a session with work_dir, then POST /chat with its session_id\n")
 
 	// 监听在独立 goroutine：ListenAndServe 阻塞至服务关闭；ErrServerClosed 是
 	// Shutdown/Close 的正常结果，其余错误（如端口占用）经 errChan 回流主 goroutine。
 	errChan := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errChan <- err
 		}
 	}()
