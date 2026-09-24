@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func migrateUserMemory(tx *gorm.DB) error {
@@ -19,8 +21,6 @@ func migrateUserMemory(tx *gorm.DB) error {
 	}{
 		{&requestContextModel{}, "react_turn_count", "ALTER TABLE request_contexts ADD COLUMN react_turn_count INTEGER NOT NULL DEFAULT 0 CHECK(react_turn_count>=0)"},
 		{&messageModel{}, "react_turn", "ALTER TABLE messages ADD COLUMN react_turn INTEGER CHECK(react_turn IS NULL OR (react_turn>0 AND message_type='original' AND role='assistant' AND finish_reason='stop' AND (tool_calls_json IS NULL OR tool_calls_json='null' OR json_array_length(tool_calls_json)=0)))"},
-		{&messageModel{}, "memory_chunks_json", "ALTER TABLE messages ADD COLUMN memory_chunks_json JSON"},
-		{&messageModel{}, "rag_chunks_json", "ALTER TABLE messages ADD COLUMN rag_chunks_json JSON"},
 	} {
 		if !tx.Migrator().HasColumn(col.model, col.name) {
 			if err := tx.Exec(col.sql).Error; err != nil {
@@ -52,7 +52,7 @@ func migrateUserMemory(tx *gorm.DB) error {
 	return nil
 }
 
-func createMemoryWindow(tx *gorm.DB, id string, current requestContextModel, msg sharedkernel.Message) error {
+func recordReactTurn(tx *gorm.DB, id string, current requestContextModel, msg sharedkernel.Message) error {
 	if msg.ReactTurn != current.ReactTurnCount+1 || msg.Role != sharedkernel.RoleAssistant || msg.FinishReason != sharedkernel.FinishReasonStop || len(msg.ToolCalls) > 0 {
 		return fmt.Errorf("invalid completed ReAct turn")
 	}
@@ -84,17 +84,44 @@ func createMemoryWindow(tx *gorm.DB, id string, current requestContextModel, msg
 	if err := tx.Exec("INSERT INTO react_turns(session_id,turn_no,assistant_seq,source_seq_json,completed_at) VALUES(?,?,?,?,?)", id, msg.ReactTurn, msg.Seq, string(data), now).Error; err != nil {
 		return err
 	}
-	if msg.ReactTurn%3 != 0 || current.UserID == "" {
-		return nil
+	return nil
+}
+
+func (r *SqliteSessionRepo) EnqueueMemoryJob(ctx context.Context, id, userID string, endTurn, assistantSeq uint64) error {
+	if err := validSessionID(id); err != nil {
+		return err
 	}
+	if strings.TrimSpace(userID) == "" || endTurn < 3 || endTurn%3 != 0 || assistantSeq == 0 {
+		return fmt.Errorf("invalid memory job boundary")
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var state requestContextModel
+		if err := tx.Where("session_id=?", id).Take(&state).Error; err != nil {
+			return err
+		}
+		if state.UserID != userID {
+			return fmt.Errorf("memory job user mismatch")
+		}
+		var boundary struct{ AssistantSeq uint64 }
+		if err := tx.Raw("SELECT assistant_seq FROM react_turns WHERE session_id=? AND turn_no=?", id, endTurn).Scan(&boundary).Error; err != nil {
+			return err
+		}
+		if boundary.AssistantSeq != assistantSeq {
+			return fmt.Errorf("memory job assistant boundary mismatch")
+		}
+		return enqueueMemoryWindow(tx, id, userID, endTurn)
+	})
+}
+
+func enqueueMemoryWindow(tx *gorm.DB, id, userID string, endTurn uint64) error {
 	var rows []struct{ SourceSeqJSON string }
-	if err := tx.Raw("SELECT source_seq_json FROM react_turns WHERE session_id=? AND turn_no BETWEEN ? AND ? ORDER BY turn_no", id, msg.ReactTurn-2, msg.ReactTurn).Scan(&rows).Error; err != nil {
+	if err := tx.Raw("SELECT source_seq_json FROM react_turns WHERE session_id=? AND turn_no BETWEEN ? AND ? ORDER BY turn_no", id, endTurn-2, endTurn).Scan(&rows).Error; err != nil {
 		return err
 	}
 	if len(rows) != 3 {
 		return fmt.Errorf("incomplete memory window")
 	}
-	seqs = nil
+	var seqs []uint64
 	for _, row := range rows {
 		var ids []uint64
 		if err := json.Unmarshal([]byte(row.SourceSeqJSON), &ids); err != nil {
@@ -102,7 +129,7 @@ func createMemoryWindow(tx *gorm.DB, id string, current requestContextModel, msg
 		}
 		seqs = append(seqs, ids...)
 	}
-	sources = nil
+	var sources []messageModel
 	if err := tx.Where("session_id=? AND message_type=? AND seq IN ?", id, messageTypeOriginal, seqs).Order("seq").Find(&sources).Error; err != nil {
 		return err
 	}
@@ -114,8 +141,36 @@ func createMemoryWindow(tx *gorm.DB, id string, current requestContextModel, msg
 	if err != nil {
 		return err
 	}
-	job := session.MemoryJob{UserID: current.UserID, SessionID: id, StartTurn: msg.ReactTurn - 2, EndTurn: msg.ReactTurn, SourceKey: fmt.Sprintf("%s:react:%d", id, msg.ReactTurn), SourceMessages: string(payload), Status: "pending", NextAttemptAt: now, CreatedAt: now, UpdatedAt: now}
-	return tx.Create(&job).Error
+	now := time.Now().UTC()
+	job := session.MemoryJob{UserID: userID, SessionID: id, StartTurn: endTurn - 2, EndTurn: endTurn, SourceKey: fmt.Sprintf("%s:react:%d", id, endTurn), SourceMessages: string(payload), Status: "pending", NextAttemptAt: now, CreatedAt: now, UpdatedAt: now}
+	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "session_id"}, {Name: "end_turn"}}, DoNothing: true}).Create(&job).Error
+}
+
+// ReconcileMemoryJobs repairs the narrow crash window between committing a
+// completed turn and running PostReactTurn. It is idempotent and runs before the
+// worker begins claiming jobs.
+func (r *SqliteSessionRepo) ReconcileMemoryJobs(ctx context.Context) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var windows []struct {
+			SessionID string
+			UserID    string
+			EndTurn   uint64
+		}
+		if err := tx.Raw(`SELECT rt.session_id, rc.user_id, rt.turn_no AS end_turn
+			FROM react_turns rt
+			JOIN request_contexts rc ON rc.session_id=rt.session_id
+			LEFT JOIN user_memory_jobs j ON j.session_id=rt.session_id AND j.end_turn=rt.turn_no
+			WHERE rt.turn_no % 3 = 0 AND rc.user_id <> '' AND j.id IS NULL
+			ORDER BY rt.session_id, rt.turn_no`).Scan(&windows).Error; err != nil {
+			return err
+		}
+		for _, window := range windows {
+			if err := enqueueMemoryWindow(tx, window.SessionID, window.UserID, window.EndTurn); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (r *SqliteSessionRepo) ClaimMemoryJob(ctx context.Context, now time.Time, lease time.Duration) (*session.MemoryJob, error) {

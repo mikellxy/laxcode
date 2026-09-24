@@ -69,7 +69,7 @@ brew install pnpm
 ./web.sh
 ```
 
-`web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 `-sse -code`，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
+`web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 `-sse -mode=code`，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
 
 Windows PowerShell 直接运行启动脚本：
 
@@ -81,7 +81,7 @@ Windows PowerShell 直接运行启动脚本：
 
 维护者更新 Windows 产物时，可在 macOS 安装 `pnpm`、`sqlite` 和 `mingw-w64` 后执行 `make build-windows`。该目标会重新构建前端，并覆盖 `bin/win/` 中的两个 x64 程序。
 
-手动启动时仍可使用 `./bin/laxcode -sse -code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
+手动启动时仍可使用 `./bin/laxcode -sse -mode=code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
 <img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
 
 <a id="agent-session-evaluation"></a>
@@ -126,12 +126,10 @@ ${HOME}/.laxcode/sessions/${session_id}/history.jsonl
 
 ```shell
 make build
-mkdir -p /tmp/laxcode-qa/workdir
 ./bin/laxcode -sse \
-  -qa \
-  -kb=/tmp/laxcode-qa/kb.sqlite \
-  -workdir=/tmp/laxcode-qa/workdir \
-  -addr=127.0.0.1:8090
+	-mode=rag \
+	-kb=/tmp/laxcode-rag/kb.sqlite \
+	-addr=127.0.0.1:8090
 ```
 
 #### Step 3：在另一终端启动 Web 界面
@@ -160,12 +158,12 @@ LaxCode/
 │   ├── agentasm/                   # 组合根：装配 Agent、工具、模型、会话与追踪
 │   ├── run_cli/                    # Coding Agent 交互式终端模式
 │   ├── run_evaluate/               # LLM-as-a-Judge 任务评估模式
-│   ├── run_sse/                    # Web 后端：SSE、QA、会话、审批与目录选择接口
+│   ├── run_sse/                    # Web 后端：SSE、RAG、会话、审批与目录选择接口
 │   └── web/                        # 内嵌前端资源及反向代理的独立 Web 程序
 ├── internal/
 │   ├── application/                # 应用层：编排领域能力与完整用例
 │   │   ├── reactservice/           # ReAct 推理循环、上下文压缩与子 Agent 调度
-│   │   ├── qaservice/              # 知识库检索增强问答流程
+│   │   ├── qaservice/              # 知识库 RAG 查询预处理中间件
 │   │   ├── usermemory/             # 用户记忆召回、摘要与异步写入流程
 │   │   └── llm_router/             # 本地模型网关的 HTTP/SSE 编排
 │   ├── domain/                     # 领域层：核心模型、规则与基础设施端口

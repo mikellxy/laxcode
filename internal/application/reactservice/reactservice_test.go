@@ -151,9 +151,9 @@ func TestTokenBudgetChecksBeforeToolExecution(t *testing.T) {
 	}
 }
 
-type promptEnricherFunc func(context.Context, string) ([]sharedkernel.MemoryChunk, error)
+type beforeUserQueryFunc func(context.Context, UserQuery) (UserQuery, error)
 
-func (f promptEnricherFunc) Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
+func (f beforeUserQueryFunc) Handle(ctx context.Context, query UserQuery) (UserQuery, error) {
 	return f(ctx, query)
 }
 
@@ -162,8 +162,9 @@ func TestChatUsesEnrichedPrompt(t *testing.T) {
 	sess := newTestSession("s-enriched", repo)
 	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("answer")}}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	svc.SetPromptEnricher(promptEnricherFunc(func(_ context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
-		return []sharedkernel.MemoryChunk{{ID: "k1", Content: "retrieved context"}}, nil
+	svc.UseBeforeUserQuery(beforeUserQueryFunc(func(_ context.Context, query UserQuery) (UserQuery, error) {
+		query.ModelInput += "\nrelated context"
+		return query, nil
 	}))
 
 	if _, err := svc.Chat(context.Background(), "question"); err != nil {
@@ -176,23 +177,24 @@ func TestChatUsesEnrichedPrompt(t *testing.T) {
 	if userMsg.Content != "question" {
 		t.Fatalf("user content must stay raw, got %q", userMsg.Content)
 	}
-	if len(userMsg.RAGChunks) != 1 || userMsg.RAGChunks[0].Content != "retrieved context" {
-		t.Fatalf("RAG chunks not attached: %+v", userMsg.RAGChunks)
-	}
-	if got := userMsg.ModelContent(); got != "question\n相关文档:\nretrieved context" {
+	if got := userMsg.ModelContent(); got != "question\nrelated context" {
 		t.Fatalf("model content = %q", got)
+	}
+	if repo.msgs[sess.ID][1].WrappedContent != "" || repo.msgs[sess.ID][1].Content != "question" {
+		t.Fatalf("immutable history must keep only raw query: %+v", repo.msgs[sess.ID][1])
 	}
 }
 
-// Chat 不做每轮剪枝：历史消息上的 chunks append-only 保留，维持模型
+// Chat 不做每轮剪枝：历史消息上的包装输入 append-only 保留，维持模型
 // 前缀缓存命中；剪枝收敛到上下文压缩（compactor）统一处理。
-func TestChatKeepsRecalledChunksAcrossTurns(t *testing.T) {
+func TestChatKeepsWrappedContentAcrossTurns(t *testing.T) {
 	repo := newMemRepo()
 	sess := newTestSession("s-rag-retained", repo)
 	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("a1")}, {msg: assistantMsg("a2")}}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	svc.SetPromptEnricher(promptEnricherFunc(func(_ context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
-		return []sharedkernel.MemoryChunk{{ID: "k-" + query, Content: "doc for " + query}}, nil
+	svc.UseBeforeUserQuery(beforeUserQueryFunc(func(_ context.Context, query UserQuery) (UserQuery, error) {
+		query.ModelInput += "\ndoc for " + query.Original
+		return query, nil
 	}))
 
 	if _, err := svc.Chat(context.Background(), "q1"); err != nil {
@@ -205,12 +207,12 @@ func TestChatKeepsRecalledChunksAcrossTurns(t *testing.T) {
 		t.Fatalf("LLM messages = %+v", llm.lastMsgs)
 	}
 	first := llm.lastMsgs[1]
-	if len(first.RAGChunks) != 1 || first.RAGChunks[0].Content != "doc for q1" {
-		t.Fatalf("上一轮 chunks 应随历史保留：%+v", first.RAGChunks)
+	if first.WrappedContent != "q1\ndoc for q1" {
+		t.Fatalf("上一轮包装输入应随工作集保留：%q", first.WrappedContent)
 	}
 	latest := llm.lastMsgs[3]
-	if len(latest.RAGChunks) != 1 || latest.RAGChunks[0].Content != "doc for q2" {
-		t.Fatalf("本轮 chunks 未挂载：%+v", latest.RAGChunks)
+	if latest.WrappedContent != "q2\ndoc for q2" {
+		t.Fatalf("本轮包装输入未挂载：%q", latest.WrappedContent)
 	}
 }
 

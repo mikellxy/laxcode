@@ -99,6 +99,7 @@ func evaluate(ctx context.Context) (EvaluationResult, int) {
 	// session makes evidence contamination impossible even under rapid launches.
 	judgeSessionID := "evaluation-" + uuid.NewString()
 	assembled, err := agentasm.Assemble(ctx, agentasm.Input{
+		Mode:         agentasm.ModeEvaluate,
 		WorkDir:      cli.WorkDir,
 		HomeDir:      homeDir,
 		ReadRoots:    []string{filepath.Dir(historyPath)},

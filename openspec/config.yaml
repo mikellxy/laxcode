@@ -2,5 +2,5 @@ schema: spec-driven
 
 context: |
   Language: Go (go.mod at repo root)
-  Entry: cmd/main/main.go（分流交互模式、SSE、QA 与评估模式）
+  Entry: cmd/main/main.go（分流交互模式、SSE code/RAG 与评估模式）
   Full details: README.md

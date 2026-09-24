@@ -1,92 +1,38 @@
 # Agentic 记忆与 RAG 设计
 
-LaxCode 在用户消息进入 ReAct 循环前提供两条独立的上下文增强通道：
+LaxCode 用 ReAct 生命周期中间件承载用户 query 的预处理与完成轮次的后处理，传输层和 `ReActService` 不感知附加内容来自知识库、用户记忆还是未来的其他能力。
 
-- 知识库 RAG：从指定文档库召回与问题相关的事实，服务当前问题。
-- 用户长期记忆：从历史对话中召回用户事实和偏好，跨会话改善个性化表现。
+## 中间件边界
 
-两者最终都以 chunk 挂载到用户消息的工作集副本，但数据来源、生命周期和失败策略不同。
+`BeforeUserQuery` 顺序执行并允许中止。输入包含 `SessionID`、`UserID`、不可变 `Original`、可变 `ModelInput`，以及携带父 span 的 `context.Context`。中间件只能修改 `ModelInput`：
 
-## 统一注入点，分离业务语义
+- 知识库 RAG：同步 embedding 与 Top 4 检索；失败向上返回，终止本轮。
+- 用户记忆召回：按 `user_id` 隔离检索；失败内部记录日志并保留原输入。
 
-`ReActService` 只依赖 `PromptEnricher` 和 `MemoryEnricher` 两个小接口，不感知 embedding
-服务、sqlite-vec 或离线 pipeline。组合根按运行模式注入具体实现：QA 模式注入知识库 RAG，
-普通 SSE 模式可注入用户记忆召回。
+`PostReactTurn` 在最终 assistant 消息提交后全部执行，任何一个失败都不会阻止后续实现，也不会把已成功的 Chat 改成失败。事件只包含 `Turn`、`SessionID`、`UserID` 和稳定的 `AssistantSeq`。
 
-用户原始输入会先复制为不可变 `original`，召回结果随后只写入候选工作集消息：
+用户记忆提取的 Post 实现只做三轮边界判断和持久、幂等的任务入队。LLM 摘要、分块、embedding 与写库由后台 worker 执行；worker 启动时补建提交完成但尚未入队的窗口。异步工作创建自己的 trace，不复用已结束的请求 span。
 
-- `RAGChunks` 保存知识库片段。
-- `MemoryChunks` 保存用户长期记忆片段。
-- `Content` 始终保留用户原文。
+## 原文与模型输入
 
-模型请求由 `Message.ModelContent` 在最后一刻组合原文和 chunks。这样 UI、审计历史和记忆提取
-读取的仍是原始对话，增强数据不会冒充用户输入，也不会反向污染知识库。
+`Message.Content` 始终保存用户原文，`Message.WrappedContent` 保存中间件产生的模型输入。不可变 original 历史只记录 `Content`，当前工作集记录两者；provider 和 token 计数统一读取 `ModelContent()`。
 
-## 知识库 RAG：同步、强依赖
+这样 UI、审计历史和记忆提取不会把召回数据当成用户输入，同时 Resume 可以复现已提交的模型输入。上下文压缩优先清理保护区之前可重新生成的 `WrappedContent`，当前轮仍保留。
 
-知识库 RAG 的查询链路是：
+## 运行模式
 
-```text
-用户问题 → query embedding → sqlite-vec Top 4 → RAGChunks → 模型请求
-```
+- `code`：完整 Coding Agent 工具集，不挂载用户记忆中间件。
+- `rag`：不挂载工具，只挂载知识库 `BeforeUserQuery`，不挂载用户记忆中间件。
 
-知识库以只读方式打开。建库和查询必须使用相同的 embedding 模型与向量维度，否则相似度
-没有可比性。QA 模式不挂载工具，使回答的外部上下文只来自已配置的知识库。
-
-RAG 是 QA 回答正确性的组成部分，因此 embedding 或检索失败会终止本轮，而不是让模型在
-缺少文档依据时静默回答。代价是知识库或 embedding 服务的短暂故障会直接影响可用性，收益是
-调用方不会误把降级后的通用回答当作基于知识库的结果。
-
-## 用户记忆：异步写入、尽力召回
-
-用户记忆拆成写入和读取两条路径。
-
-写入路径不阻塞聊天：每完成三轮 ReAct，会话事务从不可变原始历史构造一个记忆任务；后台
-Worker 领取带 lease 的任务，调用 LLM 提取有明确用户依据的事实或偏好，再通过独立 pipeline
-进行 chunk 和向量化，写入 sqlite-vec。任务支持超时、指数退避、重试上限和幂等 source key。
-
-读取路径在生成前同步执行：
-
-```text
-用户问题 + user_id → query embedding → 按 user_id 隔离的 Top 3 → MemoryChunks
-```
-
-长期记忆只是个性化增强，不应成为对话的单点故障。召回失败时系统记录警告并继续生成；匿名
-会话没有稳定 `user_id`，会跳过记忆召回和提取。异步写入降低了请求延迟，但采用最终一致性：
-刚结束的对话不保证立刻能在下一次请求中被召回。
-
-## 上下文与缓存取舍
-
-召回 chunks 会随对应用户消息保留在当前工作集中，而不是每轮结束立即删除。历史请求前缀因此
-保持稳定，更容易命中模型侧前缀缓存；同时，断点续聊也能复现当时实际发送给模型的增强上下文。
-
-代价是 chunks 会占用上下文窗口。LaxCode 把清理集中到统一的上下文压缩阶段：旧消息中的
-`RAGChunks` 和 `MemoryChunks` 可被回收，最新受保护消息仍保留召回结果。集中处理避免聊天路径、
-记忆路径和 RAG 路径各自维护一套不一致的裁剪规则。
-
-## 主要取舍
-
-| 选择 | 收益 | 代价 |
-| --- | --- | --- |
-| 原文与增强副本分离 | 历史可审计，召回数据不污染用户输入 | 工作集需要额外保存 chunks |
-| RAG 同步且失败即停止 | 不会静默失去知识依据 | 外部检索故障影响本轮可用性 |
-| 记忆异步提取 | 不增加正常对话的总结延迟 | 新记忆只能最终一致 |
-| 记忆召回尽力而为 | 个性化服务故障不阻断聊天 | 降级时回答可能缺少用户偏好 |
-| chunks 延迟到压缩时清理 | 保持请求前缀稳定，利于缓存与重放 | 压缩前占用更多上下文 |
-| 端口接口隔离具体实现 | 可替换向量库、embedding 和 pipeline | 组合根需要负责模式与生命周期装配 |
+会话持久化 mode，chat 与 resume 都必须由相同 mode 的 SSE 服务处理。用户记忆能力保留为可装配实现，待后续迭代确定产品入口。
 
 ## 关键代码入口
 
-- `internal/application/reactservice/reactservice.go:PromptEnricher`
-- `internal/application/reactservice/reactservice.go:MemoryEnricher`
-- `internal/application/reactservice/reactservice.go:ReActService.Chat`
-- `internal/application/qaservice/qaservice.go:Service.Enrich`
-- `internal/application/usermemory/service.go:RecallService.Recall`
-- `internal/application/usermemory/service.go:Worker`
-- `internal/infrastructure/sessionrepo/user_memory.go:createMemoryWindow`
-- `internal/infrastructure/knowledgebase/sqlitevec.go:SQLiteVecRetriever.Search`
-- `internal/infrastructure/knowledgebase/user_memory.go:SQLiteVecRetriever.SearchUser`
-- `internal/infrastructure/memorypipeline/cli.go:CLI.Ingest`
-- `internal/domain/sharedkernel/message.go:Message.ModelContent`
-- `internal/domain/compactor/compactor.go:SimpleCompactor.Compress`
-
+- `internal/application/reactservice/middleware.go`
+- `internal/application/reactservice/reactservice.go`
+- `internal/application/qaservice/qaservice.go`
+- `internal/application/usermemory/service.go`
+- `internal/domain/prompt/sys.go`
+- `internal/domain/sharedkernel/message.go`
+- `internal/infrastructure/sessionrepo/user_memory.go`
+- `internal/domain/compactor/compactor.go`

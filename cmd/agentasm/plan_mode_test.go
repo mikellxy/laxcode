@@ -15,7 +15,7 @@ import (
 func TestPlanModeWritesOnlyItsGlobalSessionDirectory(t *testing.T) {
 	homeDir, workDir := t.TempDir(), t.TempDir()
 	assembled, err := Assemble(context.Background(), Input{
-		HomeDir: homeDir, WorkDir: workDir, SessionID: "plan-session", PlanMode: true,
+		Mode: ModeCode, HomeDir: homeDir, WorkDir: workDir, SessionID: "plan-session", PlanMode: true,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -30,15 +30,12 @@ type ReActService struct {
 	Artifacts                tools.ArtifactStore
 	ReActEventConsumerF      func(reactEvent *ReactEvent)
 	humanConfirmationEnabled bool
+	beforeUserQuery          []BeforeUserQuery
+	postReactTurn            []PostReactTurn
 	// tracer 是 chat 及其子 span 的追踪注入点，经构造注入；nil 缺省
 	// noop，不产生任何观测输出。类型经 telemetry 别名持有，本包不直接
 	// 依赖 OTel（span 的开启与收尾均走 telemetry 辅助函数）。
 	tracer telemetry.Tracer
-	// promptEnricher 是 chat 根 span 内、消息落盘前执行的可选查询增强器。
-	// QA 模式注入向量化与知识库召回实现；普通模式保持 nil。
-	promptEnricher PromptEnricher
-	memoryEnricher MemoryEnricher
-	trackTurns     bool
 	// workDir 是 bash 危险命令检查的基准目录：输出重定向只放行该目录、
 	// /tmp 与 /dev/null 内的目标。经 SetWorkDir 由组合根注入。
 	workDir string
@@ -52,9 +49,10 @@ type ReActService struct {
 }
 
 var (
-	ErrInvalidContextBudget  = errors.New("reactservice: invalid model context budget")
-	ErrContextTargetNotReach = errors.New("reactservice: context compaction target cannot be reached")
-	ErrPersistRequestContext = errors.New("reactservice: persist request context")
+	ErrInvalidContextBudget       = errors.New("reactservice: invalid model context budget")
+	ErrContextTargetNotReach      = errors.New("reactservice: context compaction target cannot be reached")
+	ErrPersistRequestContext      = errors.New("reactservice: persist request context")
+	ErrInvalidUserQueryMiddleware = errors.New("reactservice: before-user-query middleware changed immutable fields")
 	// ErrNothingToResume 表示会话尾部已经收束，或尚无用户消息。调用方应拒绝
 	// resume，避免在没有待完成输入时让模型重复生成。
 	ErrNothingToResume          = errors.New("reactservice: no interrupted chat to resume")
@@ -96,20 +94,6 @@ type TokenBudgetState struct {
 	Declined      bool
 }
 
-// MemoryEnricher 在 chat 根 span 内召回用户长期记忆片段。
-// 实现可创建 query-embedding、vector-retrieval 等子 span。
-type MemoryEnricher interface {
-	Recall(context.Context, string, string) ([]sharedkernel.MemoryChunk, error)
-}
-
-func (r *ReActService) EnableUserMemory(e MemoryEnricher) { r.memoryEnricher = e; r.trackTurns = true }
-
-// PromptEnricher 在 chat 根 span 内召回与本次用户输入相关的知识片段；
-// 片段挂在用户消息的工作集副本上，不改写原始 Content。
-type PromptEnricher interface {
-	Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error)
-}
-
 func NewReActService(sess *session.Session,
 	sessRepo session.SessionRepository,
 	llmClient llmprovider.LLMClient,
@@ -132,19 +116,12 @@ func NewReActService(sess *session.Session,
 		humanConfirmationEnabled: humanConfirmationEnabled,
 		tracer:                   telemetry.OrNoop(tracer),
 	}
-	// ArtifactStore 与数据库会话仓储相互独立；子服务绑定自己的 session ID。
+	// ArtifactStore 与数据库会话仓储相互独立；工具是组合根的职责，
+	// 构造函数只保留 store 供压缩流程使用。
 	if len(artifactStores) > 0 && artifactStores[0] != nil {
-		store := artifactStores[0]
-		r.Artifacts = store
-		toolRegistry.Register(tools.NewReadArtifactTool(store, sess.ID))
+		r.Artifacts = artifactStores[0]
 	}
 	return r
-}
-
-// SetPromptEnricher 配置 chat 开始后、用户消息落盘前运行的可选提示词增强器。
-// 应仅在服务对外可见前由组合根调用，不应在并发 Chat 期间修改。
-func (r *ReActService) SetPromptEnricher(enricher PromptEnricher) {
-	r.promptEnricher = enricher
 }
 
 // SetWorkDir 配置 bash 危险命令检查的基准目录（输出重定向只放行该目录、
@@ -303,34 +280,18 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	if err = r.recoverBeforeChat(ctx); err != nil {
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
-	userMsg := r.Session.BuildUserMessage(p)
+	query, err := r.prepareUserQuery(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	userMsg := r.Session.BuildUserMessage(query.Original)
 	candidate, err := r.Session.WithAppendedMessage(&userMsg)
 	if err != nil {
 		return nil, err
 	}
 	original := userMsg.Clone()
-	// 两种召回 chunks 都不在此处剪枝：历史消息随会话 append-only，
-	// 保持模型前缀缓存命中；只在上下文压缩时由 compactor 统一清理。
-	if r.promptEnricher != nil {
-		chunks, enrichErr := r.promptEnricher.Enrich(ctx, p)
-		if enrichErr != nil {
-			return nil, enrichErr
-		}
-		userMsg.RAGChunks = chunks
-		candidate.Messages[len(candidate.Messages)-1] = userMsg.Clone()
-	}
-	if r.trackTurns {
-		if r.Session.UserID == "" {
-			slog.DebugContext(ctx, "user_memory_skipped", "session_id", r.Session.ID, "reason", "anonymous session")
-		}
-		if r.Session.UserID != "" && r.memoryEnricher != nil {
-			chunks, recallErr := r.memoryEnricher.Recall(ctx, r.Session.UserID, p)
-			if recallErr != nil {
-				slog.WarnContext(ctx, "user_memory_recall_failed", "error", recallErr)
-			} else {
-				userMsg.MemoryChunks = chunks
-			}
-		}
+	if query.ModelInput != query.Original {
+		userMsg.WrappedContent = query.ModelInput
 		candidate.Messages[len(candidate.Messages)-1] = userMsg.Clone()
 	}
 	if err = r.commitCreatedMessage(ctx, candidate, original, userMsg); err != nil {
@@ -638,7 +599,8 @@ func (r *ReActService) handleTurnMsg(ctx context.Context, msg *sharedkernel.Mess
 	if err != nil {
 		return err
 	}
-	if r.trackTurns && msg.Role == sharedkernel.RoleAssistant && len(msg.ToolCalls) == 0 && msg.FinishReason == sharedkernel.FinishReasonStop {
+	completed := len(r.postReactTurn) > 0 && msg.Role == sharedkernel.RoleAssistant && len(msg.ToolCalls) == 0 && msg.FinishReason == sharedkernel.FinishReasonStop
+	if completed {
 		if candidate.ReactTurnCount == ^uint64(0) {
 			return fmt.Errorf("react turn exhausted")
 		}
@@ -646,7 +608,19 @@ func (r *ReActService) handleTurnMsg(ctx context.Context, msg *sharedkernel.Mess
 		msg.ReactTurn = candidate.ReactTurnCount
 		candidate.Messages[len(candidate.Messages)-1] = msg.Clone()
 	}
-	return r.commitCreatedMessage(ctx, candidate, *msg, *msg)
+	if err := r.commitCreatedMessage(ctx, candidate, *msg, *msg); err != nil {
+		return err
+	}
+	if completed {
+		event := CompletedReactTurn{
+			Turn: msg.ReactTurn, SessionID: r.Session.ID, UserID: r.Session.UserID, AssistantSeq: msg.Seq,
+		}
+		if err := r.runPostReactTurn(ctx, event); err != nil {
+			slog.WarnContext(ctx, "post_react_turn_failed", "session_id", event.SessionID,
+				"turn", event.Turn, "assistant_seq", event.AssistantSeq, "error", err)
+		}
+	}
+	return nil
 }
 
 func (r *ReActService) commitCreatedMessage(ctx context.Context, candidate *session.Session, original, memory sharedkernel.Message) error {

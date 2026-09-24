@@ -35,7 +35,7 @@ func main() {
 	// guard before starting the local LLM router or any other server resource;
 	// run_sse publishes the resolved random port through the locked file later.
 	var codeInstance *run_sse.CodeInstanceGuard
-	if config.CliConf.SSE && config.CliConf.Code {
+	if config.CliConf.SSE && config.CliConf.Mode == config.SSEModeCode {
 		homeDir, homeErr := os.UserHomeDir()
 		if homeErr != nil {
 			fmt.Fprintln(os.Stderr, homeErr)

@@ -46,7 +46,7 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 	config.EnvAndFileConf.LlmRouterURL = "http://127.0.0.1:1/openai/generate_stream"
 
 	router := &recordingRouter{}
-	assembled, err := Assemble(context.Background(), Input{WorkDir: t.TempDir(), HomeDir: t.TempDir(), Router: router})
+	assembled, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir(), Router: router})
 	if err != nil {
 		t.Fatal(err)
 	}

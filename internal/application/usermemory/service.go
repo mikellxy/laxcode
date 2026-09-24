@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/knowledgebase"
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
+	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
@@ -24,15 +26,38 @@ type RecallService struct {
 	Retriever Retriever
 }
 
-func (r *RecallService) Recall(ctx context.Context, user, query string) ([]sharedkernel.MemoryChunk, error) {
-	if user == "" {
-		return nil, nil
+// Handle implements reactservice.BeforeUserQuery. User-memory recall is
+// deliberately fail-open: unavailable memory must not make chat unavailable.
+func (r *RecallService) Handle(ctx context.Context, query reactservice.UserQuery) (reactservice.UserQuery, error) {
+	if query.UserID == "" {
+		return query, nil
 	}
-	vector, err := r.Embedder.Embed(ctx, query)
+	vector, err := r.Embedder.Embed(ctx, query.Original)
 	if err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "user_memory_recall_failed", "session_id", query.SessionID, "error", err)
+		return query, nil
 	}
-	return r.Retriever.SearchUser(ctx, user, vector)
+	chunks, err := r.Retriever.SearchUser(ctx, query.UserID, vector)
+	if err != nil {
+		slog.WarnContext(ctx, "user_memory_recall_failed", "session_id", query.SessionID, "error", err)
+		return query, nil
+	}
+	query.ModelInput = prompt.WrapUserMemoryQuery(query.ModelInput, chunks)
+	return query, nil
+}
+
+// PostTurnScheduler implements reactservice.PostReactTurn. It performs only the
+// cheap policy check and durable, idempotent job scheduling; Worker owns all
+// expensive extraction and ingestion work.
+type PostTurnScheduler struct {
+	Repo session.MemoryJobScheduler
+}
+
+func (s *PostTurnScheduler) Handle(ctx context.Context, turn reactservice.CompletedReactTurn) error {
+	if turn.UserID == "" || turn.Turn == 0 || turn.Turn%3 != 0 {
+		return nil
+	}
+	return s.Repo.EnqueueMemoryJob(ctx, turn.SessionID, turn.UserID, turn.Turn, turn.AssistantSeq)
 }
 
 type Pipeline interface {
@@ -58,6 +83,9 @@ func (w *Worker) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
 	w.done = make(chan struct{})
+	if err := w.Repo.ReconcileMemoryJobs(ctx); err != nil {
+		slog.ErrorContext(ctx, "user_memory_reconcile_failed", "error", err)
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < w.Concurrency; i++ {
 		wg.Add(1)

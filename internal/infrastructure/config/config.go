@@ -351,19 +351,22 @@ func ActiveModelBudget() (contextWindow, maxOutputTokens int) {
 }
 
 type cliConf struct {
-	KB               string `mapstructure:"kb"`
-	VectorDimensions int    `mapstructure:"vector-dim"`
-	Evaluate         bool   `mapstructure:"evaluate"`
-	SSE              bool   `mapstructure:"sse"`
-	Code             bool   `mapstructure:"code"`
-	QA               bool   `mapstructure:"qa"`
-	Addr             string `mapstructure:"addr"`
-	WorkDir          string `mapstructure:"workdir"`
-	Session          string `mapstructure:"session"`
-	EvalSession      string `mapstructure:"eval_session"`
-	Plan             bool   `mapstructure:"plan"`
-	TokenBudget      int    `mapstructure:"token-budget"`
+	KB          string `mapstructure:"kb"`
+	Evaluate    bool   `mapstructure:"evaluate"`
+	SSE         bool   `mapstructure:"sse"`
+	Mode        string `mapstructure:"mode"`
+	Addr        string `mapstructure:"addr"`
+	WorkDir     string `mapstructure:"workdir"`
+	Session     string `mapstructure:"session"`
+	EvalSession string `mapstructure:"eval_session"`
+	Plan        bool   `mapstructure:"plan"`
+	TokenBudget int    `mapstructure:"token-budget"`
 }
+
+const (
+	SSEModeCode = "code"
+	SSEModeRAG  = "rag"
+)
 
 // DefaultSSEAddr 是 sse server 模式的缺省监听地址：仅绑定本地回环，因为
 // Agent 具备 bash / 写文件能力，默认不对外暴露；需要对外时以 -addr 覆盖。
@@ -533,11 +536,9 @@ func ParseEnvAndFile() error {
 func ParseCli() error {
 	evaluate := flag.Bool("evaluate", false, "evaluate an existing agent session and print a structured report to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
-	code := flag.Bool("code", false, "use the coding agent in SSE mode")
-	qa := flag.Bool("qa", false, "serve knowledge-base question answering over SSE; requires -sse")
+	mode := flag.String("mode", "", "SSE agent mode: code or rag; required with -sse")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
-	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -sse -qa and for -sse when OPENAI_EMBEDDING_* is configured")
-	vectorDimensions := flag.Int("vector-dim", 0, "user-memory vector dimensions; required for -sse when OPENAI_EMBEDDING_* is configured")
+	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -sse -mode=rag")
 	workDir := flag.String("workdir", "", "working directory; required in evaluate mode, defaults to cwd otherwise")
 	session := flag.String("session", "", "session id to resume; empty starts a new session")
 	evalSession := flag.String("eval_session", "", "session id to evaluate; required in evaluate mode")
@@ -547,12 +548,10 @@ func ParseCli() error {
 
 	Cli.Set("evaluate", *evaluate)
 	Cli.Set("sse", *sse)
-	Cli.Set("code", *code)
-	Cli.Set("qa", *qa)
+	Cli.Set("mode", *mode)
 	Cli.Set("addr", *addr)
 	Cli.Set("workdir", *workDir)
 	Cli.Set("kb", *kb)
-	Cli.Set("vector-dim", *vectorDimensions)
 	Cli.Set("session", *session)
 	Cli.Set("eval_session", *evalSession)
 	Cli.Set("plan", *plan)
@@ -564,31 +563,33 @@ func ParseCli() error {
 	if CliConf.TokenBudget < 0 {
 		return fmt.Errorf("-token-budget must be non-negative")
 	}
-	if CliConf.Code && (!CliConf.SSE || CliConf.QA || CliConf.Evaluate) {
-		return fmt.Errorf("-code requires -sse and cannot be combined with -qa or -evaluate")
+	if CliConf.Evaluate && CliConf.SSE {
+		return fmt.Errorf("-evaluate cannot be combined with -sse")
 	}
-	if CliConf.QA && !CliConf.SSE {
-		return fmt.Errorf("-qa requires -sse")
+	if CliConf.SSE {
+		if CliConf.Mode != SSEModeCode && CliConf.Mode != SSEModeRAG {
+			return fmt.Errorf("-sse requires -mode=code or -mode=rag")
+		}
+	} else if CliConf.Mode != "" {
+		return fmt.Errorf("-mode requires -sse")
 	}
-	if CliConf.TokenBudget > 0 && (CliConf.Evaluate || CliConf.QA || (CliConf.SSE && !CliConf.Code)) {
-		return fmt.Errorf("-token-budget is only supported in interactive CLI or -sse -code mode")
+	if CliConf.TokenBudget > 0 && (CliConf.Evaluate || (CliConf.SSE && CliConf.Mode != SSEModeCode)) {
+		return fmt.Errorf("-token-budget is only supported in interactive CLI or -sse -mode=code")
 	}
-	if CliConf.QA || (CliConf.SSE && !CliConf.Code && EmbeddingEnvironmentReady()) {
+	if CliConf.SSE && CliConf.Mode == SSEModeRAG {
 		if err := ValidateKBPath(CliConf.KB); err != nil {
 			return err
 		}
 	}
-	// -sse -qa serves the regular QA service over HTTP. It uses the dimensions
-	// from embedding_vec_dim and therefore must not inherit the
-	// user-memory-only -vector-dim requirement from plain SSE mode.
-	if CliConf.SSE && !CliConf.QA && !CliConf.Code && EmbeddingEnvironmentReady() {
-		return ValidateVectorDimensions(CliConf.VectorDimensions)
+	if CliConf.SSE && CliConf.Mode == SSEModeRAG && CliConf.Plan {
+		return fmt.Errorf("-plan is only supported in code mode")
 	}
 	return nil
 }
 
-// EmbeddingEnvironmentReady reports whether SSE user memory is explicitly
-// enabled through the complete embedding environment-variable triplet.
+// EmbeddingEnvironmentReady reports whether the external memory pipeline has
+// all three embedding credentials it requires. RAG assembly reads the resolved
+// configuration directly and does not depend on this legacy environment check.
 func EmbeddingEnvironmentReady() bool {
 	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
 		if strings.TrimSpace(os.Getenv(key)) == "" {
@@ -598,18 +599,11 @@ func EmbeddingEnvironmentReady() bool {
 	return true
 }
 
-func ValidateVectorDimensions(dimensions int) error {
-	if dimensions <= 0 || dimensions > 8192 {
-		return errors.New("-vector-dim must be between 1 and 8192 when SSE embedding is enabled")
-	}
-	return nil
-}
-
-// ValidateKBPath checks configuration only. Disabled SSE memory does not require
-// the database to exist; enabled consumers validate the actual file and schema.
+// ValidateKBPath checks RAG configuration only. The assembly layer validates the
+// actual database file and schema when it opens the retriever.
 func ValidateKBPath(path string) error {
 	if strings.TrimSpace(path) == "" {
-		return errors.New("-kb is required for -sse -qa and SSE embedding; specify an absolute sqlite-vec database file path")
+		return errors.New("-kb is required for -sse -mode=rag; specify an absolute sqlite-vec database file path")
 	}
 	if !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
 		return errors.New("-kb must be an absolute sqlite-vec database file path")

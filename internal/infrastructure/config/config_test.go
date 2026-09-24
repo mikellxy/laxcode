@@ -410,42 +410,30 @@ func swapCliGlobals(t *testing.T, args ...string) {
 
 func TestParseCli(t *testing.T) {
 	swapCliGlobals(t,
-		"-evaluate=true",
 		"-sse=true",
-		"-qa=true",
+		"-mode=rag",
 		"-kb", filepath.Join(t.TempDir(), "vectors.sqlite"),
-		"-vector-dim", "1024",
 		"-addr", ":9000",
 		"-workdir", "/tmp/proj",
 		"-session", "sess-9",
 		"-eval_session", "sess-eval",
-		"-plan=true",
 	)
 
 	if err := ParseCli(); err != nil {
 		t.Fatalf("ParseCli: %v", err)
 	}
-	if !CliConf.Evaluate {
-		t.Error("evaluate 应为 true")
-	}
 	if CliConf.WorkDir != "/tmp/proj" || CliConf.Session != "sess-9" ||
 		CliConf.EvalSession != "sess-eval" {
 		t.Errorf("字符串参数解析不符：%+v", CliConf)
 	}
-	if !CliConf.Plan {
-		t.Error("plan 应为 true")
-	}
 	if !CliConf.SSE {
 		t.Error("sse 应为 true")
 	}
-	if !CliConf.QA {
-		t.Error("qa 应为 true")
+	if CliConf.Mode != SSEModeRAG {
+		t.Errorf("mode 应为 rag，实际 %q", CliConf.Mode)
 	}
 	if CliConf.Addr != ":9000" {
 		t.Errorf("addr 应为 :9000，实际 %q", CliConf.Addr)
-	}
-	if CliConf.VectorDimensions != 1024 {
-		t.Errorf("vector dimensions 应为 1024，实际 %d", CliConf.VectorDimensions)
 	}
 }
 
@@ -454,7 +442,7 @@ func TestParseCliDefaults(t *testing.T) {
 	if err := ParseCli(); err != nil {
 		t.Fatalf("ParseCli with no args: %v", err)
 	}
-	if CliConf.Evaluate || CliConf.Plan || CliConf.SSE || CliConf.QA {
+	if CliConf.Evaluate || CliConf.Plan || CliConf.SSE || CliConf.Mode != "" {
 		t.Errorf("缺省布尔参数应全为 false，实际 %+v", CliConf)
 	}
 	if CliConf.WorkDir != "" || CliConf.Session != "" || CliConf.EvalSession != "" {
@@ -488,46 +476,49 @@ func TestParseCliTokenBudgetInteractiveOnly(t *testing.T) {
 		}
 	})
 	t.Run("sse code", func(t *testing.T) {
-		swapCliGlobals(t, "-sse", "-code", "-token-budget", "1000")
-		if err := ParseCli(); err != nil || !CliConf.Code || CliConf.TokenBudget != 1000 {
+		swapCliGlobals(t, "-sse", "-mode=code", "-token-budget", "1000")
+		if err := ParseCli(); err != nil || CliConf.Mode != SSEModeCode || CliConf.TokenBudget != 1000 {
 			t.Fatalf("ParseCli SSE code: config=%+v err=%v", CliConf, err)
 		}
 	})
-	t.Run("code without sse", func(t *testing.T) {
-		swapCliGlobals(t, "-code")
+	t.Run("mode without sse", func(t *testing.T) {
+		swapCliGlobals(t, "-mode=code")
 		if err := ParseCli(); err == nil {
-			t.Fatal("-code without -sse should fail")
+			t.Fatal("-mode without -sse should fail")
 		}
 	})
-	t.Run("code and qa", func(t *testing.T) {
-		swapCliGlobals(t, "-sse", "-code", "-qa")
+	t.Run("unsupported mode", func(t *testing.T) {
+		swapCliGlobals(t, "-sse", "-mode=chat")
 		if err := ParseCli(); err == nil {
-			t.Fatal("-code and -qa should be mutually exclusive")
+			t.Fatal("unsupported SSE mode should fail")
+		}
+	})
+	t.Run("rag", func(t *testing.T) {
+		swapCliGlobals(t, "-sse", "-mode=rag", "-kb="+filepath.Join(t.TempDir(), "kb.sqlite"), "-token-budget=1000")
+		if err := ParseCli(); err == nil {
+			t.Fatal("RAG mode should reject token budget")
 		}
 	})
 }
 
-func TestParseCliCombinedSSEQADoesNotRequireUserMemoryVectorDimensions(t *testing.T) {
-	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
-		t.Setenv(key, "configured")
-	}
+func TestParseCliSSERAGRequiresOnlyAbsoluteKBPath(t *testing.T) {
 	swapCliGlobals(t,
 		"-sse=true",
-		"-qa=true",
+		"-mode=rag",
 		"-kb", filepath.Join(t.TempDir(), "kb.sqlite"),
 	)
 
 	if err := ParseCli(); err != nil {
-		t.Fatalf("combined SSE QA should not require -vector-dim: %v", err)
+		t.Fatalf("SSE RAG should accept an absolute knowledge-base path: %v", err)
 	}
 }
 
-func TestParseCliRejectsQAWithoutSSE(t *testing.T) {
-	swapCliGlobals(t, "-qa", "-kb", filepath.Join(t.TempDir(), "kb.sqlite"))
+func TestParseCliRejectsModeWithoutSSE(t *testing.T) {
+	swapCliGlobals(t, "-mode=rag", "-kb", filepath.Join(t.TempDir(), "kb.sqlite"))
 
 	err := ParseCli()
-	if err == nil || !strings.Contains(err.Error(), "-qa requires -sse") {
-		t.Fatalf("standalone -qa error = %v, want -qa requires -sse", err)
+	if err == nil || !strings.Contains(err.Error(), "-mode requires -sse") {
+		t.Fatalf("standalone mode error = %v, want -mode requires -sse", err)
 	}
 }
 
@@ -691,82 +682,22 @@ func TestEnvironmentModelNameDoesNotReuseFileModelLimit(t *testing.T) {
 	}
 }
 
-func TestKnowledgeBaseFlagForSSEAndQA(t *testing.T) {
+func TestKnowledgeBaseFlagForSSERAG(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "external vectors.sqlite")
-	for _, mode := range []struct {
-		name string
-		args []string
+	for _, tc := range []struct {
+		name, value string
+		valid       bool
 	}{
-		{name: "sse memory", args: []string{"-sse"}},
-		{name: "sse qa", args: []string{"-sse", "-qa"}},
+		{"absolute", path, true}, {"missing", "", false}, {"relative", "kb/memory.sqlite", false}, {"home shorthand", "~/kb.sqlite", false},
 	} {
-		for _, tc := range []struct {
-			name, value string
-			valid       bool
-		}{
-			{"absolute", path, true}, {"missing", "", false}, {"relative", "kb/memory.sqlite", false}, {"home shorthand", "~/kb.sqlite", false},
-		} {
-			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
-				if mode.name == "sse memory" {
-					for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
-						t.Setenv(key, "configured")
-					}
-				}
-				args := append(append([]string{}, mode.args...), "-kb="+tc.value)
-				if mode.name == "sse memory" {
-					args = append(args, "-vector-dim=1024")
-				}
-				swapCliGlobals(t, args...)
-				// Legacy configuration must not supply a missing -kb.
-				t.Setenv("USER_MEMORY_DB", path)
-				err := ParseCli()
-				if (err == nil) != tc.valid {
-					t.Fatalf("ParseCli error=%v, valid=%v", err, tc.valid)
-				}
-				if tc.valid && CliConf.KB != path {
-					t.Fatalf("kb=%q", CliConf.KB)
-				}
-			})
-		}
-	}
-}
-
-func TestSSERequiresValidVectorDimensions(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "vectors.sqlite")
-	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
-		t.Setenv(key, "configured")
-	}
-	for _, value := range []string{"", "0", "-1", "8193"} {
-		t.Run(value, func(t *testing.T) {
-			args := []string{"-sse", "-kb=" + db}
-			if value != "" {
-				args = append(args, "-vector-dim="+value)
+		t.Run(tc.name, func(t *testing.T) {
+			swapCliGlobals(t, "-sse", "-mode=rag", "-kb="+tc.value)
+			err := ParseCli()
+			if (err == nil) != tc.valid {
+				t.Fatalf("ParseCli error=%v, valid=%v", err, tc.valid)
 			}
-			swapCliGlobals(t, args...)
-			if err := ParseCli(); err == nil {
-				t.Fatalf("accepted vector dimensions %q", value)
-			}
-		})
-	}
-}
-
-func TestSSEAllowsMissingMemoryFlagsWhenEmbeddingIsDisabled(t *testing.T) {
-	keys := []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"}
-	for _, key := range keys {
-		t.Setenv(key, "configured")
-	}
-	for _, missing := range keys {
-		t.Run(missing, func(t *testing.T) {
-			t.Setenv(missing, "")
-			swapCliGlobals(t, "-sse")
-			if err := ParseCli(); err != nil {
-				t.Fatalf("disabled embedding unexpectedly requires memory flags: %v", err)
-			}
-			if CliConf.KB != "" {
-				t.Fatalf("kb = %q", CliConf.KB)
-			}
-			if CliConf.VectorDimensions != 0 {
-				t.Fatalf("vector dimensions = %d", CliConf.VectorDimensions)
+			if tc.valid && CliConf.KB != path {
+				t.Fatalf("kb=%q", CliConf.KB)
 			}
 		})
 	}

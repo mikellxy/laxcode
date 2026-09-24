@@ -36,6 +36,7 @@ func TestCompactionSnapshotAndArtifactSurviveRestart(t *testing.T) {
 		return 80, nil
 	}}
 	reg := tools.NewDefaultRegistry(nil)
+	reg.Register(tools.NewReadArtifactTool(artifacts, s.ID))
 	svc := NewReActService(s, repo, llm, nil, reg, nil, nil, artifacts)
 	if err := svc.InitSysPrompt(ctx, "sys"); err != nil {
 		t.Fatal(err)
@@ -60,7 +61,9 @@ func TestCompactionSnapshotAndArtifactSurviveRestart(t *testing.T) {
 	if before.Messages[2].Artifact == nil {
 		t.Fatal("no artifact reference")
 	}
-	resumed := NewReActService(session.NewSession(s.ID), repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil, artifacts)
+	resumedRegistry := tools.NewDefaultRegistry(nil)
+	resumedRegistry.Register(tools.NewReadArtifactTool(artifacts, s.ID))
+	resumed := NewReActService(session.NewSession(s.ID), repo, llm, nil, resumedRegistry, nil, nil, artifacts)
 	if err := resumed.InitSession(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestAssembleQAUsesExplicitDatabaseOutsideWorkDir(t *testing.T) {
+func TestAssembleRAGUsesExplicitDatabaseOutsideWorkDir(t *testing.T) {
 	workdir := t.TempDir()
 	dbPath := filepath.Join(t.TempDir(), "custom vectors.sqlite")
 	db, err := sql.Open("sqlite3", dbPath)
@@ -19,7 +19,7 @@ func TestAssembleQAUsesExplicitDatabaseOutsideWorkDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	a, err := AssembleQA(context.Background(), QAInput{WorkDir: workdir, HomeDir: t.TempDir(), SessionID: "qa-custom", KBPath: dbPath})
+	a, err := Assemble(context.Background(), Input{Mode: ModeRAG, WorkDir: workdir, HomeDir: t.TempDir(), SessionID: "rag-custom", KBPath: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,9 +28,9 @@ func TestAssembleQAUsesExplicitDatabaseOutsideWorkDir(t *testing.T) {
 		t.Fatalf("default database directory accessed: %v", err)
 	}
 }
-func TestAssembleQARejectsMissingOrRelativeDatabase(t *testing.T) {
+func TestAssembleRAGRejectsMissingOrRelativeDatabase(t *testing.T) {
 	for _, path := range []string{"", "kb/test.sqlite"} {
-		if _, err := AssembleQA(context.Background(), QAInput{WorkDir: t.TempDir(), HomeDir: t.TempDir(), KBPath: path}); err == nil {
+		if _, err := Assemble(context.Background(), Input{Mode: ModeRAG, WorkDir: t.TempDir(), HomeDir: t.TempDir(), KBPath: path}); err == nil {
 			t.Fatalf("accepted %q", path)
 		}
 	}

@@ -113,16 +113,16 @@ func TestGetSysPromptNoSkillsNoIndex(t *testing.T) {
 	}
 }
 
-func TestGetQASysPromptIsFocusedAndToolFree(t *testing.T) {
-	out := GetQASysPrompt()
+func TestGetRAGSysPromptIsFocusedAndToolFree(t *testing.T) {
+	out := GetRAGSysPrompt()
 	for _, want := range []string{"知识库问答助手", "相关文档", "当前没有可用工具"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("QA system prompt missing %q: %s", want, out)
+			t.Errorf("RAG system prompt missing %q: %s", want, out)
 		}
 	}
 	for _, unwanted := range []string{"Plan Mode", "可用技能", "write_file", "read_file"} {
 		if strings.Contains(out, unwanted) {
-			t.Errorf("QA system prompt must not contain %q: %s", unwanted, out)
+			t.Errorf("RAG system prompt must not contain %q: %s", unwanted, out)
 		}
 	}
 }

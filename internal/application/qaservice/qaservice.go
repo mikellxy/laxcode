@@ -1,4 +1,4 @@
-// Package qaservice orchestrates query embedding and vector retrieval for QA prompts.
+// Package qaservice orchestrates query embedding and vector retrieval for RAG prompts.
 package qaservice
 
 import (
@@ -8,14 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/knowledgebase"
-	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 )
 
 const retrievalLimit = 4
 
-var ErrEmptyQuery = errors.New("qa: query is empty")
+var ErrEmptyQuery = errors.New("rag: query is empty")
 
 type Service struct {
 	embedder   knowledgebase.Embedder
@@ -37,18 +38,17 @@ func New(embedder knowledgebase.Embedder, retriever knowledgebase.Retriever, tra
 	}
 }
 
-// Enrich 为每个用户问题执行向量化与知识库召回，返回召回的知识片段。
-// 调用方负责在 chat 根 span 内调用本方法，并把片段挂到用户消息的工作集
-// 副本上；模型看到的拼接文本由 Message.ModelContent 生成。
-func (s *Service) Enrich(ctx context.Context, query string) ([]sharedkernel.MemoryChunk, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, ErrEmptyQuery
+// Handle implements reactservice.BeforeUserQuery. Retrieval failures are
+// request-fatal in RAG mode and therefore bubble to Chat.
+func (s *Service) Handle(ctx context.Context, query reactservice.UserQuery) (reactservice.UserQuery, error) {
+	raw := strings.TrimSpace(query.Original)
+	if raw == "" {
+		return reactservice.UserQuery{}, ErrEmptyQuery
 	}
 
 	embedStartedAt := time.Now()
 	embedCtx, embedSpan := telemetry.Start(ctx, s.tracer, telemetry.SpanQueryEmbedding)
-	vector, err := s.embedder.Embed(embedCtx, query)
+	vector, err := s.embedder.Embed(embedCtx, raw)
 	if err == nil && len(vector) != s.dimensions {
 		err = fmt.Errorf("embedding dimension mismatch: got %d, want %d",
 			len(vector), s.dimensions)
@@ -61,7 +61,7 @@ func (s *Service) Enrich(ctx context.Context, query string) ([]sharedkernel.Memo
 		telemetry.WithTimeCostMs(time.Since(embedStartedAt).Milliseconds()),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("embed query: %w", err)
+		return reactservice.UserQuery{}, fmt.Errorf("embed query: %w", err)
 	}
 
 	retrievalStartedAt := time.Now()
@@ -75,11 +75,12 @@ func (s *Service) Enrich(ctx context.Context, query string) ([]sharedkernel.Memo
 		telemetry.WithTimeCostMs(time.Since(retrievalStartedAt).Milliseconds()),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("retrieve knowledge chunks: %w", err)
+		return reactservice.UserQuery{}, fmt.Errorf("retrieve knowledge chunks: %w", err)
 	}
-	recalled := make([]sharedkernel.MemoryChunk, 0, len(chunks))
+	contents := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
-		recalled = append(recalled, sharedkernel.MemoryChunk{ID: chunk.ID, Content: chunk.Content})
+		contents = append(contents, chunk.Content)
 	}
-	return recalled, nil
+	query.ModelInput = prompt.WrapKnowledgeQuery(query.ModelInput, contents)
+	return query, nil
 }

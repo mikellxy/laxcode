@@ -1,6 +1,6 @@
 export type ProjectDTO = { project_id: string; user_id: string; name: string; work_dir: string; created_at: string; updated_at: string };
 export type ProjectListDTO = { projects: ProjectDTO[] };
-export type SessionDTO = { session_id: string; user_id: string; project_id: string; title: string; work_dir: string; created_at: string; updated_at: string };
+export type SessionDTO = { session_id: string; mode: "code" | "rag"; user_id: string; project_id: string; title: string; work_dir: string; created_at: string; updated_at: string };
 export type SessionPageDTO = { sessions: SessionDTO[]; next_before_session_id?: string; has_more: boolean };
 export type HistoryMessageDTO = { seq: number; role: "user" | "assistant" | "tool"; content?: string; reasoning_content?: string; tool_summary?: string; created_at: string };
 export type HistoryPageDTO = { messages: HistoryMessageDTO[]; next_before_seq?: number; has_more: boolean };

@@ -63,6 +63,7 @@ type fakeHistoryRepo struct {
 type fakeSessionCatalog struct {
 	createdUserID    string
 	createdProjectID string
+	createdMode      string
 	listUserID       string
 	listProjectID    string
 	beforeID         string
@@ -71,10 +72,11 @@ type fakeSessionCatalog struct {
 	projects         []session.Project
 }
 
-func (f *fakeSessionCatalog) CreateSession(_ context.Context, id, userID, projectID, title, workDir string) (session.Summary, error) {
+func (f *fakeSessionCatalog) CreateSession(_ context.Context, id, userID, projectID, title, workDir, mode string) (session.Summary, error) {
 	f.createdUserID, f.createdProjectID = userID, projectID
+	f.createdMode = mode
 	now := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
-	return session.Summary{ID: id, UserID: userID, ProjectID: projectID, Title: title, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}, nil
+	return session.Summary{ID: id, Mode: mode, UserID: userID, ProjectID: projectID, Title: title, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (f *fakeSessionCatalog) GetSession(_ context.Context, id string) (session.Summary, error) {
@@ -118,7 +120,7 @@ func (f *fakeSessionCatalog) ListProjects(_ context.Context, userID string) ([]s
 }
 
 func catalogWithSession(id, workDir string) *fakeSessionCatalog {
-	return &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{ID: id, WorkDir: workDir}}}}
+	return &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{ID: id, Mode: "code", WorkDir: workDir}}}}
 }
 
 func TestHandleCreateAndListSessions(t *testing.T) {
@@ -141,14 +143,14 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 	created := httptest.NewRecorder()
 	workDir := catalog.projects[0].WorkDir
 	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(`{"user_id":"`+userID+`","project_id":"project-1"}`)))
-	if created.Code != http.StatusCreated || catalog.createdUserID != userID || catalog.createdProjectID != "project-1" {
+	if created.Code != http.StatusCreated || catalog.createdUserID != userID || catalog.createdProjectID != "project-1" || catalog.createdMode != "code" {
 		t.Fatalf("create status=%d user=%q body=%s", created.Code, catalog.createdUserID, created.Body.String())
 	}
 	var createdDTO sessionDTO
 	if err := json.Unmarshal(created.Body.Bytes(), &createdDTO); err != nil {
 		t.Fatal(err)
 	}
-	if createdDTO.SessionID == "" || createdDTO.UserID != userID || createdDTO.ProjectID != "project-1" || createdDTO.WorkDir != workDir {
+	if createdDTO.SessionID == "" || createdDTO.Mode != "code" || createdDTO.UserID != userID || createdDTO.ProjectID != "project-1" || createdDTO.WorkDir != workDir {
 		t.Fatalf("unexpected create response: %+v", createdDTO)
 	}
 
@@ -470,38 +472,10 @@ func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
 	}
 }
 
-func TestUseQAAssemblyAdaptsSSERequestToQACompositionRoot(t *testing.T) {
-	s := newServer("/server/home", true)
-	wantSession := session.NewSession("qa-session")
-	cleanupCalled := false
-	var got agentasm.QAInput
-	s.useQAAssembly("/tmp/laxcode-qa/kb.sqlite", func(_ context.Context, in agentasm.QAInput) (*agentasm.QAAssembled, error) {
-		got = in
-		return &agentasm.QAAssembled{
-			Session: wantSession,
-			Cleanup: func() { cleanupCalled = true },
-		}, nil
-	})
-
-	consumer := newEventConsumer(newSSEWriter(httptest.NewRecorder(), nil))
-	assembled, err := s.assemble(context.Background(), agentasm.Input{
-		WorkDir: "/request/workdir", HomeDir: "/request/home", SessionID: "qa-session", PlanMode: true, Consumer: consumer,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.KBPath != "/tmp/laxcode-qa/kb.sqlite" || got.WorkDir != "/request/workdir" || got.HomeDir != "/request/home" || got.SessionID != "qa-session" {
-		t.Fatalf("unexpected QA assembly input: %+v", got)
-	}
-	if got.Consumer == nil {
-		t.Fatal("SSE event consumer was not forwarded to QA assembly")
-	}
-	if assembled.Session != wantSession || assembled.Cleanup == nil {
-		t.Fatalf("unexpected adapted assembly: %+v", assembled)
-	}
-	assembled.Cleanup()
-	if !cleanupCalled {
-		t.Fatal("QA cleanup was not preserved")
+func TestNewServerBindsAssemblyMode(t *testing.T) {
+	s := newServer("/server/home", false, agentasm.ModeRAG)
+	if s.mode != agentasm.ModeRAG || s.codeMode {
+		t.Fatalf("server mode = %q, codeMode=%v", s.mode, s.codeMode)
 	}
 }
 
@@ -667,6 +641,28 @@ func TestHandleChatWithoutModel(t *testing.T) {
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
 	mux.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil))
 	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "MODEL_REQUIRED") {
+		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
+	}
+}
+
+func TestChatAndResumeRejectDifferentSessionMode(t *testing.T) {
+	workDir := t.TempDir()
+	s := newServer(t.TempDir(), false, agentasm.ModeCode)
+	s.catalog = &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{
+		ID: "rag-session", Mode: "rag", WorkDir: workDir,
+	}}}}
+
+	chat := httptest.NewRecorder()
+	s.handleChat(chat, httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"rag-session","task":"hi"}`)))
+	if chat.Code != http.StatusConflict || !strings.Contains(chat.Body.String(), "does not match server mode") {
+		t.Fatalf("chat status=%d body=%s", chat.Code, chat.Body.String())
+	}
+
+	resume := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	mux.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/api/sessions/rag-session/resume", nil))
+	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "does not match server mode") {
 		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
 	}
 }

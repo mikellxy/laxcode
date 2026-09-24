@@ -69,7 +69,7 @@ brew install pnpm
 ./web.sh
 ```
 
-`web.sh` installs frontend dependencies, builds the Go program, starts `-sse -code` on a random local port, and then launches the Vite page pinned to `127.0.0.1:5173`. The default browser opens only after both the frontend and backend pass their health checks; press `Ctrl-C` to stop both services.
+`web.sh` installs frontend dependencies, builds the Go program, starts `-sse -mode=code` on a random local port, and then launches the Vite page pinned to `127.0.0.1:5173`. The default browser opens only after both the frontend and backend pass their health checks; press `Ctrl-C` to stop both services.
 
 On Windows PowerShell, run the launcher directly:
 
@@ -81,7 +81,7 @@ The repository includes prebuilt Windows x64 binaries at `bin/win/laxcode.exe` a
 
 To refresh the Windows artifacts, maintainers can install `pnpm`, `sqlite`, and `mingw-w64` on macOS and run `make build-windows`. This target rebuilds the frontend and replaces both x64 executables in `bin/win/`.
 
-For manual startup, you can still run `./bin/laxcode -sse -code -token-budget=100000`. When creating a session, the page supplies the working directory, which is persisted alongside the `session_id`. This mode mounts the same coding tools as the CLI; the budget is tracked continuously per `session_id` within the current SSE server process, and a new baseline is established after the server restarts. When a threshold is reached or a dangerous Bash command is encountered, the page pauses the current stream and shows a confirmation dialog.
+For manual startup, you can still run `./bin/laxcode -sse -mode=code -token-budget=100000`. When creating a session, the page supplies the working directory, which is persisted alongside the `session_id` and `mode`. This mode mounts the same coding tools as the CLI; the budget is tracked continuously per `session_id` within the current SSE server process, and a new baseline is established after the server restarts. When a threshold is reached or a dangerous Bash command is encountered, the page pauses the current stream and shows a confirmation dialog.
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
 
 <a id="agent-session-evaluation"></a>
@@ -126,12 +126,10 @@ Follow the [knowledge-pipeline instructions](./knowledge-pipeline/README.md) to 
 
 ```shell
 make build
-mkdir -p /tmp/laxcode-qa/workdir
 ./bin/laxcode -sse \
-  -qa \
-  -kb=/tmp/laxcode-qa/kb.sqlite \
-  -workdir=/tmp/laxcode-qa/workdir \
-  -addr=127.0.0.1:8090
+	-mode=rag \
+	-kb=/tmp/laxcode-rag/kb.sqlite \
+	-addr=127.0.0.1:8090
 ```
 
 #### Step 3: Start the web UI in another terminal
@@ -160,12 +158,12 @@ LaxCode/
 │   ├── agentasm/                   # Composition root: assembles Agent, tools, models, sessions, and tracing
 │   ├── run_cli/                    # Coding Agent interactive terminal mode
 │   ├── run_evaluate/               # LLM-as-a-Judge task evaluation mode
-│   ├── run_sse/                    # Web backend: SSE, QA, session, approval, and directory-selection APIs
+│   ├── run_sse/                    # Web backend: SSE, RAG, session, approval, and directory-selection APIs
 │   └── web/                        # Standalone web program embedding frontend assets with a reverse proxy
 ├── internal/
 │   ├── application/                # Application layer: orchestrates domain capabilities and full use cases
 │   │   ├── reactservice/           # ReAct reasoning loop, context compaction, and sub-agent scheduling
-│   │   ├── qaservice/              # Knowledge-base retrieval-augmented QA flow
+│   │   ├── qaservice/              # Knowledge-base RAG query middleware
 │   │   ├── usermemory/             # User memory recall, summarization, and async write flows
 │   │   └── llm_router/             # HTTP/SSE orchestration for the local model gateway
 │   ├── domain/                     # Domain layer: core models, rules, and infrastructure ports

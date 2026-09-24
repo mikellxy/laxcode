@@ -6,15 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
 
 type testRepo struct {
-	lastError string
-	status    string
-	saved     int
+	lastError  string
+	status     string
+	saved      int
+	reconciled int
+	enqueued   []reactservice.CompletedReactTurn
+}
+
+func (r *testRepo) ReconcileMemoryJobs(context.Context) error { r.reconciled++; return nil }
+func (r *testRepo) EnqueueMemoryJob(_ context.Context, sessionID, userID string, endTurn, assistantSeq uint64) error {
+	r.enqueued = append(r.enqueued, reactservice.CompletedReactTurn{SessionID: sessionID, UserID: userID, Turn: endTurn, AssistantSeq: assistantSeq})
+	return nil
 }
 
 func (*testRepo) ClaimMemoryJob(context.Context, time.Time, time.Duration) (*session.MemoryJob, error) {
@@ -125,5 +134,22 @@ func TestWorkerRechecksReadinessForEachJob(t *testing.T) {
 	w.process(context.Background(), &session.MemoryJob{Attempts: 1})
 	if llm.calls != 1 || repo.saved != 1 || repo.status != "skipped" {
 		t.Fatal("readiness was not checked before each summary")
+	}
+}
+
+func TestPostTurnSchedulerOnlyEnqueuesEachThirdTurn(t *testing.T) {
+	repo := &testRepo{}
+	scheduler := &PostTurnScheduler{Repo: repo}
+	for _, turn := range []reactservice.CompletedReactTurn{
+		{SessionID: "s", UserID: "u", Turn: 2, AssistantSeq: 4},
+		{SessionID: "s", UserID: "u", Turn: 3, AssistantSeq: 6},
+		{SessionID: "s", Turn: 6, AssistantSeq: 12},
+	} {
+		if err := scheduler.Handle(context.Background(), turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(repo.enqueued) != 1 || repo.enqueued[0].Turn != 3 || repo.enqueued[0].AssistantSeq != 6 {
+		t.Fatalf("enqueued = %+v", repo.enqueued)
 	}
 }

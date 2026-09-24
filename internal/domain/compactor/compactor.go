@@ -31,10 +31,10 @@ type toolCallGroup struct {
 // 切片，不修改调用方的原始历史。saved 是本地估算值，只用于决定
 // 下一个裁剪动作；最终是否达标必须由 provider 重新精确计数确认。
 //
-// 裁剪顺序：召回 chunks → 已归档的旧工具输出 → 旧 reasoning → 旧 assistant 正文。
-// 召回 chunks（记忆与知识库片段）平时随历史 append-only 保留以维持模型
-// 前缀缓存命中，只在压缩时回收保护区之前消息上的片段；保护区内的当前轮
-// 上下文保持完整。不足三个调用组时保护区覆盖全部消息，此时 chunks 的
+// 裁剪顺序：旧的 middleware 包装输入 → 已归档的旧工具输出 → 旧 reasoning → 旧 assistant 正文。
+// WrappedContent 平时随历史 append-only 保留以维持模型前缀缓存命中，
+// 只在压缩时回收保护区之前消息上的可再生附加上下文。不足三个
+// 调用组时保护区覆盖全部消息，此时包装输入的
 // 保护区退化为最后一条 user 消息（当前轮），更早历史上的片段一律回收。
 // 其余动作只裁剪保护区之前的消息：最近三个调用组起点至末尾的整个区间
 // 不裁剪。工具调用消息和所有对应结果消息始终保留，从而不破坏
@@ -53,26 +53,24 @@ func (simpleStrategy) Compress(msgs []sharedkernel.Message, minTokenSavings int)
 	saved := 0
 	reached := func() bool { return saved >= minTokenSavings }
 
-	// 回收保护区之前消息上挂载的召回片段；片段可由后续对话重新召回，
-	// 是可再生上下文，优先于会话正文被清理。
-	chunkBound := protected
-	if chunkBound == 0 {
-		// 无足够调用组时保护区覆盖全部消息；chunks 的“当前轮”锚定
+	// 回收保护区之前消息的包装输入；附加上下文可重新生成，
+	// 因此优先于会话正文被清理。
+	wrappedBound := protected
+	if wrappedBound == 0 {
+		// 无足够调用组时保护区覆盖全部消息；“当前轮”锚定
 		// 最后一条 user 消息，否则无工具会话永远无处回收片段。
-		chunkBound = lastUserIndex(out)
+		wrappedBound = lastUserIndex(out)
 	}
-	for i := 0; i < chunkBound; i++ {
-		if len(out[i].MemoryChunks) == 0 && len(out[i].RAGChunks) == 0 {
+	for i := 0; i < wrappedBound; i++ {
+		if out[i].WrappedContent == "" {
 			continue
 		}
-		for _, chunk := range out[i].MemoryChunks {
-			saved += sharedkernel.EstimateTokenInt(chunk.Content)
+		wrappedTokens := sharedkernel.EstimateTokenInt(out[i].WrappedContent)
+		rawTokens := sharedkernel.EstimateTokenInt(out[i].Content)
+		if wrappedTokens > rawTokens {
+			saved += wrappedTokens - rawTokens
 		}
-		for _, chunk := range out[i].RAGChunks {
-			saved += sharedkernel.EstimateTokenInt(chunk.Content)
-		}
-		out[i].MemoryChunks = nil
-		out[i].RAGChunks = nil
+		out[i].WrappedContent = ""
 		if reached() {
 			return out, saved, nil
 		}
@@ -126,7 +124,7 @@ func (simpleStrategy) Compress(msgs []sharedkernel.Message, minTokenSavings int)
 }
 
 // lastUserIndex 返回最后一条 user 消息的下标；没有 user 消息时返回 0
-// （即不回收任何 chunks：片段只挂在 user 消息上，无锚点时保守不动）。
+// （即不回收任何包装输入：它只挂在 user 消息上，无锚点时保守不动）。
 func lastUserIndex(msgs []sharedkernel.Message) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == sharedkernel.RoleUser {

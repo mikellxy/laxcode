@@ -8,18 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
-	"github.com/mikellxy/laxcode/internal/application/usermemory"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
-	"github.com/mikellxy/laxcode/internal/infrastructure/embedding"
-	"github.com/mikellxy/laxcode/internal/infrastructure/knowledgebase"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
-	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
-	"github.com/mikellxy/laxcode/internal/infrastructure/memorypipeline"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
@@ -28,26 +22,19 @@ import (
 // 取消驱动在途 Chat 收敛、Cleanup 回收资源。
 const shutdownTimeout = 15 * time.Second
 
-// checkConfig 按启动模式校验 QA/用户记忆所需配置：缺失即在起服务前失败，
+// checkConfig 按启动模式校验 RAG 所需配置：缺失即在起服务前失败，
 // 避免监听后才在首个请求暴露配置问题。主模型配置不在启动期强制：SSE 模式
 // 允许零配置启动，进入页面后经 POST /api/models 添加并自动激活首个模型；
 // 未配置期间 /chat 与 resume 会返回 MODEL_REQUIRED。其余模式（交互 CLI /
 // evaluate）由 main 在模式分发前强制要求已配置模型。
 func checkConfig() error {
-	if config.CliConf.QA {
+	if config.CliConf.Mode == config.SSEModeRAG {
 		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
 			return err
 		}
 		c := config.EnvAndFileConf
 		if c.EmbedOpenaiApiKey == "" || c.EmbedOpenaiBaseUrl == "" || c.EmbedOpenaiModel == "" {
 			return errors.New("OPENAI_EMBEDDING_API_KEY / OPENAI_EMBEDDING_BASE_URL / OPENAI_EMBEDDING_MODEL_NAME are required")
-		}
-	} else if !config.CliConf.Code && config.EmbeddingEnvironmentReady() {
-		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
-			return err
-		}
-		if err := config.ValidateVectorDimensions(config.CliConf.VectorDimensions); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -73,14 +60,15 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	if err != nil {
 		fatal(err)
 	}
-	s := newServer(homeDir, config.CliConf.Plan)
-	s.codeMode = config.CliConf.Code
+	mode := agentasm.Mode(config.CliConf.Mode)
+	s := newServer(homeDir, config.CliConf.Plan, mode)
+	s.codeMode = mode == agentasm.ModeCode
 	s.tokenBudget = config.CliConf.TokenBudget
 	s.switcher = agentasm.NewModelSwitcher(router, nil)
-	if config.CliConf.QA {
-		s.useQAAssembly(config.CliConf.KB, agentasm.AssembleQA)
-	} else if config.CliConf.Code {
-		s.assemble = agentasm.Assemble
+	s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
+		in.Mode = mode
+		in.KBPath = config.CliConf.KB
+		return agentasm.Assemble(ctx, in)
 	}
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
@@ -92,17 +80,6 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	s.catalog = historyRepo
 	s.projects = historyRepo
 	s.contextRepo = historyRepo
-	cleanupMemory := func() {}
-	// Combined -sse -qa mode serves the document knowledge-base QA service.
-	// User-memory recall/worker belongs to plain SSE mode and must not mutate or
-	// interpret the QA knowledge database.
-	if !config.CliConf.QA && !config.CliConf.Code {
-		cleanupMemory, err = s.startUserMemory(historyRepo)
-		if err != nil {
-			fatal(err)
-		}
-	}
-	defer cleanupMemory()
 	mux := http.NewServeMux()
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
@@ -131,19 +108,14 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	}
 	actualAddr := listener.Addr().String()
 	srv := &http.Server{Addr: actualAddr, Handler: mux}
-	if config.CliConf.Code {
+	if mode == agentasm.ModeCode {
 		if err := codeInstance.Publish("http://" + actualAddr); err != nil {
 			_ = listener.Close()
 			fatal(err)
 		}
 	}
 
-	serviceName := "agent"
-	if config.CliConf.QA {
-		serviceName = "QA"
-	} else if config.CliConf.Code {
-		serviceName = "code"
-	}
+	serviceName := string(mode)
 	fmt.Printf("LaxCode SSE %s listening on %s (data: %s)\n", serviceName, actualAddr, layout.Root(homeDir))
 	fmt.Printf(">>> create a session with work_dir, then POST /chat with its session_id\n")
 
@@ -170,53 +142,4 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		_ = srv.Close()
 	}
-}
-
-// startUserMemory owns server-scoped memory resources.
-func (s *server) startUserMemory(historyRepo *sessionrepo.SqliteSessionRepo) (func(), error) {
-	c := config.EnvAndFileConf
-	// Without the complete embedding environment, drain jobs as skipped and
-	// leave SSE chat available without opening the vector database.
-	if !memorypipeline.EnvironmentReady() {
-		worker := &usermemory.Worker{Repo: historyRepo, Concurrency: 1, Timeout: time.Second, Ready: func() bool { return false }}
-		worker.Start()
-		return worker.Close, nil
-	}
-	dbPath := config.CliConf.KB
-	if err := config.ValidateKBPath(dbPath); err != nil {
-		return nil, err
-	}
-	if err := config.ValidateVectorDimensions(config.CliConf.VectorDimensions); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(c.UserMemoryExecutable) == "" {
-		worker := &usermemory.Worker{Repo: historyRepo, Concurrency: 1, Timeout: time.Second, Ready: func() bool { return false }}
-		worker.Start()
-		return worker.Close, nil
-	}
-	pipeline := &memorypipeline.CLI{Executable: c.UserMemoryExecutable, DB: dbPath, Model: c.EmbedOpenaiModel, BaseURL: c.EmbedOpenaiBaseUrl, APIKey: c.EmbedOpenaiApiKey, Dimensions: config.CliConf.VectorDimensions}
-	if err := pipeline.Validate(); err != nil {
-		return nil, fmt.Errorf("init user memory pipeline: %w", err)
-	}
-	if c.UserMemoryConcurrency < 1 || c.UserMemoryConcurrency > 8 || c.UserMemoryTimeoutSeconds < 1 || c.UserMemoryTimeoutSeconds > 3600 {
-		return nil, fmt.Errorf("invalid user memory worker concurrency/timeout")
-	}
-	initCtx, initCancel := context.WithTimeout(context.Background(), time.Duration(c.UserMemoryTimeoutSeconds)*time.Second)
-	defer initCancel()
-	if err := pipeline.InitSchema(initCtx); err != nil {
-		return nil, fmt.Errorf("initialize user memory schema: %w", err)
-	}
-	retriever, err := knowledgebase.NewUserMemoryRetriever(dbPath, c.EmbedOpenaiModel, config.CliConf.VectorDimensions)
-	if err != nil {
-		return nil, err
-	}
-
-	recall := &usermemory.RecallService{Embedder: embedding.NewOpenAIClient(c.EmbedOpenaiApiKey, c.EmbedOpenaiBaseUrl, c.EmbedOpenaiModel), Retriever: retriever}
-	s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
-		return agentasm.AssembleSSE(ctx, in, recall)
-	}
-	worker := &usermemory.Worker{Ready: memorypipeline.EnvironmentReady, Repo: historyRepo, Pipeline: pipeline, Concurrency: c.UserMemoryConcurrency, Timeout: time.Duration(c.UserMemoryTimeoutSeconds) * time.Second,
-		LLM: llmprovider.NewOpenApiProvider(c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel, c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens)}
-	worker.Start()
-	return func() { worker.Close(); _ = retriever.Close() }, nil
 }

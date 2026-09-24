@@ -41,6 +41,7 @@ type server struct {
 	approvals         *approvalBroker
 	budgets           *budgetStates
 	codeMode          bool
+	mode              agentasm.Mode
 	tokenBudget       int
 	history           session.SessionHistoryRepository
 	contextRepo       session.SessionRepository
@@ -66,6 +67,7 @@ type createSessionRequest struct {
 
 type sessionDTO struct {
 	SessionID string    `json:"session_id"`
+	Mode      string    `json:"mode"`
 	UserID    string    `json:"user_id"`
 	ProjectID string    `json:"project_id"`
 	Title     string    `json:"title"`
@@ -90,7 +92,7 @@ func parseUserID(raw string) (string, error) {
 
 func sessionToDTO(item session.Summary) sessionDTO {
 	return sessionDTO{
-		SessionID: item.ID, UserID: item.UserID, ProjectID: item.ProjectID, Title: item.Title, WorkDir: item.WorkDir,
+		SessionID: item.ID, Mode: item.Mode, UserID: item.UserID, ProjectID: item.ProjectID, Title: item.Title, WorkDir: item.WorkDir,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
 }
@@ -152,7 +154,7 @@ func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "load project failed: "+err.Error())
 		return
 	}
-	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, project.ID, "", project.WorkDir)
+	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, project.ID, "", project.WorkDir, string(s.mode))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "create session failed: "+err.Error())
 		return
@@ -565,13 +567,20 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ContextData{WindowToken: contextState.WindowToken, ContextWindow: contextWindow})
 }
 
-func newServer(homeDir string, planMode bool) *server {
+func newServer(homeDir string, planMode bool, modes ...agentasm.Mode) *server {
+	mode := agentasm.ModeCode
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
 	return &server{
 		homeDir:       homeDir,
 		planMode:      planMode,
+		mode:          mode,
+		codeMode:      mode == agentasm.ModeCode,
 		pickDirectory: pickNativeDirectory,
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
-			return agentasm.AssembleSSE(ctx, in)
+			in.Mode = mode
+			return agentasm.Assemble(ctx, in)
 		},
 		locks:     newSessionLocks(),
 		approvals: newApprovalBroker(),
@@ -614,32 +623,6 @@ func (s *server) saveBudget(assembled *agentasm.Assembled) {
 	}
 }
 
-type qaAssembler func(context.Context, agentasm.QAInput) (*agentasm.QAAssembled, error)
-
-// useQAAssembly switches the HTTP transport to the knowledge-base QA
-// composition root. The adapter only reconciles the two command-layer result
-// types; the ReAct service, prompt, retriever, and empty tool registry all come
-// from agentasm.AssembleQA.
-func (s *server) useQAAssembly(kbPath string, assembleQA qaAssembler) {
-	s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
-		assembled, err := assembleQA(ctx, agentasm.QAInput{
-			KBPath:    kbPath,
-			WorkDir:   in.WorkDir,
-			HomeDir:   in.HomeDir,
-			SessionID: in.SessionID,
-			Consumer:  in.Consumer,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return &agentasm.Assembled{
-			Service: assembled.Service,
-			Session: assembled.Session,
-			Cleanup: assembled.Cleanup,
-		}, nil
-	}
-}
-
 // handleChat 处理 POST /chat：解析请求 → 同会话互斥 → 写 SSE 头 → 每请求装配 →
 // 发 start 帧 → 跑 Chat（其间 Consumer 逐帧推 reasoning/message/tool_call）→ 发
 // done/error 帧 → Cleanup。
@@ -679,6 +662,11 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), "")
+		return
+	}
+	if selected.Mode != string(s.mode) {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeInvalidRequest,
+			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, s.mode), "")
 		return
 	}
 	// 延迟配置场景：模型未配置时在进入 SSE 流之前以 JSON 明确报错，避免
@@ -784,6 +772,11 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), RetryActionResume)
+		return
+	}
+	if selected.Mode != string(s.mode) {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeInvalidRequest,
+			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, s.mode), "")
 		return
 	}
 	if s.modelMissing() {

@@ -33,7 +33,13 @@ type MemoryJob struct {
 func (MemoryJob) TableName() string { return "user_memory_jobs" }
 
 type MemoryJobRepository interface {
+	ReconcileMemoryJobs(context.Context) error
 	ClaimMemoryJob(context.Context, time.Time, time.Duration) (*MemoryJob, error)
 	SaveMemorySummary(context.Context, *MemoryJob, string) error
 	FinishMemoryJob(context.Context, *MemoryJob, string, string, time.Time) error
+}
+
+// MemoryJobScheduler is the durable scheduling port used by PostReactTurn.
+type MemoryJobScheduler interface {
+	EnqueueMemoryJob(ctx context.Context, sessionID, userID string, endTurn, assistantSeq uint64) error
 }

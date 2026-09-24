@@ -14,7 +14,7 @@ import (
 func TestMemoryTurnsAtomicWindowsAndLeaseRecovery(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepo(t)
-	if _, err := repo.CreateSession(ctx, "memory", "user-1", "", "", ""); err != nil {
+	if _, err := repo.CreateSession(ctx, "memory", "user-1", "", "", "", "code"); err != nil {
 		t.Fatal(err)
 	}
 	s := createSystem(t, repo, "memory", "secret system")
@@ -35,6 +35,13 @@ func TestMemoryTurnsAtomicWindowsAndLeaseRecovery(t *testing.T) {
 		}
 		candidate.Revision = rev
 		*s = *candidate
+		// Deliberately leave turn 3 unscheduled to simulate a crash after the
+		// completed turn commit. Turn 6 exercises the normal PostReactTurn path.
+		if turn == 6 {
+			if err := repo.EnqueueMemoryJob(ctx, s.ID, "user-1", turn, msg.Seq); err != nil {
+				t.Fatal(err)
+			}
+		}
 		restored, err := repo.GetRequestContext(ctx, s.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -52,6 +59,12 @@ func TestMemoryTurnsAtomicWindowsAndLeaseRecovery(t *testing.T) {
 			next.Revision = rev
 			*s = *next
 		}
+	}
+	if err := repo.ReconcileMemoryJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReconcileMemoryJobs(ctx); err != nil {
+		t.Fatal(err)
 	}
 	var jobs []session.MemoryJob
 	if err := repo.db.Order("end_turn").Find(&jobs).Error; err != nil {
@@ -94,15 +107,14 @@ func TestMemoryTurnsAtomicWindowsAndLeaseRecovery(t *testing.T) {
 	}
 }
 
-func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
+func TestMemoryCompletionRollbackAndWrappedContentStorage(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newTestRepo(t)
 	s := createSystem(t, repo, "rollback", "system")
 	user := sharedkernel.Message{Role: "user", Content: "raw"}
 	candidate, _ := s.WithAppendedMessage(&user)
 	original := user.Clone()
-	user.MemoryChunks = []sharedkernel.MemoryChunk{{ID: "1", Content: "recalled"}}
-	user.RAGChunks = []sharedkernel.MemoryChunk{{ID: "2", Content: "retrieved"}}
+	user.WrappedContent = "raw\nretrieved"
 	candidate.Messages[len(candidate.Messages)-1] = user
 	rev, err := repo.CommitCreateMessage(ctx, s.ID, candidate.Snapshot(), original, user)
 	if err != nil {
@@ -114,9 +126,8 @@ func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Messages[1].Content != "raw" || len(restored.Messages[1].MemoryChunks) != 1 ||
-		len(restored.Messages[1].RAGChunks) != 1 || restored.Messages[1].RAGChunks[0].Content != "retrieved" {
-		t.Fatal("memory not restored")
+	if restored.Messages[1].Content != "raw" || restored.Messages[1].WrappedContent != "raw\nretrieved" {
+		t.Fatal("wrapped content not restored")
 	}
 	page, _, _ := repo.ListOriginalHistory(ctx, s.ID, 0, 10)
 	if page.Messages[0].Content != "raw" {
@@ -134,7 +145,7 @@ func TestMemoryCompletionRollbackAndChunkStorage(t *testing.T) {
 	}
 	appendMessage(t, repo, s, &sharedkernel.Message{Role: "user", Content: "next"})
 	restored, _ = repo.GetRequestContext(ctx, s.ID)
-	if len(restored.Messages[1].MemoryChunks) != 1 || len(restored.Messages[1].RAGChunks) != 1 {
-		t.Fatal("old chunks should be retained append-only")
+	if restored.Messages[1].WrappedContent != "raw\nretrieved" {
+		t.Fatal("old wrapped content should be retained append-only")
 	}
 }

@@ -31,7 +31,7 @@ done
 pnpm --dir "${repo_root}/web" install --frozen-lockfile
 make -C "${repo_root}" build
 
-"${repo_root}/bin/laxcode" -sse -code -addr=127.0.0.1:0 &
+"${repo_root}/bin/laxcode" -sse -mode=code -addr=127.0.0.1:0 &
 backend_pid=$!
 
 backend_url=""

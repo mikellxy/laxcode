@@ -212,6 +212,7 @@ func Run(router agentasm.RouterClientReplacer) {
 	// 装配（会话 / tracer / 工具集含子 Agent / provider / ReActService）收口到
 	// cmd/agentasm 组合根。Cleanup 幂等（sync.Once），defer 一次。
 	assembled, err := agentasm.Assemble(ctx, agentasm.Input{
+		Mode:      agentasm.ModeCode,
 		WorkDir:   workDir,
 		SessionID: config.CliConf.Session,
 		PlanMode:  config.CliConf.Plan,

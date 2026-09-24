@@ -12,7 +12,7 @@ LaxCode `sse server` 模式（`cmd/run_sse`）的 Go 示例客户端：向 `POST
 
 ```shell
 make build
-./bin/laxcode -sse -kb=/absolute/path/kb.sqlite -vector-dim=1024 -workdir /tmp/laxcode-example -addr 127.0.0.1:8080
+./bin/laxcode -sse -mode=code -addr=127.0.0.1:8080
 ```
 
 再跑客户端：

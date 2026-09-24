@@ -9,6 +9,7 @@ import (
 // RequestContext 是会话最新工作集；完整历史仅在仓储追加保存。
 // LastSeq 不因压缩改变，避免重启后复用历史消息的标识。
 type RequestContext struct {
+	Mode           string `json:"mode,omitempty"`
 	UserID         string `json:"user_id,omitempty"`
 	WorkDir        string `json:"work_dir,omitempty"`
 	ReactTurnCount uint64 `json:"react_turn_count"`
@@ -82,6 +83,12 @@ func (s *Session) Restore(snapshot RequestContext) error {
 	}
 	if s.WorkDir != "" && snapshot.WorkDir != "" && s.WorkDir != snapshot.WorkDir {
 		return fmt.Errorf("session: workdir mismatch: stored %q, requested %q", snapshot.WorkDir, s.WorkDir)
+	}
+	if s.Mode != "" && snapshot.Mode != "" && s.Mode != snapshot.Mode {
+		return fmt.Errorf("session: mode mismatch: stored %q, requested %q", snapshot.Mode, s.Mode)
+	}
+	if snapshot.Mode == "" {
+		snapshot.Mode = s.Mode
 	}
 	if snapshot.WorkDir == "" {
 		snapshot.WorkDir = s.WorkDir

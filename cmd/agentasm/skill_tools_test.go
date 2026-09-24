@@ -8,7 +8,7 @@ import (
 )
 
 func TestAssembleRegistersSkillManagementTools(t *testing.T) {
-	assembled, err := Assemble(context.Background(), Input{WorkDir: t.TempDir(), HomeDir: t.TempDir()})
+	assembled, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestAssembleRegistersSkillManagementTools(t *testing.T) {
 
 func TestCustomPromptDoesNotExposeSkillManagementTools(t *testing.T) {
 	assembled, err := Assemble(context.Background(), Input{
-		WorkDir: t.TempDir(), HomeDir: t.TempDir(), SystemPrompt: "specialized evaluator",
+		Mode: ModeEvaluate, WorkDir: t.TempDir(), HomeDir: t.TempDir(), SystemPrompt: "specialized evaluator",
 	})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)

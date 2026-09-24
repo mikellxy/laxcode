@@ -32,6 +32,7 @@ type SessionHistoryRepository interface {
 
 type Summary struct {
 	ID        string
+	Mode      string
 	UserID    string
 	ProjectID string
 	Title     string
@@ -63,7 +64,7 @@ type ProjectRepository interface {
 
 // SessionCatalogRepository 管理显式创建的空会话及按用户隔离的会话列表。
 type SessionCatalogRepository interface {
-	CreateSession(ctx context.Context, sessionID, userID, projectID, title, workDir string) (Summary, error)
+	CreateSession(ctx context.Context, sessionID, userID, projectID, title, workDir, mode string) (Summary, error)
 	GetSession(ctx context.Context, sessionID string) (Summary, error)
 	// ListSessions 返回指定用户及项目在 beforeSessionID 之前的一页会话，按更新时间倒序。
 	// beforeSessionID 为空表示第一页。

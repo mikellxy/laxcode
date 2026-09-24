@@ -16,7 +16,7 @@ type CodeInstanceGuard struct {
 	file *os.File
 }
 
-// AcquireCodeInstanceGuard tries to become the only -sse -code process for the
+// AcquireCodeInstanceGuard tries to become the only -sse -mode=code process for the
 // current user. The descriptor must remain open for the entire server lifetime.
 func AcquireCodeInstanceGuard(homeDir string) (*CodeInstanceGuard, error) {
 	root := layout.Root(homeDir)

@@ -79,6 +79,19 @@ func TestInvalidSnapshotDoesNotReplaceWorkingContext(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsDifferentSessionMode(t *testing.T) {
+	s := NewSession("mode-bound")
+	s.Mode = "code"
+	snapshot := s.Snapshot()
+	snapshot.Mode = "rag"
+	if err := s.Restore(snapshot); err == nil || !strings.Contains(err.Error(), "mode mismatch") {
+		t.Fatalf("Restore error = %v", err)
+	}
+	if s.Mode != "code" {
+		t.Fatalf("failed restore changed mode to %q", s.Mode)
+	}
+}
+
 func TestAdvanceMemoryGeneration(t *testing.T) {
 	s := NewSession("generation")
 	if s.MemoryGeneration != 1 {

@@ -33,6 +33,10 @@ import (
 
 // Input 是装配 ReActService 所需、且因前端而异的输入。
 type Input struct {
+	// Mode selects the explicit agent capability profile.
+	Mode Mode
+	// KBPath is required by ModeRAG.
+	KBPath string
 	// WorkDir 是 Agent 工作目录（沙箱根）：交互模式取 cwd，服务或评估模式取显式配置。
 	WorkDir string
 	// HomeDir 是全局数据根的用户主目录；空值使用 os.UserHomeDir。
@@ -53,6 +57,14 @@ type Input struct {
 	// Router 仅交互模式注入，用于 /model 在两轮 Chat 之间替换本地网关 client。
 	Router RouterClientReplacer
 }
+
+type Mode string
+
+const (
+	ModeCode     Mode = "code"
+	ModeRAG      Mode = "rag"
+	ModeEvaluate Mode = "evaluate"
+)
 
 type RouterClientReplacer interface {
 	ReplaceClient(domainrouter.StreamClient)
@@ -94,81 +106,99 @@ func newMainProvider() *llmprovider.OpenApiProvider {
 // SystemPrompt 为空时生成默认 coding-agent prompt，非空时原样采用调用方的专用
 // prompt。返回的 error 仅来自会话初始化 / 系统提示词写入。
 func Assemble(ctx context.Context, in Input) (*Assembled, error) {
-	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, true)
+	if in.Mode != ModeCode && in.Mode != ModeRAG && in.Mode != ModeEvaluate {
+		return nil, fmt.Errorf("unsupported agent mode %q", in.Mode)
+	}
+	if in.PlanMode && in.Mode != ModeCode {
+		return nil, fmt.Errorf("plan mode requires code mode")
+	}
+	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode)
 	if err != nil {
 		return nil, err
 	}
 	homeDir, sess := core.homeDir, core.session
-	// 系统提示词：技能索引在启动时快照一次（会话期内不刷新）；技能发现端口
-	// 以领域类型接收即完成编译期断言（同 workFS）。Plan Mode 的会话规划目录
-	// 由布局包算好后注入，领域层不再自行拼路径。
-	var skillSrc prompt.SkillSource = skillrepo.New(homeDir)
-	skills := prompt.LoadSkills(skillSrc, in.WorkDir, warnSkillSkip)
-	skillsRoot := layout.SkillsRoot(homeDir)
-	readRoots := append([]string{skillsRoot}, in.ReadRoots...)
+	sess.Mode = string(in.Mode)
+	cleanup := core.cleanup
+	var skills []prompt.Skill
+	var skillSrc prompt.SkillSource
+	var skillsRoot string
+	readRoots := append([]string(nil), in.ReadRoots...)
 	var writeRoots []string
 	var plan *prompt.PlanMode
-	if in.PlanMode {
+	if in.Mode == ModeCode {
+		skillSrc = skillrepo.New(homeDir)
+		skills = prompt.LoadSkills(skillSrc, in.WorkDir, warnSkillSkip)
+		skillsRoot = layout.SkillsRoot(homeDir)
+		readRoots = append([]string{skillsRoot}, readRoots...)
+	}
+	if in.Mode == ModeCode && in.PlanMode {
 		planDir := layout.SessionDir(homeDir, sess.ID)
 		plan = &prompt.PlanMode{SessionDir: planDir}
 		readRoots = append(readRoots, planDir)
 		writeRoots = append(writeRoots, planDir)
 	}
-	sysPrompt := in.SystemPrompt
-	if sysPrompt == "" {
-		sysPrompt = prompt.GetSysPrompt(in.WorkDir, skills, plan, skillsRoot)
-	}
-
-	// tools：默认工具集；子 Agent 须在 svc 建好后注册进同一 registry（见下）。
-	// workFS 是文件类工具（read/write/edit）唯一的 os 触点实现，此处以领域
-	// 端口类型接收即完成编译期断言（infra/workfs 不反向导入 domain，避免与
-	// domain 内部测试成环）。
+	// Tool registration is owned entirely by this composition root. RAG exposes
+	// none; evaluation receives read-only inspection tools; code receives the
+	// complete coding profile.
 	var workFS tools.WorkFS = workfs.New()
-	// shellRunner 与本次运行同生命周期：登记命令派生的后台进程与输出临时
-	// 文件，由 Cleanup 里的 toolReg.Close() 统一回收。
-	shellRunner := shell.New()
 	toolReg := core.registry
-	toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, core.artifacts, sess.ID))
-	toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS, writeRoots...))
-	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS, readRoots...))
-	toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS, writeRoots...))
-	ripgrepRunner := ripgrep.New()
-	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
-	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
-	// Skill 管理只属于使用默认 Coding Agent 提示词的主 Agent。评估器等通过
-	// SystemPrompt 注入专用角色时不暴露跨项目持久化能力。
-	if in.SystemPrompt == "" {
+	var ripgrepRunner *ripgrep.Runner
+	if in.Mode == ModeCode || in.Mode == ModeEvaluate {
+		ripgrepRunner = ripgrep.New()
+		toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS, readRoots...))
+		toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
+		toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
+	}
+	if in.Mode == ModeCode {
+		shellRunner := shell.New()
+		toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, core.artifacts, sess.ID))
+		toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS, writeRoots...))
+		toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS, writeRoots...))
+		toolReg.Register(tools.NewReadArtifactTool(core.artifacts, sess.ID))
 		skillStore := skillstore.New(skillsRoot)
 		toolReg.Register(tools.NewCreateSkillTool(skillsRoot, skillStore))
 		toolReg.Register(tools.NewUpdateSkillTool(skillsRoot, skillStore))
+		toolReg.Register(reactservice.NewSubAgent(core.service, in.WorkDir,
+			reactservice.SubAgentDeps{
+				WorkFS:     workFS,
+				Ripgrep:    ripgrepRunner,
+				SkillSrc:   skillSrc,
+				SkillsRoot: skillsRoot,
+				// 每个子 Agent 各自新建：其 childReg.Close() 只回收自己派生的
+				// 后台进程，不会波及主 Agent 尚在运行的后台服务
+				NewShell: func() tools.ShellRunner { return shell.New() },
+			}))
 	}
 
-	// provider + service：主 provider 按当前活跃模型构建，token 预算取该
-	// 模型的 limit（未声明时回退全局窗口配置，见 newMainProvider）。
 	svc := core.service
-	// 子 Agent 复用 svc 的 LLMClient/tracer/Repo 派生隔离子服务，注册进同一
-	// toolReg（svc 持其引用，late register 对 svc 可见）。
-	toolReg.Register(reactservice.NewSubAgent(svc, in.WorkDir,
-		reactservice.SubAgentDeps{
-			WorkFS:     workFS,
-			Ripgrep:    ripgrepRunner,
-			SkillSrc:   skillSrc,
-			SkillsRoot: skillsRoot,
-			// 每个子 Agent 各自新建：其 childReg.Close() 只回收自己派生的
-			// 后台进程，不会波及主 Agent 尚在运行的后台服务
-			NewShell: func() tools.ShellRunner { return shell.New() },
-		}))
-
-	// cleanup 必须在任何可能失败的初始化之前建好：会话加载 / 系统提示词写盘
-	// 失败时调用方拿不到 Assembled，已获取的资源（filetrace 日志句柄、工具
-	// 注册表里的 bash 后台进程与临时文件）只能由本函数负责回收。
-	cleanup := core.cleanup
-
-	// 会话初始化放在资源装配之后：子 Agent 工具需先注册进 toolReg，而
-	// InitSysPrompt 写入的系统提示词含技能索引，与工具集属于同一份启动快照。
 	if err := svc.InitSession(ctx); err != nil {
 		cleanup()
 		return nil, err
+	}
+
+	var sysPrompt string
+	switch in.Mode {
+	case ModeCode:
+		sysPrompt = in.SystemPrompt
+		if sysPrompt == "" {
+			sysPrompt = prompt.GetSysPrompt(in.WorkDir, skills, plan, skillsRoot)
+		}
+	case ModeEvaluate:
+		if in.SystemPrompt == "" {
+			cleanup()
+			return nil, fmt.Errorf("evaluate mode requires a system prompt")
+		}
+		sysPrompt = in.SystemPrompt
+	case ModeRAG:
+		var ragCleanup func()
+		ragCleanup, err = configureRAG(svc, core.tracer, in.KBPath)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		baseCleanup := cleanup
+		cleanup = func() { ragCleanup(); baseCleanup() }
+		sysPrompt = prompt.GetRAGSysPrompt()
 	}
 	if err := svc.InitSysPrompt(ctx, sysPrompt); err != nil {
 		cleanup()
@@ -176,11 +206,16 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	}
 
 	return &Assembled{
-		Service:  svc,
-		Session:  sess,
-		Skills:   append([]prompt.Skill(nil), skills...),
-		Cleanup:  cleanup,
-		Switcher: NewModelSwitcher(in.Router, svc),
+		Service: svc,
+		Session: sess,
+		Skills:  append([]prompt.Skill(nil), skills...),
+		Cleanup: cleanup,
+		Switcher: func() *ModelSwitcher {
+			if in.Mode == ModeCode {
+				return NewModelSwitcher(in.Router, svc)
+			}
+			return nil
+		}(),
 	}, nil
 }
 
