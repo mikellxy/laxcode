@@ -5,15 +5,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$WebDir = Join-Path $RepoRoot "web"
-$BinDir = Join-Path $RepoRoot "bin"
+$BinDir = Join-Path $RepoRoot "bin\win"
 $BackendExe = Join-Path $BinDir "laxcode.exe"
+$FrontendExe = Join-Path $BinDir "laxcode-web.exe"
 $InstanceFile = Join-Path ([Environment]::GetFolderPath("UserProfile")) ".laxcode\sse-code.instance"
 $FrontendUrl = "http://127.0.0.1:5173"
 $BackendProcess = $null
-$ViteProcess = $null
+$FrontendProcess = $null
 $LocationPushed = $false
-$PreviousProxyTarget = [Environment]::GetEnvironmentVariable("LAXCODE_PROXY_TARGET", "Process")
 
 function Test-ProcessRunning {
     param([System.Diagnostics.Process]$Process)
@@ -84,7 +83,7 @@ function Wait-ForBackend {
 function Wait-ForFrontend {
     param(
         [System.Diagnostics.Process]$Backend,
-        [System.Diagnostics.Process]$Vite,
+        [System.Diagnostics.Process]$Frontend,
         [string]$Url
     )
 
@@ -92,8 +91,8 @@ function Wait-ForFrontend {
         if (-not (Test-ProcessRunning $Backend)) {
             throw "LaxCode backend exited while starting the web UI"
         }
-        if (-not (Test-ProcessRunning $Vite)) {
-            throw "Vite exited before becoming ready; port 5173 may already be in use"
+        if (-not (Test-ProcessRunning $Frontend)) {
+            throw "LaxCode web server exited before becoming ready; port 5173 may already be in use"
         }
         if (Test-HttpEndpoint $Url) {
             return
@@ -119,25 +118,17 @@ function Stop-ProcessTree {
 }
 
 try {
-    foreach ($CommandName in @("go", "node", "pnpm", "taskkill.exe")) {
-        if ($null -eq (Get-Command $CommandName -ErrorAction SilentlyContinue)) {
-            throw "required command not found: $CommandName"
+    if ($null -eq (Get-Command "taskkill.exe" -ErrorAction SilentlyContinue)) {
+        throw "required command not found: taskkill.exe"
+    }
+    foreach ($Executable in @($BackendExe, $FrontendExe)) {
+        if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+            throw "prebuilt executable not found: $Executable"
         }
     }
 
     Push-Location $RepoRoot
     $LocationPushed = $true
-
-    & pnpm --dir $WebDir install --frozen-lockfile
-    if ($LASTEXITCODE -ne 0) {
-        throw "pnpm install failed with exit code $LASTEXITCODE"
-    }
-
-    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    & go build -o $BackendExe .\cmd\main
-    if ($LASTEXITCODE -ne 0) {
-        throw "Go build failed with exit code $LASTEXITCODE"
-    }
 
     $BackendProcess = Start-Process `
         -FilePath $BackendExe `
@@ -148,38 +139,30 @@ try {
 
     $BackendUrl = Wait-ForBackend $BackendProcess $InstanceFile
 
-    $env:LAXCODE_PROXY_TARGET = $BackendUrl
-    $ViteProcess = Start-Process `
-        -FilePath $env:ComSpec `
-        -ArgumentList @("/d", "/s", "/c", "pnpm --dir web dev") `
+    $FrontendProcess = Start-Process `
+        -FilePath $FrontendExe `
+        -ArgumentList @("-addr=127.0.0.1:5173", "-backend=$BackendUrl") `
         -WorkingDirectory $RepoRoot `
         -NoNewWindow `
         -PassThru
 
-    Wait-ForFrontend $BackendProcess $ViteProcess $FrontendUrl
+    Wait-ForFrontend $BackendProcess $FrontendProcess $FrontendUrl
 
     Write-Host "LaxCode Web is ready: $FrontendUrl (backend: $BackendUrl)"
     Start-Process $FrontendUrl
 
-    while ((Test-ProcessRunning $BackendProcess) -and (Test-ProcessRunning $ViteProcess)) {
+    while ((Test-ProcessRunning $BackendProcess) -and (Test-ProcessRunning $FrontendProcess)) {
         Start-Sleep -Seconds 1
     }
 
     if (-not (Test-ProcessRunning $BackendProcess)) {
         throw "LaxCode backend stopped"
     }
-    throw "Vite web server stopped"
+    throw "LaxCode web server stopped"
 }
 finally {
-    if ($null -eq $PreviousProxyTarget) {
-        Remove-Item Env:LAXCODE_PROXY_TARGET -ErrorAction SilentlyContinue
-    }
-    else {
-        $env:LAXCODE_PROXY_TARGET = $PreviousProxyTarget
-    }
-
-    if ($null -ne $ViteProcess) {
-        Stop-ProcessTree $ViteProcess
+    if ($null -ne $FrontendProcess) {
+        Stop-ProcessTree $FrontendProcess
     }
     if (Test-ProcessRunning $BackendProcess) {
         Stop-Process -Id $BackendProcess.Id -Force -ErrorAction SilentlyContinue

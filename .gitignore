@@ -1,7 +1,12 @@
 .qoder/
 .idea
 .DS_Store
-bin
+/.pnpm-store/
+/bin/*
+!/bin/win/
+/bin/win/*
+!/bin/win/laxcode.exe
+!/bin/win/laxcode-web.exe
 
 # Legacy project-local LaxCode data (new data lives under $HOME/.laxcode)
 .laxcode
