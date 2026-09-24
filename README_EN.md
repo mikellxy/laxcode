@@ -5,21 +5,46 @@
 </div>
 
 <p align="center">
-  <img src="./laxcode.png" alt="LaxCode" width="360" height="180">
+  <span style="font-family: 'Arial Rounded MT Bold', 'Nunito', sans-serif; font-size: 24px; font-weight: 700; color: #8798E5;">Lax</span><span style="font-family: 'Arial Rounded MT Bold', 'Nunito', sans-serif; font-size: 24px; font-weight: 700; color: #58D2C2;">Code</span>
 </p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
 
-LaxCode is a lightweight AI Agent implemented in Go.
+LaxCode is a lightweight Agent implemented in Go. It supports two modes — coding agent and agentic RAG — and ships with a LangGraph-based knowledge base pipeline. Requires Go >= 1.26.
+## Quick Start
+```shell
+git clone https://github.com/mikellxy/laxcode.git && cd laxcode
+brew install pnpm
+./web.sh
+```
+By default, this command starts the Web UI at http://127.0.0.1:5173 and opens the page in the default browser when started locally. [Windows usage](./docs/windows_run_web.md)
+  
+<img src="./examples/laxcode_web.png">  
+  
+<img src="./examples/otel.png">
+
+## Features
+- Session storage engine
+  - SQLite transactions + optimistic locking, generation-based atomic updates of in-memory messages during context compaction, and agent-loop integrity checks on crash recovery. [Design doc](./docs/session-storage-engine.md)
+- Agentic RAG
+  - Ships a LangGraph-based knowledge base pipeline, using a chunk splitter with triple constraints on heading, chunk_size, and overlap_size ([knowledge-pipeline](./knowledge-pipeline/))
+- Evaluation
+  - Bundled tooling for evaluating agent-loop effectiveness, with multi-dimensional scoring and human-readable reports. [View a single-task evaluation sample](./docs/readpaged-maxbytes-fix-evaluation.md)
+- Context compaction
+  - Three layers of compaction: pruning, context offloading, and LLM structured summarization. [Design doc](./docs/context-compaction-design.md)
+- Soft sandbox protection & human-in-the-loop confirmation for dangerous commands
+- Observability
+  - Export agent-loop spans to your OTel service (SigNoz/Tempo/Jaeger...). [Export LaxCode spans to SigNoz](./docs/signoz-tracing.md)
 
 ## Feature Navigation
 
 - [**Coding Agent CLI**](#coding-agent-cli)
-- [**Agent Evaluation**](#agent-session-evaluation) — Evaluates a completed task from its full ReAct log using LLM-as-a-Judge
-- [**Agentic QA**](#agentic-memory-qa) — Supports RAG user-memory recall and an SSE interaction page
-- [**Agentic RAG QA**](#agentic-rag-qa) — Supports knowledge-base retrieval and an SSE interaction page
+- [**Agent Session Evaluation**](#agent-session-evaluation) — Evaluate how well a task was completed based on its full ReAct log (LLM-as-a-Judge)
+- [**Agentic RAG**](#agentic-rag-qa) — Knowledge-base retrieval with an SSE interaction page
 
-## Quick Start
+### Creating the configuration file
+
+[Configuration file usage](./docs/settings.md).
 
 <a id="coding-agent-cli"></a>
 
@@ -32,16 +57,16 @@ make build
 ./bin/laxcode
 ```
 
-In interactive mode, set a token budget for the current run with `./bin/laxcode -token-budget=100000`. Before continuing past 1, 1.5, 2, and subsequent multiples of the budget, LaxCode asks for confirmation. Enter `yes` to continue; any other input stops the run. Usage from a resumed session's history is excluded.
+In interactive mode, you can set a token budget for the current run, e.g. `./bin/laxcode -token-budget=100000`. When the combined input and output tokens reach thresholds such as 1x, 1.5x, or 2x the budget, LaxCode asks whether to continue before proceeding; enter `yes` to continue, or any other input to stop. When resuming an old session, historical usage is not counted toward the current budget.
 
-On macOS, browser coding mode starts in two steps:
+Browser coding mode starts in two steps on macOS:
 
 ```shell
 brew install pnpm
 ./web.sh
 ```
 
-The script installs frontend dependencies, builds LaxCode, starts the code SSE backend on a random loopback port, and starts Vite on `127.0.0.1:5173`. It opens the default browser only after both services pass their health checks. Press `Ctrl-C` to stop both services.
+`web.sh` installs frontend dependencies, builds the Go program, starts `-sse -code` on a random local port, and then launches the Vite page pinned to `127.0.0.1:5173`. The default browser opens only after both the frontend and backend pass their health checks; press `Ctrl-C` to stop both services.
 
 On Windows PowerShell, run the launcher directly:
 
@@ -49,18 +74,18 @@ On Windows PowerShell, run the launcher directly:
 .\web.ps1
 ```
 
-The repository includes prebuilt Windows x64 binaries at `bin/win/laxcode.exe` and `bin/win/laxcode-web.exe`. The latter embeds the production frontend and proxies requests to the backend's random port, so Windows users do not need Go, Node.js, pnpm, or GCC. The script opens the default browser after both services are ready and cleans up both processes on `Ctrl-C`.
+The repository includes prebuilt Windows x64 binaries at `bin/win/laxcode.exe` and `bin/win/laxcode-web.exe`. The latter embeds the production frontend assets and reverse-proxies to the backend's random port, so Windows users do not need Go, Node.js, pnpm, or GCC. The script opens the default browser once both services are ready and cleans up both processes on `Ctrl-C`.
 
-To refresh the Windows artifacts, maintainers can install `pnpm`, `sqlite`, and `mingw-w64` on macOS and run `make build-windows`. The target rebuilds the frontend and replaces both x64 executables in `bin/win/`.
+To refresh the Windows artifacts, maintainers can install `pnpm`, `sqlite`, and `mingw-w64` on macOS and run `make build-windows`. This target rebuilds the frontend and replaces both x64 executables in `bin/win/`.
 
-For manual startup, run `./bin/laxcode -sse -code -token-budget=100000`. The page supplies the work directory when creating a session, and that directory is persisted with the `session_id`. This mounts the CLI coding tools. The budget follows each `session_id` across requests for the lifetime of the SSE server; restarting the server establishes a new baseline. The page pauses the current stream for token-budget or risky Bash approval.
+For manual startup, you can still run `./bin/laxcode -sse -code -token-budget=100000`. When creating a session, the page supplies the working directory, which is persisted alongside the `session_id`. This mode mounts the same coding tools as the CLI; the budget is tracked continuously per `session_id` within the current SSE server process, and a new baseline is established after the server restarts. When a threshold is reached or a dangerous Bash command is encountered, the page pauses the current stream and shows a confirmation dialog.
 <img src="examples/laxcode_intro.gif" alt="LaxCode interactive terminal demo" width="960" style="max-width: 100%; height: 600px;">  
 
 <a id="agent-session-evaluation"></a>
 
-### Evaluate a Coding Agent Task
+### Evaluating a Coding Agent Task
 
-After completing a task with LaxCode, you can evaluate its outcome in an independent LLM-as-a-Judge session by specifying the task's original `workdir` and `session_id`. The evaluator reads the following immutable ReAct message log:
+After completing a task with LaxCode, you can specify that task's original `workdir` and `session_id` to have LaxCode evaluate the outcome in an independent LLM-as-a-Judge session. Session data is stored uniformly under the user directory, and the evaluator reads the following immutable ReAct message log:
 
 ```text
 ${HOME}/.laxcode/sessions/${session_id}/history.jsonl
@@ -75,67 +100,24 @@ Run the evaluation with the target task's `session_id` passed through `-eval_ses
   -eval_session=88a74c78-a5c4-4602-bb1e-8e4a4ce0256b
 ```
 
-The evaluation report is written to stdout as a single-line JSON object. Its fields include:
+The evaluation report is printed to stdout as a single-line JSON object. It contains:
 
 - `eval_session_id`: the session ID of the task being evaluated.
-- `session_id`: the independent session ID created for the evaluator.
-- `result`: a Markdown report containing evidence-backed scores for tool-call appropriateness, tool-call robustness, task planning, user-goal completion, and other dimensions.
+- `session_id`: the independent session ID created for this evaluator run.
+- `result`: a Markdown evaluation report containing scores and evidence across dimensions such as tool-call appropriateness, tool-call robustness, task planning, and user-goal completion.
 
-The evaluator neither resumes nor modifies the target session. Its own messages and token statistics are stored in the independent evaluation session.
-
-<a id="agentic-memory-qa"></a>
-
-### Agentic QA (supports RAG user-memory recall and provides an SSE page)
-> [!TIP]
-> - No tools mounted by default
-> - Asynchronously extracts user memory every three ReAct loops and persists it via chunk-vectorization
-> - Vectorizes the user query to recall memories
-> - Uses the specified sqlite-vec db
-
-```shell
-uv sync --project knowledge-pipeline --locked
-```
-```shell
-make build
-# When memory is enabled:
-# -vector-dim should match the embedding model in use
-# -kb sets the absolute path of the sqlite-vec db
-mkdir -p /tmp/laxcode-example
-./bin/laxcode -sse \
-  -kb=/tmp/laxcode-example/kb.sqlite \
-  -vector-dim=1024 \
-  -workdir=/tmp/laxcode-example \
-  -addr=127.0.0.1:8090
-```
-```shell
-# In another terminal, start the React frontend (http://127.0.0.1:5173)
-pnpm --dir web install --frozen-lockfile
-pnpm --dir web dev
-
-# or use npm
-npm --prefix web install
-npm --prefix web run dev
-```
+The evaluation neither resumes nor modifies the evaluated task's session; the evaluator's own messages and token statistics are stored in a separate session.
 
 <a id="agentic-rag-qa"></a>
 
-### Agentic RAG QA (provides an SSE page)
+### Agentic RAG QA
 
 > [!TIP]
 > - No tools mounted by default
 
-#### Step 1: Build the knowledge base with the bundled tool
+#### Step 1: Build the knowledge base
 
-```shell
-uv sync --project knowledge-pipeline --locked
-mkdir -p /tmp/laxcode-qa
-"$PWD/knowledge-pipeline/.venv/bin/laxcode-knowledge" \
-  --target=knowledge \
-  --doc=/absolute/path/to/knowledge.md \
-  --db=/tmp/laxcode-qa/kb.sqlite
-```
-
-The splitter automatically reads `~/.laxcode/chunk_settings.json`. If the file is absent, it uses the default Markdown heading rule. See [`knowledge-pipeline/chunk_config.example.json`](./knowledge-pipeline/chunk_config.example.json) for the format.
+Follow the [knowledge-pipeline instructions](./knowledge-pipeline/README.md) to configure the embedding model and import documents.
 
 #### Step 2: Set the knowledge base path and start the RAG server
 
@@ -161,3 +143,69 @@ npm --prefix web run dev
 ```
 
 Open <http://127.0.0.1:5173>.
+
+### Architecture
+
+The Go backend is organized into DDD layers, with the core dependency direction `cmd → application → domain ← infrastructure`; the web frontend and the knowledge ingestion pipeline operate as independent sub-projects.
+
+```text
+LaxCode/
+├── cmd/                            # Program entrypoints and run-mode adapters
+│   ├── main/                       # CLI main entry: loads config and dispatches run modes
+│   ├── agentasm/                   # Composition root: assembles Agent, tools, models, sessions, and tracing
+│   ├── run_cli/                    # Coding Agent interactive terminal mode
+│   ├── run_evaluate/               # LLM-as-a-Judge task evaluation mode
+│   ├── run_qa/                     # Agentic RAG command-line QA mode
+│   ├── run_sse/                    # Web backend: SSE, session, approval, and directory-selection APIs
+│   └── web/                        # Standalone web program embedding frontend assets with a reverse proxy
+├── internal/
+│   ├── application/                # Application layer: orchestrates domain capabilities and full use cases
+│   │   ├── reactservice/           # ReAct reasoning loop, context compaction, and sub-agent scheduling
+│   │   ├── qaservice/              # Knowledge-base retrieval-augmented QA flow
+│   │   ├── usermemory/             # User memory recall, summarization, and async write flows
+│   │   └── llm_router/             # HTTP/SSE orchestration for the local model gateway
+│   ├── domain/                     # Domain layer: core models, rules, and infrastructure ports
+│   │   ├── session/                # Session aggregate, request context, and repository interfaces
+│   │   ├── tools/                  # Tool registry, built-in tool behaviors, and execution ports
+│   │   ├── prompt/                 # System prompt, Skill, and Plan Mode assembly
+│   │   ├── compactor/              # Context compaction strategies
+│   │   ├── knowledgebase/          # Knowledge base, vector retrieval, and embedding interfaces
+│   │   ├── llmprovider/            # LLM client interface
+│   │   ├── llmrouter/              # Model gateway streaming interface
+│   │   ├── telemetry/              # Trace names, attributes, and observability semantics
+│   │   └── sharedkernel/           # Shared types for messages, tools, SSE, tokens, etc.
+│   └── infrastructure/             # Infrastructure layer: external implementations of domain ports
+│       ├── llmprovider/            # OpenAI Responses protocol adapter
+│       ├── llmrouter/              # OpenAI-compatible streaming gateway adapter
+│       ├── embedding/              # OpenAI-compatible embedding model adapter
+│       ├── knowledgebase/          # SQLite + sqlite-vec knowledge base implementation
+│       ├── sessionrepo/            # SQLite session, history, and memory-task repositories
+│       ├── artifactstore/          # File storage for session artifacts
+│       ├── workfs/                 # Workspace file read/write implementation
+│       ├── shell/                  # Shell execution, timeouts, and process management
+│       ├── ripgrep/                # File search and content retrieval adapter
+│       ├── skillrepo/              # Local Skill scanning and loading
+│       ├── memorypipeline/         # Process adapter for the Python memory ingestion pipeline
+│       ├── config/                 # Config loading and model catalog
+│       ├── layout/                 # User data and session disk layout
+│       ├── cliprinter/             # Interactive terminal UI
+│       └── tracing/                # OpenTelemetry, OTLP, and local tracing implementations
+├── web/                            # React + TypeScript web client
+│   └── src/
+│       ├── api/                    # Backend APIs and SSE client
+│       ├── app/                    # App root component and global providers
+│       ├── components/             # UI components such as chat and model selection
+│       ├── features/               # Business modules such as chat state and identity
+│       ├── hooks/                  # Reusable React hooks (workspace, etc.)
+│       └── types/                  # Frontend API and message types
+├── knowledge-pipeline/             # Python/LangGraph knowledge and user-memory ingestion pipeline
+│   ├── src/laxcode_knowledge/
+│   │   ├── cmd/                    # CLI entrypoints
+│   │   ├── models/                 # Config and data models
+│   │   ├── node/                   # LangGraph processing nodes
+│   │   ├── splitter/               # Document chunking strategies
+│   │   ├── state/                  # Workflow state definitions
+│   │   ├── store/                  # SQLite vector data writing
+│   │   └── tools/                  # Pipeline tool abstractions and registry
+│   └── tests/                      # Knowledge pipeline tests
+```
