@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  LaxCode
+  <span style="font-family: 'Arial Rounded MT Bold', 'Nunito', sans-serif; font-size: 24px; font-weight: 700; color: #8798E5;">Lax</span><span style="font-family: 'Arial Rounded MT Bold', 'Nunito', sans-serif; font-size: 24px; font-weight: 700; color: #58D2C2;">Code</span>
 </p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
@@ -19,7 +19,9 @@ brew install pnpm
 ```
 该命令默认会在 http://127.0.0.1:5173 启动 Web UI, 本机启动时还会用默认浏览器打开页面。 [Windows使用](./docs/windows_run_web.md)
   
-<img src="./examples/laxcode_web.png">
+<img src="./examples/laxcode_web.png">  
+  
+<img src="./examples/otel.png">
 
 ## 特性
 - 会话存储引擎
@@ -141,3 +143,69 @@ npm --prefix web run dev
 ```
 
 打开 <http://127.0.0.1:5173>。
+
+### 架构
+
+Go 后端按 DDD 分层组织，核心依赖方向为 `cmd → application → domain ← infrastructure`；Web 前端和知识库导入管线作为独立子工程协作。
+
+```text
+LaxCode/
+├── cmd/                            # 程序入口与运行模式适配
+│   ├── main/                       # CLI 主入口：加载配置并分流各运行模式
+│   ├── agentasm/                   # 组合根：装配 Agent、工具、模型、会话与追踪
+│   ├── run_cli/                    # Coding Agent 交互式终端模式
+│   ├── run_evaluate/               # LLM-as-a-Judge 任务评估模式
+│   ├── run_qa/                     # Agentic RAG 命令行问答模式
+│   ├── run_sse/                    # Web 后端：SSE、会话、审批与目录选择接口
+│   └── web/                        # 内嵌前端资源及反向代理的独立 Web 程序
+├── internal/
+│   ├── application/                # 应用层：编排领域能力与完整用例
+│   │   ├── reactservice/           # ReAct 推理循环、上下文压缩与子 Agent 调度
+│   │   ├── qaservice/              # 知识库检索增强问答流程
+│   │   ├── usermemory/             # 用户记忆召回、摘要与异步写入流程
+│   │   └── llm_router/             # 本地模型网关的 HTTP/SSE 编排
+│   ├── domain/                     # 领域层：核心模型、规则与基础设施端口
+│   │   ├── session/                # 会话聚合、请求上下文及仓储接口
+│   │   ├── tools/                  # 工具注册表、内置工具行为与执行端口
+│   │   ├── prompt/                 # 系统提示词、Skill 与 Plan Mode 组装
+│   │   ├── compactor/              # 上下文压缩策略
+│   │   ├── knowledgebase/          # 知识库、向量检索与嵌入接口
+│   │   ├── llmprovider/            # LLM 客户端接口
+│   │   ├── llmrouter/              # 模型网关流式传输接口
+│   │   ├── telemetry/              # Trace 名称、属性与观测语义
+│   │   └── sharedkernel/           # 消息、工具、SSE 与 token 等共享类型
+│   └── infrastructure/             # 基础设施层：领域端口的外部实现
+│       ├── llmprovider/             # OpenAI Responses 协议适配
+│       ├── llmrouter/               # OpenAI 兼容流式网关适配
+│       ├── embedding/               # OpenAI 兼容向量模型适配
+│       ├── knowledgebase/           # SQLite + sqlite-vec 知识库实现
+│       ├── sessionrepo/             # SQLite 会话、历史与记忆任务仓储
+│       ├── artifactstore/           # 会话产物的文件存储
+│       ├── workfs/                  # 工作区文件读写实现
+│       ├── shell/                   # Shell 执行、超时与进程管理
+│       ├── ripgrep/                 # 文件搜索与内容检索适配
+│       ├── skillrepo/               # 本地 Skill 扫描与加载
+│       ├── memorypipeline/          # Python 记忆入库管线的进程适配
+│       ├── config/                  # 配置加载与模型目录
+│       ├── layout/                  # 用户数据与会话磁盘布局
+│       ├── cliprinter/              # 交互式终端界面
+│       └── tracing/                 # OpenTelemetry、OTLP 与本地追踪实现
+├── web/                             # React + TypeScript Web 客户端
+│   └── src/
+│       ├── api/                     # 后端接口与 SSE 客户端
+│       ├── app/                     # 应用根组件与全局 Provider
+│       ├── components/              # 聊天、模型选择等界面组件
+│       ├── features/                # 聊天状态与身份等业务模块
+│       ├── hooks/                   # 工作区等可复用 React Hooks
+│       └── types/                   # 前端 API 与消息类型
+├── knowledge-pipeline/              # Python/LangGraph 知识与用户记忆导入管线
+│   ├── src/laxcode_knowledge/
+│   │   ├── cmd/                     # 命令行入口
+│   │   ├── models/                  # 配置与数据模型
+│   │   ├── node/                    # LangGraph 处理节点
+│   │   ├── splitter/                # 文档分块策略
+│   │   ├── state/                   # 工作流状态定义
+│   │   ├── store/                   # SQLite 向量数据写入
+│   │   └── tools/                   # 管线工具抽象与注册
+│   └── tests/                       # 知识管线测试
+```
