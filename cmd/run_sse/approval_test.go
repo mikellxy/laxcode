@@ -81,6 +81,7 @@ func TestChatStreamWaitsForHTTPApproval(t *testing.T) {
 		{name: "stop", approved: false, want: `"code":"CHAT_STOPPED"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			stubActiveModel(t)
 			workDir := t.TempDir()
 			sessionHome := t.TempDir()
 			dbPath := filepath.Join(workDir, "sessions.db")

@@ -110,3 +110,53 @@ func TestAddModelToSettingsCreatesProvider(t *testing.T) {
 		t.Fatalf("resolved=%+v err=%v", resolved, err)
 	}
 }
+
+// TestAddModelToSettingsFirstModelCreatesSettingsAndActivates 验证延迟配置闭环：
+// 无 settings.json 时首次添加会创建种子文件，新模型自动激活，压缩配置随主
+// 模型派生，紧随其后的 /chat 无需再手动切换。
+func TestAddModelToSettingsFirstModelCreatesSettingsAndActivates(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	added, err := AddModelToSettings(home, AddModelInput{
+		Provider: "openai", Model: "gpt-test", APIKey: "sk-new", BaseURL: "https://api.example.com/v1",
+		ContextWindow: 200_000, MaxOutputTokens: 16_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added.ModelName != "gpt-test" {
+		t.Fatalf("added model=%+v", added)
+	}
+	if EnvAndFileConf.Model != "openai:gpt-test" || EnvAndFileConf.OpenaiApiKey != "sk-new" ||
+		EnvAndFileConf.OpenaiBaseUrl != "https://api.example.com/v1" || EnvAndFileConf.OpenaiModel != "gpt-test" {
+		t.Fatalf("first added model should be activated: %+v", EnvAndFileConf)
+	}
+	if EnvAndFileConf.CompactionModel != "openai:gpt-test" || EnvAndFileConf.CompactionOpenaiApiKey != "sk-new" ||
+		EnvAndFileConf.CompactionOpenaiContextWindow != 200_000 || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 16_000 {
+		t.Fatalf("compaction should derive from the first model: %+v", EnvAndFileConf)
+	}
+
+	settingsPath := filepath.Join(home, ".laxcode", "settings.json")
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		ProviderList []ProviderConfig `json:"provider_list"`
+	}
+	if err := json.Unmarshal(content, &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document.ProviderList) != 1 || len(document.ProviderList[0].ModelList) != 1 ||
+		document.ProviderList[0].ModelList[0].ModelName != "gpt-test" {
+		t.Fatalf("persisted settings=%s", content)
+	}
+	info, err := os.Stat(settingsPath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("settings file stat: %v", err)
+	}
+}

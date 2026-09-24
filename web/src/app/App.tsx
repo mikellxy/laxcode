@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Menu, PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
 import { getOrCreateGuestID } from "../features/identity/guest";
 import { useWorkspace } from "../hooks/use-workspace";
@@ -9,6 +10,7 @@ import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { ChatComposer } from "../components/chat-composer/ChatComposer";
 import { ProjectOnboarding } from "../components/project-onboarding/ProjectOnboarding";
 import { pickDirectory } from "../api/directory-picker";
+import { listModels } from "../api/models";
 
 export function App() {
   const userID = useMemo(getOrCreateGuestID, []); const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -51,6 +53,11 @@ export function App() {
     }
   };
   const messages = [...workspace.historyMessages.map(historyToMessage), ...workspace.stream.messages];
+  // 模型目录与 ModelPicker 共用同一 Query 缓存：无活跃模型时锁定输入框，
+  // 点击锁定区让齿轮按钮跳动引导配置。
+  const models = useQuery({ queryKey: ["models"], queryFn: listModels });
+  const modelLocked = models.isSuccess && !models.data.current_model;
+  const [gearBounce, setGearBounce] = useState(0);
   const selected = workspace.allSessions.find((session) => session.session_id === workspace.selectedID);
   const projects = workspace.projects.data?.projects ?? [];
   const isFirstRun = workspace.projects.isSuccess && projects.length === 0;
@@ -63,8 +70,8 @@ export function App() {
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div className="workspace-meta"><strong title={selected?.work_dir}>{isFirstRun ? "欢迎使用 LaxCode" : selected?.work_dir || "请选择会话"}</strong><small>{isFirstRun ? <span>创建项目后即可开始</span> : <><span>session_id: {selected?.session_id || "—"}</span>{workspace.stream.running ? <><i className="working-dot" />正在执行</> : <span>准备就绪</span>}</>}</small></div></header>
       {isFirstRun ? <ProjectOnboarding creating={pickingProject || workspace.createProject.isPending || workspace.createSession.isPending} onCreate={() => void createProject()} /> : <>
         <MessageList messages={messages} hasMore={Boolean(workspace.history.hasNextPage)} loading={workspace.history.isFetchingNextPage} initialLoading={workspace.history.isLoading} error={workspace.stream.error} retryAction={workspace.stream.retryAction} retrying={workspace.stream.running} onRetry={workspace.retry} onLoadMore={() => workspace.history.fetchNextPage()} />
-        <ModelPicker running={workspace.stream.running} />
-        <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedID || workspace.history.isLoading} onSend={workspace.send} onCancel={workspace.cancel} />
+        <ModelPicker running={workspace.stream.running} bounceKey={gearBounce} />
+        <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedID || workspace.history.isLoading} locked={modelLocked} onLockedClick={() => setGearBounce((value) => value + 1)} onSend={workspace.send} onCancel={workspace.cancel} />
       </>}
       {workspace.stream.approval && <div className="approval-backdrop"><div className="approval-dialog" role="dialog" aria-modal="true" aria-label="需要确认">
         <h2>{workspace.stream.approval.kind === "token_budget" ? "Token 预算已达到阈值" : "确认危险命令"}</h2>

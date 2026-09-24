@@ -565,8 +565,19 @@ func (n *nonFlusherWriter) Header() http.Header         { return n.header }
 func (n *nonFlusherWriter) Write(b []byte) (int, error) { return len(b), nil }
 func (n *nonFlusherWriter) WriteHeader(code int)        { n.code = code }
 
+// stubActiveModel 在测试内伪造一个已激活的运行时模型（预检只看 Model 引用），
+// 结束后恢复全局配置。供覆盖 /chat /resume 完整路径的用例绕过 MODEL_REQUIRED
+// 预检。
+func stubActiveModel(t *testing.T) {
+	t.Helper()
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.Model = "test:model"
+}
+
 // TestHandleChatNoFlusher 验证 ResponseWriter 不支持 Flusher 时返回 500（仍在进入流之前）。
 func TestHandleChatNoFlusher(t *testing.T) {
+	stubActiveModel(t)
 	workDir := t.TempDir()
 	s := newServer(t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
@@ -582,6 +593,7 @@ func TestHandleChatNoFlusher(t *testing.T) {
 // TestHandleChatAssembleError 验证装配失败时已进入 SSE 流（状态码固定 200、
 // Content-Type 为 event-stream），错误经 event: error 帧回传，且此前不发 start 帧。
 func TestHandleChatAssembleError(t *testing.T) {
+	stubActiveModel(t)
 	workDir := t.TempDir()
 	s := newServer(t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
@@ -611,6 +623,7 @@ func TestHandleChatAssembleError(t *testing.T) {
 }
 
 func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
+	stubActiveModel(t)
 	workDir := t.TempDir()
 	s := newServer(t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
@@ -628,6 +641,33 @@ func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"code":"AGENT_ASSEMBLY_FAILED"`) || !strings.Contains(body, `"retry_action":"resume"`) {
 		t.Fatalf("resume 装配失败应保持 resume 动作，实际 %q", body)
+	}
+}
+
+// TestHandleChatWithoutModel 验证延迟配置场景：未激活模型时 /chat 与 resume
+// 在进入 SSE 流之前返回 409 MODEL_REQUIRED，而不是在 LLM 调用处才失败。
+func TestHandleChatWithoutModel(t *testing.T) {
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.Model = ""
+	config.EnvAndFileConf.ProviderList = nil
+
+	workDir := t.TempDir()
+	s := newServer(t.TempDir(), false)
+	s.catalog = catalogWithSession("s1", workDir)
+
+	chat := httptest.NewRecorder()
+	s.handleChat(chat, httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`)))
+	if chat.Code != http.StatusConflict || !strings.Contains(chat.Body.String(), "MODEL_REQUIRED") {
+		t.Fatalf("chat status=%d body=%s", chat.Code, chat.Body.String())
+	}
+
+	resume := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	mux.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil))
+	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "MODEL_REQUIRED") {
+		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
 	}
 }
 

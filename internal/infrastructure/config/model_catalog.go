@@ -70,27 +70,37 @@ func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error
 	}
 	runtimeCandidate := EnvAndFileConf
 	runtimeCandidate.ProviderList = runtimeProviders
+	// 此前没有任何模型（延迟配置场景）：新模型自动成为活跃模型，维持
+	// 「目录非空 ⟹ 活跃模型可解析」的校验不变式。
+	activated := strings.TrimSpace(runtimeCandidate.Model) == ""
+	if activated {
+		runtimeCandidate.Model = modelRef(input.Provider, model.ModelName)
+	}
 	if err := runtimeCandidate.validateModelCatalog(); err != nil {
 		return ModelConfig{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 	}
 
 	settingsPath := layout.UserSettings(homeDir)
 	raw, err := os.ReadFile(settingsPath)
-	if err != nil {
+	var document map[string]json.RawMessage
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(raw, &document); err != nil {
+			return ModelConfig{}, fmt.Errorf("parse settings: %w", err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// 首次使用尚无 settings.json：以空文档起步，provider_list 由下方
+		// 写入步骤补齐（等价于种子 {"provider_list": []} 后追加）。
+		document = map[string]json.RawMessage{}
+	default:
 		return ModelConfig{}, fmt.Errorf("read settings: %w", err)
 	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &document); err != nil {
-		return ModelConfig{}, fmt.Errorf("parse settings: %w", err)
-	}
 	var diskProviders []ProviderConfig
-	providerJSON, ok := document["provider_list"]
-	if !ok {
-		return ModelConfig{}, fmt.Errorf("parse settings: provider_list is required")
-	}
-	if err := json.Unmarshal(providerJSON, &diskProviders); err != nil {
-		return ModelConfig{}, fmt.Errorf("parse settings provider_list: %w", err)
-	}
+	if providerJSON, ok := document["provider_list"]; ok {
+		if err := json.Unmarshal(providerJSON, &diskProviders); err != nil {
+			return ModelConfig{}, fmt.Errorf("parse settings provider_list: %w", err)
+		}
+	} // 文件存在但缺 provider_list 键时按空目录处理
 	diskProviders, err = appendModelToProviders(diskProviders, input, model)
 	if err != nil {
 		return ModelConfig{}, err
@@ -104,10 +114,18 @@ func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error
 		return ModelConfig{}, fmt.Errorf("encode settings: %w", err)
 	}
 	encoded = append(encoded, '\n')
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		return ModelConfig{}, fmt.Errorf("create settings dir: %w", err)
+	}
 	if err := writeSettingsAtomic(settingsPath, encoded); err != nil {
 		return ModelConfig{}, err
 	}
 	EnvAndFileConf.ProviderList = runtimeProviders
+	if activated {
+		if err := EnvAndFileConf.setActiveModel(runtimeCandidate.Model); err != nil {
+			return ModelConfig{}, fmt.Errorf("activate added model: %w", err)
+		}
+	}
 	return model, nil
 }
 

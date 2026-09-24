@@ -2,18 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { shouldSubmitOnKeyDown } from "./keyboard";
 
-export function ChatComposer({ running, disabled, onSend, onCancel }: { running: boolean; disabled: boolean; onSend: (value: string) => void; onCancel: () => void }) {
+// locked 表示「尚无可用模型」：输入框锁定为不可输入，点击输入区通过
+// onLockedClick 通知父组件（驱动模型齿轮跳动引导配置）；与 disabled
+// （无会话等临时不可用）区分，提示文案不同。
+export function ChatComposer({ running, disabled, locked, onLockedClick, onSend, onCancel }: { running: boolean; disabled: boolean; locked: boolean; onLockedClick?: () => void; onSend: (value: string) => void; onCancel: () => void }) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
   useEffect(() => { const el = ref.current; if (el) { el.style.height = "0"; el.style.height = `${Math.min(el.scrollHeight, 160)}px`; } }, [value]);
-  const submit = () => { const task = value.trim(); if (!task || running || disabled) return; setValue(""); onSend(task); };
-  return <div className="composer-wrap"><div className={`composer ${running ? "running" : ""}`}><textarea
+  const submit = () => { const task = value.trim(); if (!task || running || disabled || locked) return; setValue(""); onSend(task); };
+  return <div className="composer-wrap"><div className={`composer ${running ? "running" : ""} ${locked ? "locked" : ""}`} onClick={locked ? onLockedClick : undefined}><textarea
     ref={ref}
     rows={1}
     value={value}
-    disabled={disabled}
-    placeholder="给 LaxCode 发送任务…"
+    disabled={disabled || locked}
+    placeholder={locked ? "请先点击齿轮按钮配置模型…" : "给 LaxCode 发送任务…"}
     onChange={(event) => setValue(event.target.value)}
     onCompositionStart={() => { composing.current = true; }}
     onCompositionEnd={() => { composing.current = false; }}
@@ -27,5 +30,5 @@ export function ChatComposer({ running, disabled, onSend, onCancel }: { running:
       event.preventDefault();
       submit();
     }}
-  /><div className="composer-actions"><span>Enter 发送 · Shift + Enter 换行</span>{running ? <button className="stop-button" onClick={onCancel} aria-label="取消生成"><Square size={14} fill="currentColor" /></button> : <button className="send-button" onClick={submit} disabled={!value.trim() || disabled} aria-label="发送"><ArrowUp size={18} /></button>}</div></div><p>LaxCode 可能会犯错，请检查重要结果。</p></div>;
+  /><div className="composer-actions"><span>{locked ? "配置模型后即可开始对话" : "Enter 发送 · Shift + Enter 换行"}</span>{running ? <button className="stop-button" onClick={onCancel} aria-label="取消生成"><Square size={14} fill="currentColor" /></button> : <button className="send-button" onClick={submit} disabled={!value.trim() || disabled || locked} aria-label="发送"><ArrowUp size={18} /></button>}</div></div><p>LaxCode 可能会犯错，请检查重要结果。</p></div>;
 }

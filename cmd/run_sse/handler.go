@@ -298,6 +298,13 @@ type directoryPickerResponse struct {
 	Path *string `json:"path"`
 }
 
+// modelMissing 在 switcher 读锁内检查是否尚无活跃模型（延迟配置场景）。
+func (s *server) modelMissing() bool {
+	s.switcher.RLock()
+	defer s.switcher.RUnlock()
+	return strings.TrimSpace(config.EnvAndFileConf.Model) == ""
+}
+
 func (s *server) handlePickDirectory(w http.ResponseWriter, r *http.Request) {
 	if s.pickDirectory == nil {
 		writeJSONError(w, http.StatusInternalServerError, "directory picker is unavailable")
@@ -401,10 +408,21 @@ func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.switcher.Lock()
+	// 延迟配置场景：此前没有任何模型，AddModelToSettings 会把新模型自动
+	// 激活为运行时配置；路由器上游 client 仍指向空配置，需在同一把写锁内
+	// 同步替换，保证紧随其后的 /chat 即可用。
+	hadActiveModel := strings.TrimSpace(config.EnvAndFileConf.Model) != ""
 	model, err := config.AddModelToSettings(s.homeDir, config.AddModelInput{
 		Provider: req.Provider, Model: req.Model, APIKey: req.APIKey, BaseURL: req.BaseURL,
 		ContextWindow: req.ContextWindow, MaxOutputTokens: req.MaxOutputTokens,
 	})
+	if err == nil && !hadActiveModel {
+		if err = s.switcher.SwitchModelLocked(strings.TrimSpace(req.Provider) + ":" + model.ModelName); err != nil {
+			s.switcher.Unlock()
+			writeJSONError(w, http.StatusInternalServerError, "model saved but activation failed: "+err.Error())
+			return
+		}
+	}
 	s.switcher.Unlock()
 	if err != nil {
 		switch {
@@ -663,6 +681,13 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), "")
 		return
 	}
+	// 延迟配置场景：模型未配置时在进入 SSE 流之前以 JSON 明确报错，避免
+	// 装配成功后在 LLM 调用处才失败、用户只看到晦涩的上游错误。
+	if s.modelMissing() {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
+			"no model is configured; add one with the model picker (gear) first", RetryActionResend)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -759,6 +784,11 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), RetryActionResume)
+		return
+	}
+	if s.modelMissing() {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
+			"no model is configured; add one with the model picker (gear) first", RetryActionResume)
 		return
 	}
 

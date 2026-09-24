@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronUp, Clock, Loader2, Plus } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Clock, Loader2, Settings } from "lucide-react";
 import { addModelRequest, listModels, modelRefs, splitModelRef, switchModelRequest } from "../../api/models";
 import type { AddModelInput, ProviderListModelDTO } from "../../types/api";
 import { AddModelDialog } from "./AddModelDialog";
 
-export function ModelPicker({ running }: { running: boolean }) {
+// ModelPicker 承载模型选择触发器与旁侧的「添加模型」齿轮按钮：齿轮直接打开
+// 添加表单；bounceKey 由父组件在用户点击被锁定的输入框时递增，驱动齿轮跳动
+// 引导配置模型。
+export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKey: number }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [queued, setQueued] = useState<string | null>(null);
+  const [bouncing, setBouncing] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const models = useQuery({ queryKey: ["models"], queryFn: listModels });
   const switchModel = useMutation({
@@ -29,7 +33,6 @@ export function ModelPicker({ running }: { running: boolean }) {
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: ["models"] });
       setAdding(false);
-      setOpen(true);
     },
   });
 
@@ -42,6 +45,14 @@ export function ModelPicker({ running }: { running: boolean }) {
     switchModel.mutate(ref);
   }, [running, queued, switchModel]);
 
+  // 父组件递增 bounceKey（用户点击了锁定中的输入框）时让齿轮跳动一次。
+  useEffect(() => {
+    if (!bounceKey) return;
+    setBouncing(true);
+    const timer = setTimeout(() => setBouncing(false), 700);
+    return () => clearTimeout(timer);
+  }, [bounceKey]);
+
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
@@ -53,6 +64,7 @@ export function ModelPicker({ running }: { running: boolean }) {
 
   const current = models.data?.current_model;
   const refs = models.data ? modelRefs(models.data) : [];
+  const label = models.isError ? "模型列表不可用" : queued ?? (models.isPending ? "加载模型…" : current || "未配置模型");
   const pick = (ref: string) => {
     if (ref === current || switchModel.isPending) return;
     if (running) { setQueued(ref); setOpen(false); return; }
@@ -60,17 +72,18 @@ export function ModelPicker({ running }: { running: boolean }) {
   };
   return <div className="model-picker" ref={root}>
     <button className={`model-trigger ${queued ? "queued" : ""}`} onClick={() => setOpen((value) => !value)} disabled={models.isPending} aria-haspopup="listbox" aria-expanded={open}>
-      {models.isError ? "模型列表不可用" : queued ?? current ?? "加载模型…"}
+      {label}
       {switchModel.isPending ? <Loader2 size={13} className="spin" /> : queued ? <Clock size={13} /> : open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
     </button>
+    <button type="button" className={`model-gear ${bouncing ? "bounce" : ""}`} onClick={() => { addModel.reset(); setAdding(true); }} aria-label="添加模型" title="添加模型"><Settings size={14} /></button>
     {open && <ul className="model-menu" role="listbox">
       {models.isError && <li className="model-menu-state" onClick={() => models.refetch()}>加载失败，点击重试</li>}
+      {!models.isError && refs.length === 0 && <li className="model-menu-state">还没有模型，点击齿轮按钮添加</li>}
       {!models.isError && refs.map((ref) => <li key={ref} role="option" aria-selected={ref === current} className={`model-item ${ref === current ? "active" : ""} ${ref === queued ? "queued" : ""}`} onClick={() => pick(ref)}>
         <span>{ref}{ref === queued ? " · 待生效" : ""}</span>
         {ref === current ? <Check size={14} /> : ref === queued ? <Clock size={14} /> : null}
       </li>)}
       {switchModel.isError && <li className="model-menu-state error">切换失败：{switchModel.error instanceof Error ? switchModel.error.message : "未知错误"}</li>}
-      <li className="model-add-item"><button type="button" onClick={() => { addModel.reset(); setOpen(false); setAdding(true); }}><Plus size={14} />添加模型</button></li>
     </ul>}
     {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} />}
   </div>;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mikellxy/laxcode/cmd/run_cli"
@@ -30,6 +31,12 @@ func main() {
 	}
 	if err := config.ParseCli(); err != nil {
 		panic(err)
+	}
+	// 模式闸门：交互 CLI / QA 终端 / evaluate 保持 fail-fast，必须有可用
+	// 模型；SSE 模式允许零模型启动，进入页面后经 POST /api/models 添加。
+	if !config.CliConf.SSE && strings.TrimSpace(config.EnvAndFileConf.Model) == "" {
+		panic("no model configured: interactive, QA and evaluate modes require a model; " +
+			"add provider_list to ~/.laxcode/settings.json or set OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME")
 	}
 
 	// 模型路由器独立使用 llmrouter.log；任何启动模式都先在 goroutine 中启动

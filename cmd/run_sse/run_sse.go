@@ -27,8 +27,11 @@ import (
 // 取消驱动在途 Chat 收敛、Cleanup 回收资源。
 const shutdownTimeout = 15 * time.Second
 
-// checkConfig 按启动模式校验聊天模型以及 QA/用户记忆所需配置：
-// 缺失即在起服务前失败，避免监听后才在首个请求暴露配置问题。
+// checkConfig 按启动模式校验 QA/用户记忆所需配置：缺失即在起服务前失败，
+// 避免监听后才在首个请求暴露配置问题。主模型配置不在启动期强制：SSE 模式
+// 允许零配置启动，进入页面后经 POST /api/models 添加并自动激活首个模型；
+// 未配置期间 /chat 与 resume 会返回 MODEL_REQUIRED。其余模式（交互 CLI /
+// QA 终端 / evaluate）由 main 在模式分发前强制要求已配置模型。
 func checkConfig() error {
 	if config.CliConf.QA {
 		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
@@ -45,15 +48,6 @@ func checkConfig() error {
 		if err := config.ValidateVectorDimensions(config.CliConf.VectorDimensions); err != nil {
 			return err
 		}
-	}
-	if config.EnvAndFileConf.OpenaiApiKey == "" {
-		return errors.New("openai_api_key is required")
-	}
-	if config.EnvAndFileConf.OpenaiBaseUrl == "" {
-		return errors.New("openai_base_url is required")
-	}
-	if config.EnvAndFileConf.OpenaiModel == "" {
-		return errors.New("openai_model is required")
 	}
 	return nil
 }

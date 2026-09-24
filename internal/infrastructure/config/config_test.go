@@ -756,3 +756,76 @@ func TestSSEAllowsMissingMemoryFlagsWhenEmbeddingIsDisabled(t *testing.T) {
 		})
 	}
 }
+
+// TestParseEnvAndFileAllowsEmptyCatalog 验证 SSE 延迟配置：零配置（无文件、
+// 无环境变量）启动不报错，目录与活跃模型均为空，全局默认值仍生效。
+func TestParseEnvAndFileAllowsEmptyCatalog(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatalf("ParseEnvAndFile: %v", err)
+	}
+	if len(EnvAndFileConf.ProviderList) != 0 || EnvAndFileConf.Model != "" {
+		t.Fatalf("expected unconfigured state, got model=%q providers=%d", EnvAndFileConf.Model, len(EnvAndFileConf.ProviderList))
+	}
+	if EnvAndFileConf.OpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.OpenaiMaxOutputTokens != DefaultMaxOutputTokens {
+		t.Fatalf("global defaults should still apply: %+v", EnvAndFileConf)
+	}
+}
+
+// TestParseEnvAndFileDefaultsToFirstModel 目录非空但未选择模型时默认选中第一个
+// 条目，维持「目录非空 ⟹ 活跃模型可解析」的不变式。
+func TestParseEnvAndFileDefaultsToFirstModel(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{"provider_list":[{
+		"provider_name":"p",
+		"openai_api_key":"sk-file-key",
+		"openai_base_url":"https://file.example.com/v1",
+		"model_list":[{"model_name":"main"},{"model_name":"second"}]
+	}]}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatalf("ParseEnvAndFile: %v", err)
+	}
+	if EnvAndFileConf.Model != "p:main" || EnvAndFileConf.OpenaiModel != "main" {
+		t.Fatalf("default model=%q upstream=%q", EnvAndFileConf.Model, EnvAndFileConf.OpenaiModel)
+	}
+	if EnvAndFileConf.CompactionModel != "p:main" || EnvAndFileConf.CompactionOpenaiModel != "main" {
+		t.Fatalf("compaction should inherit the active model: %+v", EnvAndFileConf)
+	}
+}
+
+// TestSetActiveModelReDerivesInheritedCompaction 运行期切换主模型时，未显式
+// 配置的压缩模型随新主模型重推导；显式配置的压缩模型保持不变。
+func TestSetActiveModelReDerivesInheritedCompaction(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{"provider_list":[{
+		"provider_name":"p",
+		"openai_api_key":"sk-p",
+		"openai_base_url":"https://p.example.com/v1",
+		"model_list":[{"model_name":"main","limit":{"context":100000,"output":8000}}]
+	},{
+		"provider_name":"q",
+		"openai_api_key":"sk-q",
+		"openai_base_url":"https://q.example.com/v1",
+		"model_list":[{"model_name":"other"}]
+	}]}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetActiveModel("q:other"); err != nil {
+		t.Fatal(err)
+	}
+	if EnvAndFileConf.CompactionModel != "q:other" || EnvAndFileConf.CompactionOpenaiModel != "other" ||
+		EnvAndFileConf.CompactionOpenaiApiKey != "sk-q" {
+		t.Fatalf("compaction should follow the new main model: %+v", EnvAndFileConf)
+	}
+	// 新主模型无模型级 limit，压缩窗口回退全局默认。
+	if EnvAndFileConf.CompactionOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != DefaultMaxOutputTokens {
+		t.Fatalf("compaction budget should fall back to global defaults: %+v", EnvAndFileConf)
+	}
+}

@@ -86,6 +86,15 @@ type envAndFileConf struct {
 	LlmRouterAddr                   string `mapstructure:"llm_router_addr"`
 	// LlmRouterURL 是进程启动后写入的实际本地端点，不从环境或配置文件读取。
 	LlmRouterURL string `mapstructure:"-"`
+
+	// compactionConfigured 记录压缩模型是否被显式配置（compaction_model 引用
+	// 或 OPENAI_COMPACTION_* 环境变量）。未显式配置时压缩模型继承主模型，
+	// setActiveModel 切换主模型后需同步重推导。
+	compactionConfigured bool
+	// rawCompactionContextWindow / rawCompactionMaxOutputTokens 是压缩窗口的
+	// 原始配置值（文件/环境），在派生值覆盖前快照，供运行期重推导复用。
+	rawCompactionContextWindow   int
+	rawCompactionMaxOutputTokens int
 }
 
 const (
@@ -202,7 +211,12 @@ func (c *envAndFileConf) validateModelCatalog() error {
 		}
 	}
 	if len(c.ProviderList) == 0 {
-		return errors.New("provider_list must contain at least one provider")
+		if c.Model != "" {
+			return fmt.Errorf("model %q is set but provider_list is empty", c.Model)
+		}
+		// 空目录且未选择模型是合法的「未配置」状态：SSE 模式允许先启动进入
+		// 页面，再经 POST /api/models 添加；是否要求必须配置由调用方按模式决定。
+		return nil
 	}
 	_, err := c.resolveModel(c.Model)
 	return err
@@ -217,6 +231,18 @@ func (c *envAndFileConf) setActiveModel(ref string) error {
 	c.OpenaiApiKey = resolved.OpenaiApiKey
 	c.OpenaiBaseUrl = resolved.OpenaiBaseUrl
 	c.OpenaiModel = resolved.UpstreamModel
+	// 压缩模型未显式配置时继承主模型；主模型切换（含延迟配置后的首次激
+	// 活）后同步重推导，保证运行期装配读到与新主模型一致的压缩配置。
+	if !c.compactionConfigured {
+		c.CompactionModel = resolved.Ref
+		c.CompactionOpenaiApiKey = resolved.OpenaiApiKey
+		c.CompactionOpenaiBaseUrl = resolved.OpenaiBaseUrl
+		c.CompactionOpenaiModel = resolved.UpstreamModel
+		c.CompactionOpenaiContextWindow = effectiveAuxiliaryBudget(
+			resolved.ContextWindow, c.rawCompactionContextWindow, resolved.hasLimit, "COMPACTION_OPENAI_CONTEXT_WINDOW")
+		c.CompactionOpenaiMaxOutputTokens = effectiveAuxiliaryBudget(
+			resolved.MaxOutputTokens, c.rawCompactionMaxOutputTokens, resolved.hasLimit, "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
+	}
 	return nil
 }
 
@@ -412,11 +438,29 @@ func ParseEnvAndFile() error {
 		})
 		EnvAndFileConf.Model = modelRef(envProviderName, envModelName)
 	}
+	// 在派生值覆盖前快照压缩模型的显式配置：compactionConfigured 决定
+	// setActiveModel 是否随主模型重推导压缩模型；raw* 是压缩窗口的原始
+	// 配置值，供重推导时复用（文件/环境里未配置时为零值）。
+	EnvAndFileConf.compactionConfigured = strings.TrimSpace(EnvAndFileConf.CompactionModel) != "" ||
+		readModelEnvironment("OPENAI_COMPACTION_").count() > 0
+	EnvAndFileConf.rawCompactionContextWindow = EnvAndFileConf.CompactionOpenaiContextWindow
+	EnvAndFileConf.rawCompactionMaxOutputTokens = EnvAndFileConf.CompactionOpenaiMaxOutputTokens
+	// 目录非空但未选择模型时默认选中第一个条目：维持「目录非空 ⟹ 活跃模型
+	// 可解析」的不变式，也让延迟配置（SSE 模式先添加模型）在重启后无需再
+	// 手动选择。
+	if len(EnvAndFileConf.ProviderList) > 0 && strings.TrimSpace(EnvAndFileConf.Model) == "" {
+		first := EnvAndFileConf.ProviderList[0]
+		EnvAndFileConf.Model = modelRef(first.ProviderName, first.ModelList[0].ModelName)
+	}
 	if err := EnvAndFileConf.validateModelCatalog(); err != nil {
 		return err
 	}
-	if err := EnvAndFileConf.setActiveModel(EnvAndFileConf.Model); err != nil {
-		return err
+	// 目录可为空（SSE 模式的延迟配置状态）：无活跃模型时跳过激活，压缩模型
+	// 的派生与校验一并推迟到添加并激活首个模型之后。
+	if EnvAndFileConf.Model != "" {
+		if err := EnvAndFileConf.setActiveModel(EnvAndFileConf.Model); err != nil {
+			return err
+		}
 	}
 	embedding, err := EnvAndFileConf.resolveAuxiliaryModel(
 		"EMBEDDING_MODEL", EnvAndFileConf.EmbeddingModel,
@@ -458,12 +502,14 @@ func ParseEnvAndFile() error {
 		EnvAndFileConf.OpenaiMaxOutputTokens >= EnvAndFileConf.OpenaiContextWindow {
 		return errors.New("openai_max_output_tokens must be positive and smaller than openai_context_window")
 	}
-	if EnvAndFileConf.CompactionOpenaiContextWindow <= 0 {
-		return errors.New("compaction_openai_context_window must be positive")
-	}
-	if EnvAndFileConf.CompactionOpenaiMaxOutputTokens <= 0 ||
-		EnvAndFileConf.CompactionOpenaiMaxOutputTokens >= EnvAndFileConf.CompactionOpenaiContextWindow {
-		return errors.New("compaction_openai_max_output_tokens must be positive and smaller than compaction_openai_context_window")
+	if EnvAndFileConf.Model != "" {
+		if EnvAndFileConf.CompactionOpenaiContextWindow <= 0 {
+			return errors.New("compaction_openai_context_window must be positive")
+		}
+		if EnvAndFileConf.CompactionOpenaiMaxOutputTokens <= 0 ||
+			EnvAndFileConf.CompactionOpenaiMaxOutputTokens >= EnvAndFileConf.CompactionOpenaiContextWindow {
+			return errors.New("compaction_openai_max_output_tokens must be positive and smaller than compaction_openai_context_window")
+		}
 	}
 	if window, output := ActiveModelBudget(); window <= 0 || output <= 0 || output >= window {
 		return errors.New("active model limit must have positive context and output smaller than context")
