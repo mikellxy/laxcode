@@ -5,34 +5,34 @@
 </div>
 
 <p align="center">
-  <img src="./laxcode.png" alt="LaxCode" width="400" height="180">
+  LaxCode
 </p>
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
 
-LaxCode 是一个用 Go 实现的轻量 AI Agent。
+LaxCode 是一个用 Go 实现的轻量 Agent。支持 coding agent 和 agentic RAG 两种模式，配套提供基于 LangGraph 的知识库制作工作流。需要 Go 版本 >= 1.26。
+## 快速开始
+```shell
+git clone https://github.com/mikellxy/laxcode.git && cd laxcode
+brew install pnpm
+./web.sh
+```
+该命令默认会在 http://127.0.0.1:5173 启动 Web UI, 本机启动时还会用默认浏览器打开页面。 [Windows使用](./docs/windows_run_web.md)
+  
+<img src="./examples/laxcode_web.png">
 
 ## 特性
 - 会话存储引擎
-  - SQLite 事务 + 乐观锁、上下文压缩in_memory消息分代原子化更新、崩溃恢复时进行 agent 循环完整性检测
-  - [会话存储引擎设计文档](./docs/session-storage-engine.md)
+  - SQLite 事务 + 乐观锁、上下文压缩in_memory消息分代原子化更新、崩溃恢复时进行 agent 循环完整性检测。 [设计文档](./docs/session-storage-engine.md)
 - Agentic RAG
   - 提供基于 LangGraph 的知识库制作配套 pipeline，使用标题、chunk_size、overlap_size 三重约束的 chunk splitter（[knowledge-pipeline](./knowledge-pipeline/)）
 - 效果评测
-  - 提供 agent 循环效果评测配套工具，多维打分，输出人类可读报告
-  - [查看单任务评估样例](./docs/readpaged-maxbytes-fix-evaluation.md)
+  - 提供 agent 循环效果评测配套工具，多维打分，输出人类可读报告。 [查看单任务评估样例](./docs/readpaged-maxbytes-fix-evaluation.md)
 - 上下文压缩
-  - 剪枝、上下文卸载、LLM 结构化摘要三层压缩
-  - [上下文压缩设计文档](./docs/context-compaction-design.md)
-- Token 预算
-  - 主模型、压缩模型、向量化模型可独立配置上下文窗口，支持热切换
-- Agent 运行保护
-  - 连续 3 次相同工具名与参数的调用会中断本轮推理；连续 5 次使用同一工具会向模型注入自查提醒
-  - 使用 Bash AST 检查命令；删除、提权、覆盖重定向等风险操作须由用户输入 `yes` 后执行
-  - 命令检查属于静态规则，不能推断任意外部程序或脚本的全部副作用
+  - 剪枝、上下文卸载、LLM 结构化摘要三层压缩。 [设计文档](./docs/context-compaction-design.md)
+- 软沙箱防护 & 危险命令 human-in-the-loop 确认
 - 可观测性
-  - 上报 agent 循环 span 到您的 Otel 服务(SigNoz/Tempo/Jaeger...)
-  - [将 LaxCode Span 上报到 SigNoz](./docs/signoz-tracing.md)
+  - 上报 agent 循环 span 到您的 Otel 服务(SigNoz/Tempo/Jaeger...)。 [将 LaxCode Span 上报到 SigNoz](./docs/signoz-tracing.md)
 
 ## 功能导航
 
@@ -40,7 +40,6 @@ LaxCode 是一个用 Go 实现的轻量 AI Agent。
 - [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
 - [**Agentic RAG**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
 
-## 快速开始
 ### 创建配置文件
 
 [配置文件使用说明](./docs/settings.md)。
