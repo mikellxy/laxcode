@@ -160,8 +160,7 @@ LaxCode/
 │   ├── agentasm/                   # 组合根：装配 Agent、工具、模型、会话与追踪
 │   ├── run_cli/                    # Coding Agent 交互式终端模式
 │   ├── run_evaluate/               # LLM-as-a-Judge 任务评估模式
-│   ├── run_qa/                     # Agentic RAG 命令行问答模式
-│   ├── run_sse/                    # Web 后端：SSE、会话、审批与目录选择接口
+│   ├── run_sse/                    # Web 后端：SSE、QA、会话、审批与目录选择接口
 │   └── web/                        # 内嵌前端资源及反向代理的独立 Web 程序
 ├── internal/
 │   ├── application/                # 应用层：编排领域能力与完整用例

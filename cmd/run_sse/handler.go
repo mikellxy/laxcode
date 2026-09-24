@@ -616,10 +616,10 @@ func (s *server) saveBudget(assembled *agentasm.Assembled) {
 
 type qaAssembler func(context.Context, agentasm.QAInput) (*agentasm.QAAssembled, error)
 
-// useQAAssembly switches the HTTP transport to the same knowledge-base QA
-// composition root used by cmd/run_qa. The adapter only reconciles the two
-// command-layer result types; the ReAct service, prompt, retriever, and empty
-// tool registry all come from agentasm.AssembleQA.
+// useQAAssembly switches the HTTP transport to the knowledge-base QA
+// composition root. The adapter only reconciles the two command-layer result
+// types; the ReAct service, prompt, retriever, and empty tool registry all come
+// from agentasm.AssembleQA.
 func (s *server) useQAAssembly(kbPath string, assembleQA qaAssembler) {
 	s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 		assembled, err := assembleQA(ctx, agentasm.QAInput{

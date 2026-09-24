@@ -10,7 +10,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
-	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	infraembedding "github.com/mikellxy/laxcode/internal/infrastructure/embedding"
 	infrakb "github.com/mikellxy/laxcode/internal/infrastructure/knowledgebase"
@@ -74,8 +73,4 @@ func AssembleQA(ctx context.Context, in QAInput) (*QAAssembled, error) {
 		Session: sess,
 		Cleanup: cleanup,
 	}, nil
-}
-
-func newQAToolRegistry(tracer telemetry.Tracer) *tools.DefaultRegistry {
-	return tools.NewDefaultRegistry(tracer)
 }

@@ -162,20 +162,20 @@ curl -N http://127.0.0.1:18080/openai/generate_stream \
 
 QA 始终必须指定 `-kb=/absolute/path/file.sqlite`。SSE 仅在三个 `OPENAI_EMBEDDING_*` 环境变量全部配置时要求 `-kb` 和 `-vector-dim`，不再使用 `USER_MEMORY_DB` 或固定目录回退。启用记忆后，SSE 会先调用 Python pipeline 幂等初始化用户记忆表，再启动 Go 召回；初始化、异步写入和召回共用该数据库路径和向量维度。`-workdir` 仍用于会话等数据。未启用 embedding 时可以同时省略 `-kb` 和 `-vector-dim`。
 
-### 1.7 知识库问答模式
+### 1.7 知识库 Web 问答模式
 
 ```shell
-./bin/laxcode -qa -kb=/absolute/path/kb.sqlite -workdir /path/to/project
+./bin/laxcode -sse -qa -kb=/absolute/path/kb.sqlite -workdir /path/to/project
 ```
 
 QA 模式读取 `-kb` 指定的 sqlite-vec 数据库绝对路径，将每个问题通过 `OPENAI_EMBEDDING_*` 配置的
 OpenAI 兼容 Embeddings API 转为 1024 维向量，从 `chunk_vectors` 召回最相关的 10 个
 chunk，再交给主 LLM 回答。建库和查询必须使用同一个 embedding 模型。当前 QA
-Agent 不挂载任何工具，终端也不会输出 reasoning content。
+Agent 不挂载任何工具，交互由 Web 前端通过 HTTP/SSE 完成。
 
 | 参数       | 默认  | 说明                         |
 |------------|-------|------------------------------|
-| `-qa`      | false | 启动知识库问答模式           |
+| `-qa`      | false | 与 `-sse` 组合启动知识库问答模式 |
 | `-kb`      | 必填  | sqlite-vec 数据库文件的绝对路径 |
 | `-workdir` | cwd   | 会话等数据的工作目录    |
 | `-session` | 空    | 续聊指定 QA 会话             |

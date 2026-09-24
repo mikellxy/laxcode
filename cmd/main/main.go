@@ -9,7 +9,6 @@ import (
 
 	"github.com/mikellxy/laxcode/cmd/run_cli"
 	"github.com/mikellxy/laxcode/cmd/run_evaluate"
-	"github.com/mikellxy/laxcode/cmd/run_qa"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
 	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -25,10 +24,10 @@ func main() {
 	if err := config.ParseCli(); err != nil {
 		panic(err)
 	}
-	// 模式闸门：交互 CLI / QA 终端 / evaluate 保持 fail-fast，必须有可用
+	// 模式闸门：交互 CLI / evaluate 保持 fail-fast，必须有可用
 	// 模型；SSE 模式允许零模型启动，进入页面后经 POST /api/models 添加。
 	if !config.CliConf.SSE && strings.TrimSpace(config.EnvAndFileConf.Model) == "" {
-		panic("no model configured: interactive, QA and evaluate modes require a model; " +
+		panic("no model configured: interactive and evaluate modes require a model; " +
 			"add provider_list to ~/.laxcode/settings.json or set OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME")
 	}
 
@@ -89,9 +88,9 @@ func main() {
 	}
 	defer shutdownRouter()
 
-	// 模式分发，优先级 evaluate > sse > qa > cli。evaluate 保留 os.Exit
+	// 模式分发，优先级 evaluate > sse > cli。evaluate 保留 os.Exit
 	// 契约；sse 起阻塞式 HTTP 服务（同时指定 qa 时由 run_sse
-	// 装配知识库 QA），单独 qa 进入终端知识库问答，其余进入默认 TUI 交互模式。
+	// 装配知识库 QA），其余进入默认 TUI 交互模式。
 	switch {
 	case config.CliConf.Evaluate:
 		exitCode := run_evaluate.Run()
@@ -103,8 +102,6 @@ func main() {
 		// SIGINT/SIGTERM 触发优雅关闭后 Run 返回。routerServer 一并注入，供
 		// POST /api/model 切换模型时替换路由器的上游 client。
 		run_sse.Run(routerServer, codeInstance)
-	case config.CliConf.QA:
-		run_qa.Run()
 	default:
 		run_cli.Run(routerServer)
 	}

@@ -534,9 +534,9 @@ func ParseCli() error {
 	evaluate := flag.Bool("evaluate", false, "evaluate an existing agent session and print a structured report to stdout")
 	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
 	code := flag.Bool("code", false, "use the coding agent in SSE mode")
-	qa := flag.Bool("qa", false, "knowledge-base question answering mode; combine with -sse to serve QA over SSE")
+	qa := flag.Bool("qa", false, "serve knowledge-base question answering over SSE; requires -sse")
 	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
-	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -qa and for -sse when OPENAI_EMBEDDING_* is configured")
+	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -sse -qa and for -sse when OPENAI_EMBEDDING_* is configured")
 	vectorDimensions := flag.Int("vector-dim", 0, "user-memory vector dimensions; required for -sse when OPENAI_EMBEDDING_* is configured")
 	workDir := flag.String("workdir", "", "working directory; required in evaluate mode, defaults to cwd otherwise")
 	session := flag.String("session", "", "session id to resume; empty starts a new session")
@@ -566,6 +566,9 @@ func ParseCli() error {
 	}
 	if CliConf.Code && (!CliConf.SSE || CliConf.QA || CliConf.Evaluate) {
 		return fmt.Errorf("-code requires -sse and cannot be combined with -qa or -evaluate")
+	}
+	if CliConf.QA && !CliConf.SSE {
+		return fmt.Errorf("-qa requires -sse")
 	}
 	if CliConf.TokenBudget > 0 && (CliConf.Evaluate || CliConf.QA || (CliConf.SSE && !CliConf.Code)) {
 		return fmt.Errorf("-token-budget is only supported in interactive CLI or -sse -code mode")
@@ -606,7 +609,7 @@ func ValidateVectorDimensions(dimensions int) error {
 // the database to exist; enabled consumers validate the actual file and schema.
 func ValidateKBPath(path string) error {
 	if strings.TrimSpace(path) == "" {
-		return errors.New("-kb is required for -qa and SSE embedding; specify an absolute sqlite-vec database file path")
+		return errors.New("-kb is required for -sse -qa and SSE embedding; specify an absolute sqlite-vec database file path")
 	}
 	if !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
 		return errors.New("-kb must be an absolute sqlite-vec database file path")

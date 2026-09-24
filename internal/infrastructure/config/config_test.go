@@ -522,6 +522,15 @@ func TestParseCliCombinedSSEQADoesNotRequireUserMemoryVectorDimensions(t *testin
 	}
 }
 
+func TestParseCliRejectsQAWithoutSSE(t *testing.T) {
+	swapCliGlobals(t, "-qa", "-kb", filepath.Join(t.TempDir(), "kb.sqlite"))
+
+	err := ParseCli()
+	if err == nil || !strings.Contains(err.Error(), "-qa requires -sse") {
+		t.Fatalf("standalone -qa error = %v, want -qa requires -sse", err)
+	}
+}
+
 func TestAuxiliaryModelSources(t *testing.T) {
 	for _, kind := range []string{"EMBEDDING", "COMPACTION"} {
 		for _, scenario := range []string{"file", "reference env", "partial env", "full env", "invalid reference", "unset"} {
@@ -684,21 +693,27 @@ func TestEnvironmentModelNameDoesNotReuseFileModelLimit(t *testing.T) {
 
 func TestKnowledgeBaseFlagForSSEAndQA(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "external vectors.sqlite")
-	for _, mode := range []string{"-sse", "-qa"} {
+	for _, mode := range []struct {
+		name string
+		args []string
+	}{
+		{name: "sse memory", args: []string{"-sse"}},
+		{name: "sse qa", args: []string{"-sse", "-qa"}},
+	} {
 		for _, tc := range []struct {
 			name, value string
 			valid       bool
 		}{
 			{"absolute", path, true}, {"missing", "", false}, {"relative", "kb/memory.sqlite", false}, {"home shorthand", "~/kb.sqlite", false},
 		} {
-			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				if mode == "-sse" {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				if mode.name == "sse memory" {
 					for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
 						t.Setenv(key, "configured")
 					}
 				}
-				args := []string{mode, "-kb=" + tc.value}
-				if mode == "-sse" {
+				args := append(append([]string{}, mode.args...), "-kb="+tc.value)
+				if mode.name == "sse memory" {
 					args = append(args, "-vector-dim=1024")
 				}
 				swapCliGlobals(t, args...)

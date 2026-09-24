@@ -32,7 +32,7 @@ const shutdownTimeout = 15 * time.Second
 // 避免监听后才在首个请求暴露配置问题。主模型配置不在启动期强制：SSE 模式
 // 允许零配置启动，进入页面后经 POST /api/models 添加并自动激活首个模型；
 // 未配置期间 /chat 与 resume 会返回 MODEL_REQUIRED。其余模式（交互 CLI /
-// QA 终端 / evaluate）由 main 在模式分发前强制要求已配置模型。
+// evaluate）由 main 在模式分发前强制要求已配置模型。
 func checkConfig() error {
 	if config.CliConf.QA {
 		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {

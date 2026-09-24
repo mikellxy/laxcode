@@ -36,7 +36,7 @@ Python 管线目前是 CLI，不是 HTTP 服务：
 
 ### 2.1 QA 与 SSE 的装配边界（已确定）
 
-共用底层无工具装配能力，保留 `AssembleQA` 和 `AssembleSSE` 两个入口。公共能力放在 `cmd/agentasm` 内，SSE 不依赖 `cmd/run_qa`，也不将两个入口合并为充斥模式判断的装配函数。
+共用底层无工具装配能力，保留 `AssembleQA` 和 `AssembleSSE` 两个入口。公共能力放在 `cmd/agentasm` 内，两个入口都由 `cmd/run_sse` 按启动模式选择，不将其合并为充斥模式判断的装配函数。
 
 公共构造负责空工具注册表、会话仓储、LLM 客户端、tracer 与请求级资源清理；各入口显式配置系统提示词、查询增强和轮次完成行为。
 
@@ -52,8 +52,7 @@ cmd/agentasm：公共无工具服务装配
   ├── AssembleQA：配置知识库问答
   └── AssembleSSE：配置用户记忆逻辑
 
-cmd/run_qa：调用 AssembleQA
-cmd/run_sse：管理服务器级 worker，调用 AssembleSSE
+cmd/run_sse：`-sse -qa` 调用 AssembleQA，普通 SSE 管理服务器级 worker 并调用 AssembleSSE
 ```
 
 异步 worker 及其依赖由 SSE server 持有并关闭，通过依赖注入接入 SSE 装配。每请求的 Cleanup 只回收请求级资源，不关闭共享 worker 或其仓储、客户端。公共构造不负责启动后台任务。

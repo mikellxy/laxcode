@@ -160,8 +160,7 @@ LaxCode/
 │   ├── agentasm/                   # Composition root: assembles Agent, tools, models, sessions, and tracing
 │   ├── run_cli/                    # Coding Agent interactive terminal mode
 │   ├── run_evaluate/               # LLM-as-a-Judge task evaluation mode
-│   ├── run_qa/                     # Agentic RAG command-line QA mode
-│   ├── run_sse/                    # Web backend: SSE, session, approval, and directory-selection APIs
+│   ├── run_sse/                    # Web backend: SSE, QA, session, approval, and directory-selection APIs
 │   └── web/                        # Standalone web program embedding frontend assets with a reverse proxy
 ├── internal/
 │   ├── application/                # Application layer: orchestrates domain capabilities and full use cases
