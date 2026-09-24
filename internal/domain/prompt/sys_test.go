@@ -29,6 +29,11 @@ func TestGetSysPromptPersonalityAndWorkDir(t *testing.T) {
 			t.Errorf("系统提示应包含人格模板段落 %q", section)
 		}
 	}
+	for _, boundary := range []string{"系统提示明确提供额外目录", "只读目录（如全局 Skills）只能读取", "禁止访问除此之外的工作目录外路径"} {
+		if !strings.Contains(out, boundary) {
+			t.Errorf("系统提示应包含额外目录权限边界 %q，实际输出:\n%s", boundary, out)
+		}
+	}
 	// plan 传 nil 时不应出现 Plan Mode 规划说明，调用方无需为会话目录编造取值
 	if strings.Contains(out, "Plan Mode") || strings.Contains(out, "plan.md") {
 		t.Errorf("plan 为 nil 时不应包含 Plan Mode 工作流，实际输出:\n%s", out)
