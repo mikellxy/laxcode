@@ -112,3 +112,28 @@ cp docs/settings.json ~/.laxcode/settings.json
   "llm_router_addr": "127.0.0.1:0"
 }
 ```
+
+---
+
+## MCP server（外部工具生态）
+
+> [!TIP]
+> `mcp_servers` 声明外部 MCP（Model Context Protocol）server；code 模式（`-sse -mode code` 或交互 CLI）装配时接入其工具，工具以 `mcp__<server>__<tool>` 命名注册给模型
+
+```json
+{
+  "mcp_servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/absolute/path/to/allow"],
+      "env": ["NODE_ENV=production"]
+    }
+  }
+}
+```
+
+- 每个已启用条目必须声明且仅声明一种传输形态：`command`（stdio，当前版本支持）或 `url`（保留，当前版本会跳过并告警）。
+- `env` 是追加给子进程的环境变量，`K=V` 字符串数组（大小写敏感，后设置覆盖先设置）。
+- `enabled` 缺省为 true（写配置即启用）；设为 false 可保留声明但暂停接入。
+- 单个 server 连接失败不会阻塞启动或会话：该 server 被跳过并在 stderr 告警（fail-open）。
+- 注意：MCP server 以子进程运行，其行为不受 laxcode 工作目录沙箱约束，仅配置你信任的 server。

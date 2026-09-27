@@ -33,5 +33,6 @@
   "embedding_model": "example:embedding",
   "embedding_vec_dim": 1024,
   "compaction_model": "example:summary",
-  "llm_router_addr": "127.0.0.1:0"
+  "llm_router_addr": "127.0.0.1:0",
+  "mcp_servers": {}
 }

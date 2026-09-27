@@ -775,3 +775,97 @@ func TestSetActiveModelReDerivesInheritedCompaction(t *testing.T) {
 		t.Fatalf("compaction budget should fall back to global defaults: %+v", EnvAndFileConf)
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestParseMCPServers 验证 mcp_servers 段的解析：stdio 字段、环境变量、
+// enabled 缺省为 true / 显式 false、url 条目可解析。
+func TestParseMCPServers(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model": "example:chat",
+		"provider_list": [{
+			"provider_name": "example",
+			"openai_api_key": "sk-file-key",
+			"openai_base_url": "https://file.example.com/v1",
+			"model_list": [{"model_name": "chat"}]
+		}],
+		"mcp_servers": {
+			"filesystem": {
+				"command": "npx",
+				"args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+				"env": ["NODE_ENV=production"]
+			},
+			"paused": {
+				"command": "uvx",
+				"args": ["mcp-server-fetch"],
+				"enabled": false
+			},
+			"remote": {
+				"url": "https://mcp.example.com/sse"
+			}
+		}
+	}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatalf("ParseEnvAndFile: %v", err)
+	}
+	fs := EnvAndFileConf.MCPServers["filesystem"]
+	if fs.Command != "npx" || len(fs.Args) != 3 || fs.Args[1] != "@modelcontextprotocol/server-filesystem" {
+		t.Errorf("filesystem conf = %+v", fs)
+	}
+	if len(fs.Env) != 1 || fs.Env[0] != "NODE_ENV=production" {
+		t.Errorf("filesystem env = %v, want case-preserved K=V entries", fs.Env)
+	}
+	if !fs.IsEnabled() {
+		t.Error("unset enabled must default to enabled")
+	}
+	if paused := EnvAndFileConf.MCPServers["paused"]; paused.IsEnabled() {
+		t.Error("enabled=false must disable the server")
+	}
+	if remote := EnvAndFileConf.MCPServers["remote"]; remote.URL != "https://mcp.example.com/sse" {
+		t.Errorf("url entry must parse, got %+v", remote)
+	}
+}
+
+// TestValidateMCPServers 覆盖结构校验：键合法性、已启用条目必须恰好声明
+// 一种传输形态；disabled 条目整体豁免。
+func TestValidateMCPServers(t *testing.T) {
+	cases := []struct {
+		name    string
+		servers map[string]MCPServerConf
+		wantErr string
+	}{
+		{"empty", nil, ""},
+		{"stdio ok", map[string]MCPServerConf{"fs": {Command: "npx"}}, ""},
+		{"url reserved", map[string]MCPServerConf{"remote": {URL: "https://x"}}, ""},
+		{
+			"both command and url",
+			map[string]MCPServerConf{"x": {Command: "npx", URL: "https://x"}},
+			"exactly one",
+		},
+		{"neither command nor url", map[string]MCPServerConf{"x": {}}, "exactly one"},
+		{"blank key", map[string]MCPServerConf{" ": {Command: "npx"}}, "invalid mcp_servers key"},
+		{
+			"disabled exempt",
+			map[string]MCPServerConf{"x": {Command: "npx", URL: "https://x", Enabled: boolPtr(false)}},
+			"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &envAndFileConf{MCPServers: tc.servers}
+			err := c.validateMCPServers()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

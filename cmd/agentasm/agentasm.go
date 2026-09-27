@@ -22,6 +22,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
+	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
@@ -168,6 +169,14 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 				// 后台进程，不会波及主 Agent 尚在运行的后台服务
 				NewShell: func() tools.ShellRunner { return shell.New() },
 			}))
+		// MCP server（settings.json 的 mcp_servers）在主 Agent 装配期接入：
+		// 连接随本次装配建立、随 cleanup 终止（P1 每请求生命周期）；单个
+		// server 故障 fail-open 跳过并告警，不阻塞装配。子 Agent 不接入
+		// MCP 工具（P1 边界，控制成本与爆炸半径）。
+		if mcpCleanup := attachMCPServers(ctx, toolReg); mcpCleanup != nil {
+			baseCleanup := cleanup
+			cleanup = func() { mcpCleanup(); baseCleanup() }
+		}
 	}
 
 	svc := core.service
@@ -235,6 +244,45 @@ func resolveHomeDir(explicit string) (string, error) {
 // 不得把它改成空实现：技能 frontmatter 解析失败将被静默后，模型侧表现为
 // “技能没生效”而无任何线索。
 func warnSkillSkip(msg string) {
+	fmt.Fprintf(os.Stderr, "laxcode: %s\n", msg)
+}
+
+// attachMCPServers 连接 settings.json 声明的已启用 MCP server 并把其工具
+// 注册进 reg，返回关闭连接的 cleanup；未配置或全部不可用时返回 nil。
+// 连接/告警语义见 internal/infrastructure/mcp.Attach。
+func attachMCPServers(ctx context.Context, reg tools.Registry) func() {
+	servers := mcpServersFromConf()
+	if len(servers) == 0 {
+		return nil
+	}
+	return mcpserver.Attach(ctx, servers, reg, warnMCPSkip)
+}
+
+// mcpServersFromConf 把配置层的 MCPServerConf 过滤为已启用条目并转成
+// 传输层 ServerConfig；disabled 条目是用户意图，静默跳过。
+func mcpServersFromConf() map[string]mcpserver.ServerConfig {
+	conf := config.EnvAndFileConf.MCPServers
+	if len(conf) == 0 {
+		return nil
+	}
+	servers := make(map[string]mcpserver.ServerConfig, len(conf))
+	for name, sc := range conf {
+		if !sc.IsEnabled() {
+			continue
+		}
+		servers[name] = mcpserver.ServerConfig{
+			Command: sc.Command,
+			Args:    append([]string(nil), sc.Args...),
+			Env:     append([]string(nil), sc.Env...),
+			URL:     sc.URL,
+		}
+	}
+	return servers
+}
+
+// warnMCPSkip 与 warnSkillSkip 同语义：MCP server 接入失败/被跳过的告警
+// 写 stderr，不污染任何模式的 stdout 契约。
+func warnMCPSkip(msg string) {
 	fmt.Fprintf(os.Stderr, "laxcode: %s\n", msg)
 }
 

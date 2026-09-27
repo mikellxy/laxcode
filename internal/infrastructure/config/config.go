@@ -34,6 +34,24 @@ type ProviderConfig struct {
 	ModelList     []ModelConfig `mapstructure:"model_list" json:"model_list"`
 }
 
+// MCPServerConf 声明一个外部 MCP server。P1 只接入 stdio 形态
+// （command + args + env）；url 条目可解析但接入时会被跳过并告警，
+// 待 Streamable HTTP 传输落地。enabled 缺省为 true（写配置即启用），
+// 设 false 可保留声明但暂停接入。
+type MCPServerConf struct {
+	Command string   `mapstructure:"command" json:"command"`
+	Args    []string `mapstructure:"args" json:"args"`
+	// Env 是追加给子进程的环境变量，K=V 字符串数组（对齐 exec.Cmd.Env
+	// 与 docker 惯例）。不用对象形式：viper 会把嵌套 map 键统一小写，
+	// 而环境变量名大小写敏感。
+	Env     []string `mapstructure:"env" json:"env"`
+	URL     string   `mapstructure:"url" json:"url"`
+	Enabled *bool    `mapstructure:"enabled" json:"enabled"`
+}
+
+// IsEnabled 报告该 server 是否应被接入；未声明 enabled 视为启用。
+func (c MCPServerConf) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
 type ResolvedModel struct {
 	Ref           string
 	ProviderName  string
@@ -65,6 +83,11 @@ type envAndFileConf struct {
 	CompactionModel string           `mapstructure:"compaction_model"`
 	Model           string           `mapstructure:"model"`
 	ProviderList    []ProviderConfig `mapstructure:"provider_list"`
+
+	// MCPServers 声明外部 MCP（Model Context Protocol）server，code 模式
+	// 装配时接入其工具（见 cmd/agentasm 与 internal/infrastructure/mcp）。
+	// 键为 server 名，进入工具名命名空间（mcp__<server>__<tool>）。
+	MCPServers map[string]MCPServerConf `mapstructure:"mcp_servers"`
 
 	// Openai* 是由 Model 解析出的当前运行时有效配置，不直接从配置文件反序列化。
 	OpenaiApiKey  string `mapstructure:"-"`
@@ -220,6 +243,28 @@ func (c *envAndFileConf) validateModelCatalog() error {
 	}
 	_, err := c.resolveModel(c.Model)
 	return err
+}
+
+// validateMCPServers 校验 mcp_servers 段的结构不变式：键非空且不含空白
+// （键会进入工具名命名空间），已启用的条目必须声明且仅声明一种传输形态
+// ——stdio command（P1）或保留给后续的 url。运行期故障（进程起不来、
+// 握手失败）不在此校验：装配时对单个 server fail-open，启动期硬失败会把
+// 第三方 server 的故障放大成整个服务不可用。
+func (c *envAndFileConf) validateMCPServers() error {
+	for name, server := range c.MCPServers {
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n") {
+			return fmt.Errorf("invalid mcp_servers key %q: must be non-empty without whitespace", name)
+		}
+		if !server.IsEnabled() {
+			continue
+		}
+		hasCommand := strings.TrimSpace(server.Command) != ""
+		hasURL := strings.TrimSpace(server.URL) != ""
+		if hasCommand == hasURL {
+			return fmt.Errorf("mcp_servers %q must declare exactly one of command (stdio) or url", name)
+		}
+	}
+	return nil
 }
 
 func (c *envAndFileConf) setActiveModel(ref string) error {
@@ -456,6 +501,9 @@ func ParseEnvAndFile() error {
 		EnvAndFileConf.Model = modelRef(first.ProviderName, first.ModelList[0].ModelName)
 	}
 	if err := EnvAndFileConf.validateModelCatalog(); err != nil {
+		return err
+	}
+	if err := EnvAndFileConf.validateMCPServers(); err != nil {
 		return err
 	}
 	// 目录可为空（SSE 模式的延迟配置状态）：无活跃模型时跳过激活，压缩模型
