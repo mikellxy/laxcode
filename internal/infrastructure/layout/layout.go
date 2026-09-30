@@ -26,6 +26,10 @@ const (
 	// SkillsDirName 是技能定义目录名，其下恰好一层子目录各含一个 SKILL.md。
 	SkillsDirName = "skills"
 
+	// EvaluationDirName is used for both project-local immutable evaluation
+	// snapshots and user-global generated reports.
+	EvaluationDirName = "eval"
+
 	// settingsFileName 是用户主目录数据根下的配置文件名。
 	settingsFileName = "settings.json"
 
@@ -78,6 +82,27 @@ func SessionDir(homeDir, sessID string) string {
 // ${homeDir}/.laxcode/sessions/${sessID}/history.jsonl。
 func SessionHistory(homeDir, sessID string) string {
 	return filepath.Join(SessionDir(homeDir, sessID), sessionHistoryFileName)
+}
+
+// EvaluationSnapshotDir returns ${workDir}/eval/${sourceSessionID}.
+func EvaluationSnapshotDir(workDir, sourceSessionID string) string {
+	return filepath.Join(workDir, EvaluationDirName, sourceSessionID)
+}
+
+// EvaluationSnapshotHistory returns the copied immutable ReAct history used
+// by an evaluator job.
+func EvaluationSnapshotHistory(workDir, sourceSessionID string) string {
+	return filepath.Join(EvaluationSnapshotDir(workDir, sourceSessionID), sessionHistoryFileName)
+}
+
+// EvaluationRoot returns the user-global report directory ${homeDir}/.laxcode/eval.
+func EvaluationRoot(homeDir string) string {
+	return filepath.Join(Root(homeDir), EvaluationDirName)
+}
+
+// EvaluationReport returns the Markdown report path for one evaluation job.
+func EvaluationReport(homeDir, jobID string) string {
+	return filepath.Join(EvaluationRoot(homeDir), jobID+".md")
 }
 
 // TracingLog 返回会话级 trace 日志文件

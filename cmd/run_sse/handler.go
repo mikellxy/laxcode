@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
+	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -34,21 +35,27 @@ const maxBodyBytes = 1 << 20
 // server 承载 sse 模式的 HTTP 编排。assemble 字段默认 agentasm.Assemble，测试可
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
-	homeDir           string
-	planMode          bool
-	assemble          func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
-	locks             *sessionLocks
-	approvals         *approvalBroker
-	budgets           *budgetStates
-	codeMode          bool
-	mode              agentasm.Mode
-	tokenBudget       int
-	history           session.SessionHistoryRepository
-	contextRepo       session.SessionRepository
-	catalog           session.SessionCatalogRepository
-	projects          session.ProjectRepository
-	pickDirectory     func(context.Context) (string, error)
-	directoryPickerMu sync.Mutex
+	homeDir            string
+	planMode           bool
+	assemble           func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
+	assembleEvaluation func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
+	locks              *sessionLocks
+	approvals          *approvalBroker
+	budgets            *budgetStates
+	codeMode           bool
+	mode               agentasm.Mode
+	tokenBudget        int
+	history            session.SessionHistoryRepository
+	contextRepo        session.SessionRepository
+	catalog            session.SessionCatalogRepository
+	projects           session.ProjectRepository
+	pickDirectory      func(context.Context) (string, error)
+	directoryPickerMu  sync.Mutex
+	evaluations        evaluation.Repository
+	evaluationLocks    *sessionLocks
+	evaluationCtx      context.Context
+	evaluationCancel   context.CancelFunc
+	evaluationWG       sync.WaitGroup
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
 	switcher *agentasm.ModelSwitcher
 }
@@ -572,6 +579,7 @@ func newServer(homeDir string, planMode bool, modes ...agentasm.Mode) *server {
 	if len(modes) > 0 {
 		mode = modes[0]
 	}
+	evaluationCtx, evaluationCancel := context.WithCancel(context.Background())
 	return &server{
 		homeDir:       homeDir,
 		planMode:      planMode,
@@ -582,10 +590,14 @@ func newServer(homeDir string, planMode bool, modes ...agentasm.Mode) *server {
 			in.Mode = mode
 			return agentasm.Assemble(ctx, in)
 		},
-		locks:     newSessionLocks(),
-		approvals: newApprovalBroker(),
-		budgets:   newBudgetStates(),
-		switcher:  agentasm.NewModelSwitcher(nil, nil),
+		assembleEvaluation: agentasm.Assemble,
+		locks:              newSessionLocks(),
+		evaluationLocks:    newSessionLocks(),
+		evaluationCtx:      evaluationCtx,
+		evaluationCancel:   evaluationCancel,
+		approvals:          newApprovalBroker(),
+		budgets:            newBudgetStates(),
+		switcher:           agentasm.NewModelSwitcher(nil, nil),
 	}
 }
 

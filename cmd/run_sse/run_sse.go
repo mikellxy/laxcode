@@ -25,8 +25,8 @@ const shutdownTimeout = 15 * time.Second
 // checkConfig 按启动模式校验 RAG 所需配置：缺失即在起服务前失败，
 // 避免监听后才在首个请求暴露配置问题。主模型配置不在启动期强制：SSE 模式
 // 允许零配置启动，进入页面后经 POST /api/models 添加并自动激活首个模型；
-// 未配置期间 /chat 与 resume 会返回 MODEL_REQUIRED。其余模式（交互 CLI /
-// evaluate）由 main 在模式分发前强制要求已配置模型。
+// 未配置期间 /chat、resume 与评估任务创建会返回 MODEL_REQUIRED。交互 CLI
+// 由 main 在模式分发前强制要求已配置模型。
 func checkConfig() error {
 	if config.CliConf.Mode == config.SSEModeRAG {
 		if err := config.ValidateKBPath(config.CliConf.KB); err != nil {
@@ -80,6 +80,10 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	s.catalog = historyRepo
 	s.projects = historyRepo
 	s.contextRepo = historyRepo
+	s.evaluations = historyRepo
+	if err := historyRepo.FailActiveEvaluationJobs(context.Background(), "evaluation interrupted by server restart"); err != nil {
+		fatal(fmt.Errorf("reconcile evaluation jobs: %w", err))
+	}
 	mux := http.NewServeMux()
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
@@ -94,6 +98,8 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	mux.HandleFunc("POST /api/directory-picker", s.handlePickDirectory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
+	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
+	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("POST /api/models", s.handleAddModel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -142,4 +148,5 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		_ = srv.Close()
 	}
+	s.stopEvaluations()
 }

@@ -12,9 +12,58 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/compactor"
+	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
+
+func TestEvaluationJobLifecycle(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	ctx := context.Background()
+	created, err := repo.CreateEvaluationJob(ctx, evaluation.Job{
+		ID: "eval_session-1_20260927", SourceSessionID: "session-1", UserID: "user-1",
+		WorkDir: "/projects/demo", Requirement: "focus on tests", Status: evaluation.StatusQueued,
+		SnapshotHistory: "/projects/demo/eval/session-1/history.jsonl",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Status != evaluation.StatusQueued || created.CreatedAt.IsZero() {
+		t.Fatalf("created job = %+v", created)
+	}
+	if err := repo.UpdateEvaluationJob(ctx, created.ID, evaluation.StatusRunning, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	reportPath := "/home/test/.laxcode/eval/eval_session-1_20260927.md"
+	if err := repo.UpdateEvaluationJob(ctx, created.ID, evaluation.StatusSucceeded, reportPath, ""); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := repo.ListEvaluationJobs(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Status != evaluation.StatusSucceeded || jobs[0].ReportPath != reportPath || jobs[0].CompletedAt == nil {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	queued, err := repo.CreateEvaluationJob(ctx, evaluation.Job{
+		ID: "eval_session-1_restart", SourceSessionID: "session-1", UserID: "user-1",
+		WorkDir: "/projects/demo", Requirement: "second", Status: evaluation.StatusQueued,
+		SnapshotHistory: "/projects/demo/eval/session-1/history.jsonl",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FailActiveEvaluationJobs(ctx, "server restarted"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err = repo.ListEvaluationJobs(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 || jobs[0].ID != queued.ID || jobs[0].Status != evaluation.StatusFailed || jobs[0].Error != "server restarted" {
+		t.Fatalf("reconciled jobs = %+v", jobs)
+	}
+}
 
 func newTestRepo(t *testing.T) (*SqliteSessionRepo, string) {
 	t.Helper()
@@ -382,7 +431,7 @@ func TestSchemaContainsSessionAndMemoryTables(t *testing.T) {
 	if err := repo.db.Raw(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).Scan(&names).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(names, []string{"messages", "projects", "react_turns", "request_contexts", "user_memory_jobs"}) {
+	if !reflect.DeepEqual(names, []string{"evaluation_jobs", "messages", "projects", "react_turns", "request_contexts", "user_memory_jobs"}) {
 		t.Fatalf("tables=%v", names)
 	}
 }

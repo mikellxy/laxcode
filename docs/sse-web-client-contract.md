@@ -363,6 +363,52 @@ API Key 和 Base URL 是 provider 级配置。同名 provider 已存在时，传
 已有配置一致；不一致或模型重名返回 `409`。名称或 token 上限非法返回 `400`。
 输出 token 必须小于上下文大小。
 
+## 5.2 异步评估任务
+
+创建当前 coding session 的评估任务：
+
+```http
+POST /api/evaluations
+Content-Type: application/json
+```
+
+```json
+{
+  "session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
+  "work_dir": "/absolute/project/path",
+  "requirement": "重点检查测试覆盖和用户验收条件"
+}
+```
+
+`work_dir` 必须与 Session 持久化的工作目录一致。成功返回 `202 Accepted` 和
+`queued` job；同一源 Session 同时只运行一个评估任务。后端把源会话目录快照到
+`${work_dir}/eval/${session_id}`，用 `eval_${session_id}_${date_time}` 作为独立
+Judge Session，并把最终 Markdown 报告写入 `${HOME}/.laxcode/eval/`。
+
+查询当前源 Session 的全部评估任务：
+
+```http
+GET /api/evaluations?session_id={session_id}
+```
+
+```json
+{
+  "jobs": [{
+    "id": "eval_97e310f4-b757-427a-92f4-d2d88956d54a_20260927_101530_000000000",
+    "source_session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
+    "requirement": "重点检查测试覆盖和用户验收条件",
+    "status": "succeeded",
+    "report_path": "/home/user/.laxcode/eval/eval_97e310f4-b757-427a-92f4-d2d88956d54a_20260927_101530_000000000.md",
+    "created_at": "2026-09-27T10:15:30Z",
+    "updated_at": "2026-09-27T10:18:00Z",
+    "completed_at": "2026-09-27T10:18:00Z"
+  }]
+}
+```
+
+状态为 `queued | running | succeeded | failed`。`report_path` 仅在成功后出现，
+`error` 仅在失败后出现；前端只需在存在活跃状态时轮询。
+
 ## 6. 发起对话和接收 SSE
 
 ### 请求

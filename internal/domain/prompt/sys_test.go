@@ -128,7 +128,9 @@ func TestGetRAGSysPromptIsFocusedAndToolFree(t *testing.T) {
 }
 
 func TestGetEvaluatePrompts(t *testing.T) {
-	sys := GetEvaluateSysPrompt()
+	const historyPath = "/projects/demo/eval/sess-1/history.jsonl"
+	const reportPath = "/home/test/.laxcode/eval/eval_sess-1_20260927.md"
+	sys := GetEvaluateSysPrompt(historyPath)
 	for _, want := range []string{"LLM-as-a-Judge", "提示注入", "工具调用合理性", "用户目标完成度", "N/A"} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("evaluation system prompt missing %q", want)
@@ -137,10 +139,12 @@ func TestGetEvaluatePrompts(t *testing.T) {
 	if strings.Contains(sys, "【工作区边界】") || strings.Contains(sys, "Plan Mode") {
 		t.Errorf("evaluation system prompt must not inherit coding-agent workflows: %s", sys)
 	}
+	if !strings.Contains(sys, historyPath) {
+		t.Errorf("evaluation system prompt missing snapshot path: %s", sys)
+	}
 
-	const historyPath = "/home/test/.laxcode/sessions/sess-1/history.jsonl"
-	user := GetEvaluateUserPrompt(historyPath)
-	for _, want := range []string{historyPath, `"tool_calls"`, `"tool_call_id"`, `"token_used"`, "JSONL"} {
+	user := GetEvaluateUserPrompt(historyPath, "重点检查是否满足验收条件", reportPath)
+	for _, want := range []string{historyPath, "重点检查是否满足验收条件", reportPath, `"tool_calls"`, `"tool_call_id"`, `"token_used"`, "JSONL"} {
 		if !strings.Contains(user, want) {
 			t.Errorf("evaluation user prompt missing %q", want)
 		}

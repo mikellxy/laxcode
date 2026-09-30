@@ -232,6 +232,9 @@ func (r *SqliteSessionRepo) migrate() error {
 			ON projects(user_id, updated_at DESC, project_id DESC)`).Error; err != nil {
 			return fmt.Errorf("create project list index: %w", err)
 		}
+		if err := migrateEvaluationJobs(tx); err != nil {
+			return err
+		}
 		return migrateUserMemory(tx)
 	})
 }

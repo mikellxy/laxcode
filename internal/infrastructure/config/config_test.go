@@ -414,16 +414,13 @@ func TestParseCli(t *testing.T) {
 		"-mode=rag",
 		"-kb", filepath.Join(t.TempDir(), "vectors.sqlite"),
 		"-addr", ":9000",
-		"-workdir", "/tmp/proj",
 		"-session", "sess-9",
-		"-eval_session", "sess-eval",
 	)
 
 	if err := ParseCli(); err != nil {
 		t.Fatalf("ParseCli: %v", err)
 	}
-	if CliConf.WorkDir != "/tmp/proj" || CliConf.Session != "sess-9" ||
-		CliConf.EvalSession != "sess-eval" {
+	if CliConf.Session != "sess-9" {
 		t.Errorf("字符串参数解析不符：%+v", CliConf)
 	}
 	if !CliConf.SSE {
@@ -442,10 +439,10 @@ func TestParseCliDefaults(t *testing.T) {
 	if err := ParseCli(); err != nil {
 		t.Fatalf("ParseCli with no args: %v", err)
 	}
-	if CliConf.Evaluate || CliConf.Plan || CliConf.SSE || CliConf.Mode != "" {
+	if CliConf.Plan || CliConf.SSE || CliConf.Mode != "" {
 		t.Errorf("缺省布尔参数应全为 false，实际 %+v", CliConf)
 	}
-	if CliConf.WorkDir != "" || CliConf.Session != "" || CliConf.EvalSession != "" {
+	if CliConf.Session != "" {
 		t.Errorf("缺省字符串参数应为空，实际 %+v", CliConf)
 	}
 	if CliConf.Addr != DefaultSSEAddr {
@@ -467,12 +464,6 @@ func TestParseCliTokenBudgetInteractiveOnly(t *testing.T) {
 		swapCliGlobals(t, "-token-budget", "-1")
 		if err := ParseCli(); err == nil {
 			t.Fatal("negative token budget should fail")
-		}
-	})
-	t.Run("evaluate", func(t *testing.T) {
-		swapCliGlobals(t, "-evaluate", "-token-budget", "1000")
-		if err := ParseCli(); err == nil {
-			t.Fatal("token budget should be interactive only")
 		}
 	})
 	t.Run("sse code", func(t *testing.T) {

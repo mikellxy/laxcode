@@ -6,6 +6,8 @@
 
 [laxcode-会话持久化实现方式]SqliteSessionRepo 用 projects、request_contexts、messages 三张核心表。projects 保存用户项目名称与绝对工作目录；request_contexts 存 context head（每会话一行，含 project_id、revision 与两本 token 账目）；messages 以复合主键（session_id, message_type, memory_generation, seq）同时承载不可变 original 与各代 memory，同一位置各有且只有一条，无需额外关联表。写路径靠乐观锁：提交前校验 revision 与库中一致、LastSeq 恰好加一、generation 匹配，任一不符返回 ErrContextConflict / ErrStaleSequence / ErrStaleGeneration，事务回滚。SQLite 走 WAL、单连接、synchronous(FULL)。[laxcode-会话持久化实现方式]
 
+[laxcode-会话持久化实现方式]异步 LLM-as-a-Judge 任务使用同库的 evaluation_jobs 辅助表，保存源会话、requirement、queued/running/succeeded/failed 状态、快照路径、报告路径和错误。服务重启时遗留的活跃任务会收敛为 failed，避免页面永久轮询僵尸任务。[laxcode-会话持久化实现方式]
+
 [laxcode-会话持久化实现方式]数据库事务成功后，appendHistory 把 original 追加写进会话目录的 history.jsonl 作 best-effort 冷备，失败只告警不影响提交。组合根 cmd/agentasm 负责装配：NewSqliteSessionRepo 接收 layout.SessionDB 与 SessionRoot，NewReActService 注入仓储与聚合。[laxcode-会话持久化实现方式]
 
 ## 关键代码入口
@@ -18,6 +20,8 @@
 - internal/infrastructure/sessionrepo/sqlite.go:validateCreateTransition
 - internal/infrastructure/sessionrepo/sqlite.go:writeContext
 - internal/infrastructure/sessionrepo/history.go:appendHistory
+- internal/infrastructure/sessionrepo/evaluation.go:SqliteSessionRepo.CreateEvaluationJob
+- internal/infrastructure/sessionrepo/evaluation.go:SqliteSessionRepo.UpdateEvaluationJob
 - internal/application/reactservice/reactservice.go:ReActService.commitCreatedMessage
 - internal/infrastructure/layout/layout.go:SessionDB
 [laxcode-会话持久化实现方式]

@@ -87,12 +87,12 @@ func WrapUserMemoryQuery(query string, chunks []sharedkernel.MemoryChunk) string
 // GetEvaluateSysPrompt returns the dedicated LLM-as-a-judge system prompt. It
 // deliberately does not inherit the coding-agent personality, skills or plan
 // workflow: the evaluator must inspect an existing run rather than continue it.
-func GetEvaluateSysPrompt() string {
-	return strings.TrimSpace(evaluateSysPrompt)
+func GetEvaluateSysPrompt(historyPath string) string {
+	return strings.TrimSpace(fmt.Sprintf(evaluateSysPrompt, historyPath))
 }
 
 // GetEvaluateUserPrompt renders the evaluation request with the immutable
-// JSONL history path selected by the CLI.
-func GetEvaluateUserPrompt(historyPath string) string {
-	return strings.TrimSpace(fmt.Sprintf(evaluateUserPrompt, historyPath))
+// JSONL history path, the user's evaluation requirement and the report path.
+func GetEvaluateUserPrompt(historyPath, requirement, reportPath string) string {
+	return strings.TrimSpace(fmt.Sprintf(evaluateUserPrompt, historyPath, requirement, reportPath))
 }

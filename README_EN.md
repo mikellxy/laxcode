@@ -88,28 +88,15 @@ For manual startup, you can still run `./bin/laxcode -sse -mode=code -token-budg
 
 ### Evaluating a Coding Agent Task
 
-After completing a task with LaxCode, you can specify that task's original `workdir` and `session_id` to have LaxCode evaluate the outcome in an independent LLM-as-a-Judge session. Session data is stored uniformly under the user directory, and the evaluator reads the following immutable ReAct message log:
+After completing a task with LaxCode, click **Evaluate** in the upper-right corner of the conversation and enter the evaluation requirement. The Web backend snapshots the source session and runs an independent LLM-as-a-Judge session asynchronously.
 
 ```text
-${HOME}/.laxcode/sessions/${session_id}/history.jsonl
+${workdir}/eval/${session_id}/history.jsonl
 ```
 
-Run the evaluation with the target task's `session_id` passed through `-eval_session`:
+Evaluation jobs are stored in SQLite with `queued`, `running`, `succeeded`, and `failed` states, and the page polls active jobs automatically. Completed Markdown reports are written under `${HOME}/.laxcode/eval/`; the task list shows each requirement, status, and report path.
 
-```shell
-./bin/laxcode \
-  -evaluate \
-  -workdir=/path/to/project \
-  -eval_session=88a74c78-a5c4-4602-bb1e-8e4a4ce0256b
-```
-
-The evaluation report is printed to stdout as a single-line JSON object. It contains:
-
-- `eval_session_id`: the session ID of the task being evaluated.
-- `session_id`: the independent session ID created for this evaluator run.
-- `result`: a Markdown evaluation report containing scores and evidence across dimensions such as tool-call appropriateness, tool-call robustness, task planning, and user-goal completion.
-
-The evaluation neither resumes nor modifies the evaluated task's session; the evaluator's own messages and token statistics are stored in a separate session.
+The evaluation neither resumes nor modifies the source session. The evaluator stores its own messages and token statistics in an isolated `eval_${session_id}_${date_time}` session.
 
 <a id="agentic-rag-qa"></a>
 
@@ -157,8 +144,7 @@ LaxCode/
 │   ├── main/                       # CLI main entry: loads config and dispatches run modes
 │   ├── agentasm/                   # Composition root: assembles Agent, tools, models, sessions, and tracing
 │   ├── run_cli/                    # Coding Agent interactive terminal mode
-│   ├── run_evaluate/               # LLM-as-a-Judge task evaluation mode
-│   ├── run_sse/                    # Web backend: SSE, RAG, session, approval, and directory-selection APIs
+│   ├── run_sse/                    # Web backend: SSE, async evaluation, RAG, session, approval, and directory-selection APIs
 │   └── web/                        # Standalone web program embedding frontend assets with a reverse proxy
 ├── internal/
 │   ├── application/                # Application layer: orchestrates domain capabilities and full use cases

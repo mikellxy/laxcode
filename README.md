@@ -88,28 +88,15 @@ Windows PowerShell 直接运行启动脚本：
 
 ### 评估 Coding Agent 任务
 
-当您使用 LaxCode 完成一个任务后，可以指定该任务原有的 `workdir` 和 `session_id`，让 LaxCode 以独立的 LLM-as-a-Judge 会话评估这次任务的完成效果。会话数据统一保存在用户目录，评估器会读取以下不可变 ReAct 消息日志：
+当您使用 LaxCode 完成一个任务后，可以在会话页面右上角点击“评估”，输入本次评估的 requirement。Web 后端会为原会话创建快照，并以独立的 LLM-as-a-Judge 会话异步评估任务完成效果。
 
 ```text
-${HOME}/.laxcode/sessions/${session_id}/history.jsonl
+${workdir}/eval/${session_id}/history.jsonl
 ```
 
-运行评估时，通过 `-eval_session` 传入待评估任务的 `session_id`：
+评估任务以 `queued`、`running`、`succeeded`、`failed` 状态保存在 SQLite 中，页面会自动轮询。完成后的 Markdown 报告写入 `${HOME}/.laxcode/eval/`，任务列表会显示 requirement、状态和报告文件路径。
 
-```shell
-./bin/laxcode \
-  -evaluate \
-  -workdir=/path/to/project \
-  -eval_session=88a74c78-a5c4-4602-bb1e-8e4a4ce0256b
-```
-
-评估报告会从 stdout 以单行 JSON 输出。其中：
-
-- `eval_session_id` 是被评估任务的 session ID。
-- `session_id` 是本次评估器新建的独立 session ID。
-- `result` 是 Markdown 格式的评估报告，包含工具调用合理性、工具调用健壮性、任务规划能力和用户目标完成度等维度的评分与证据。
-
-评估过程不会续聊或修改被评估任务的 session；评估器自己的消息和 token 统计保存在独立 session 中。
+评估过程不会续聊或修改被评估任务的 session；评估器使用 `eval_${session_id}_${date_time}` 独立 session 保存自己的消息和 token 统计。
 
 <a id="agentic-rag-qa"></a>
 
@@ -157,8 +144,7 @@ LaxCode/
 │   ├── main/                       # CLI 主入口：加载配置并分流各运行模式
 │   ├── agentasm/                   # 组合根：装配 Agent、工具、模型、会话与追踪
 │   ├── run_cli/                    # Coding Agent 交互式终端模式
-│   ├── run_evaluate/               # LLM-as-a-Judge 任务评估模式
-│   ├── run_sse/                    # Web 后端：SSE、RAG、会话、审批与目录选择接口
+│   ├── run_sse/                    # Web 后端：SSE、异步评估、RAG、会话、审批与目录选择接口
 │   └── web/                        # 内嵌前端资源及反向代理的独立 Web 程序
 ├── internal/
 │   ├── application/                # 应用层：编排领域能力与完整用例

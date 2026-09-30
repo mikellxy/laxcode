@@ -1,8 +1,8 @@
 package agentasm
 
 // Package agentasm 是 cmd 层的组合根（composition root）：把交互模式
-// （cmd/run_cli）、SSE 模式（cmd/run_sse）与评估模式（cmd/run_evaluate）共用的
-// Agent 装配逻辑收口到 Assemble，消除重复。装配产物
+// （cmd/run_cli）与 SSE 模式（cmd/run_sse，含异步评估任务）共用的 Agent
+// 装配逻辑收口到 Assemble，消除重复。装配产物
 // 是一个可直接 Run 的 ReActService 及其会话与清理钩子；各端的输入解析、校验、
 // 事件呈现与主循环仍留在前端。
 //
@@ -239,8 +239,8 @@ func resolveHomeDir(explicit string) (string, error) {
 	return homeDir, nil
 }
 
-// warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，使评估模式的
-// stdout JSON 契约与交互模式的彩色输出都不被污染，警告仍可被用户看到。
+// warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，避免污染交互
+// 模式的输出，同时保留可诊断告警。
 // 不得把它改成空实现：技能 frontmatter 解析失败将被静默后，模型侧表现为
 // “技能没生效”而无任何线索。
 func warnSkillSkip(msg string) {
