@@ -52,3 +52,25 @@ func TestAssembleIgnoresDisabledMCPServers(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPServersFromConfCopiesHTTPHeaders(t *testing.T) {
+	previous := config.EnvAndFileConf
+	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	config.EnvAndFileConf.MCPServers = map[string]config.MCPServerConf{
+		"remote": {
+			URL:     "https://mcp.example.com/mcp",
+			Headers: map[string]string{"Authorization": "Bearer token"},
+		},
+	}
+
+	servers := mcpServersFromConf()
+	got := servers["remote"]
+	if got.URL != "https://mcp.example.com/mcp" || got.Headers["Authorization"] != "Bearer token" {
+		t.Fatalf("HTTP server config = %+v", got)
+	}
+	// 转换结果不能与全局配置共享可变 header map。
+	got.Headers["Authorization"] = "changed"
+	if config.EnvAndFileConf.MCPServers["remote"].Headers["Authorization"] != "Bearer token" {
+		t.Fatal("HTTP headers were not defensively copied")
+	}
+}

@@ -132,8 +132,26 @@ cp docs/settings.json ~/.laxcode/settings.json
 }
 ```
 
-- 每个已启用条目必须声明且仅声明一种传输形态：`command`（stdio，当前版本支持）或 `url`（保留，当前版本会跳过并告警）。
+Streamable HTTP server 可通过 `url` 接入，并用 `headers` 传递 Bearer Token
+等认证信息：
+
+```json
+{
+  "mcp_servers": {
+    "ov-mcp-server": {
+      "url": "https://api.vikingdb.cn-beijing.volces.com/openviking/mcp",
+      "headers": {
+        "Authorization": "Bearer xx.xx"
+      }
+    }
+  }
+}
+```
+
+- 每个已启用条目必须声明且仅声明一种传输形态：`command`（stdio）或 `url`（Streamable HTTP）。
 - `env` 是追加给子进程的环境变量，`K=V` 字符串数组（大小写敏感，后设置覆盖先设置）。
+- `headers` 仅用于 HTTP server，并会注入握手、工具调用、SSE 接收与连接关闭请求；敏感 header 不会转发到跨源重定向地址。
+- 顶层推荐使用 LaxCode 风格的 `mcp_servers`；同时兼容 MCP 生态常见的 `mcpServers` 写法。
 - `enabled` 缺省为 true（写配置即启用）；设为 false 可保留声明但暂停接入。
 - 单个 server 连接失败不会阻塞启动或会话：该 server 被跳过并在 stderr 告警（fail-open）。
-- 注意：MCP server 以子进程运行，其行为不受 laxcode 工作目录沙箱约束，仅配置你信任的 server。
+- 注意：stdio MCP server 以子进程运行，其行为不受 laxcode 工作目录沙箱约束；HTTP MCP server 会收到配置的凭据和模型发起的工具调用。仅配置你信任的 server，且不要提交真实 Token。

@@ -275,9 +275,21 @@ func mcpServersFromConf() map[string]mcpserver.ServerConfig {
 			Args:    append([]string(nil), sc.Args...),
 			Env:     append([]string(nil), sc.Env...),
 			URL:     sc.URL,
+			Headers: cloneStringMap(sc.Headers),
 		}
 	}
 	return servers
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 // warnMCPSkip 与 warnSkillSkip 同语义：MCP server 接入失败/被跳过的告警

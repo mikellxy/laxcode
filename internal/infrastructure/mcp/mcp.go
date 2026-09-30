@@ -1,6 +1,6 @@
 // Package mcp 把外部 MCP（Model Context Protocol）server 接入 laxcode 工具
-// 体系：为每个已配置的 stdio server 建立连接、拉取 tools/list 快照，并把
-// 每个工具经 domain/tools.MCPTool 适配器注册进工具注册表。
+// 体系：为每个已配置的 stdio 或 Streamable HTTP server 建立连接、拉取
+// tools/list 快照，并把每个工具经 domain/tools.MCPTool 适配器注册进工具注册表。
 //
 // 生命周期（P1）：连接随每次 Agent 装配建立、随装配 cleanup 终止。单个
 // server 连接失败不阻塞装配（fail-open，warn 后跳过），由调用方决定警告
@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -37,14 +39,15 @@ var (
 	callTimeout    = 120 * time.Second
 )
 
-// ServerConfig 声明一条 MCP server 连接。P1 仅支持 stdio（Command/Args/Env）；
-// URL 保留给后续的 Streamable HTTP 传输，配置了 URL 的条目会被跳过并告警。
+// ServerConfig 声明一条 MCP server 连接：Command/Args/Env 使用 stdio，
+// URL/Headers 使用 Streamable HTTP。两种形态互斥，由配置层负责校验。
 type ServerConfig struct {
 	Command string
 	Args    []string
 	// Env 是追加给子进程的环境变量（K=V，在 os.Environ 之上）。
-	Env []string
-	URL string
+	Env     []string
+	URL     string
+	Headers map[string]string
 
 	// transport 覆盖派生出的传输实现：生产路径留 nil（按 Command 构建
 	// stdio 传输），包内测试注入 InMemory 传输以不起真实进程。
@@ -122,8 +125,8 @@ func (p *Pool) Register(reg tools.Registry) {
 	}
 }
 
-// Close 终止全部连接。stdio 传输由 SDK 负责优雅退出：关 stdin → 等待 →
-// SIGTERM → SIGKILL。
+// Close 终止全部连接。stdio 由 SDK 负责回收子进程；Streamable HTTP 会
+// 取消 SSE 接收，并在有 session ID 时发送尽力而为的 DELETE。
 func (p *Pool) Close() error {
 	var errs []error
 	for _, conn := range p.conns {
@@ -138,14 +141,18 @@ func connectServer(ctx context.Context, name string, cfg ServerConfig) (*serverC
 	transport := cfg.transport
 	if transport == nil {
 		if strings.TrimSpace(cfg.URL) != "" {
-			return nil, errors.New("url transport is not supported yet (stdio only)")
-		}
-		if strings.TrimSpace(cfg.Command) == "" {
+			httpTransport, err := newStreamableHTTPTransport(cfg.URL, cfg.Headers)
+			if err != nil {
+				return nil, err
+			}
+			transport = httpTransport
+		} else if strings.TrimSpace(cfg.Command) == "" {
 			return nil, errors.New("command is required")
+		} else {
+			cmd := exec.Command(cfg.Command, cfg.Args...)
+			cmd.Env = append(os.Environ(), cfg.Env...)
+			transport = &mcpsdk.CommandTransport{Command: cmd}
 		}
-		cmd := exec.Command(cfg.Command, cfg.Args...)
-		cmd.Env = append(os.Environ(), cfg.Env...)
-		transport = &mcpsdk.CommandTransport{Command: cmd}
 	}
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: clientName, Version: clientVersion}, nil)
@@ -163,6 +170,57 @@ func connectServer(ctx context.Context, name string, cfg ServerConfig) (*serverC
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
 	return conn, nil
+}
+
+// newStreamableHTTPTransport 构造 MCP Streamable HTTP 客户端。认证等静态
+// header 由 RoundTripper 注入所有协议请求（initialize、tools/list、POST
+// 调用、独立 SSE GET 与关闭 DELETE）。跨源重定向不会携带这些 header。
+func newStreamableHTTPTransport(endpoint string, headers map[string]string) (mcpsdk.Transport, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid streamable HTTP endpoint %q", endpoint)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported streamable HTTP scheme %q", parsed.Scheme)
+	}
+
+	transport := &mcpsdk.StreamableClientTransport{Endpoint: endpoint}
+	if len(headers) > 0 {
+		transport.HTTPClient = &http.Client{Transport: &headerRoundTripper{
+			base:    http.DefaultTransport,
+			scheme:  parsed.Scheme,
+			host:    parsed.Host,
+			headers: cloneHeaders(headers),
+		}}
+	}
+	return transport, nil
+}
+
+type headerRoundTripper struct {
+	base    http.RoundTripper
+	scheme  string
+	host    string
+	headers http.Header
+}
+
+func cloneHeaders(src map[string]string) http.Header {
+	dst := make(http.Header, len(src))
+	for key, value := range src {
+		dst.Set(key, value)
+	}
+	return dst
+}
+
+func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.Header = req.Header.Clone()
+	// 不把 Authorization 等敏感 header 注入跨源重定向请求。
+	if req.URL.Scheme == t.scheme && req.URL.Host == t.host {
+		for key, values := range t.headers {
+			cloned.Header[key] = append([]string(nil), values...)
+		}
+	}
+	return t.base.RoundTrip(cloned)
 }
 
 // loadTools 拉取工具快照。SDK 的 Tools 迭代器内部处理分页。

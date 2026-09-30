@@ -804,7 +804,8 @@ func TestParseMCPServers(t *testing.T) {
 				"enabled": false
 			},
 			"remote": {
-				"url": "https://mcp.example.com/sse"
+				"url": "https://mcp.example.com/mcp",
+				"headers": {"Authorization": "Bearer test-token"}
 			}
 		}
 	}`)
@@ -824,8 +825,48 @@ func TestParseMCPServers(t *testing.T) {
 	if paused := EnvAndFileConf.MCPServers["paused"]; paused.IsEnabled() {
 		t.Error("enabled=false must disable the server")
 	}
-	if remote := EnvAndFileConf.MCPServers["remote"]; remote.URL != "https://mcp.example.com/sse" {
+	if remote := EnvAndFileConf.MCPServers["remote"]; remote.URL != "https://mcp.example.com/mcp" ||
+		headerValue(remote.Headers, "Authorization") != "Bearer test-token" {
 		t.Errorf("url entry must parse, got %+v", remote)
+	}
+}
+
+func headerValue(headers map[string]string, name string) string {
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
+}
+
+// TestParseMCPServersCamelCase 兼容 MCP 客户端生态通用的 mcpServers 顶层键。
+func TestParseMCPServersCamelCase(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSettings(t, home, `{
+		"model": "example:chat",
+		"provider_list": [{
+			"provider_name": "example",
+			"openai_api_key": "sk-file-key",
+			"openai_base_url": "https://file.example.com/v1",
+			"model_list": [{"model_name": "chat"}]
+		}],
+		"mcpServers": {
+			"ov-mcp-server": {
+				"url": "https://mcp.example.com/mcp",
+				"headers": {"Authorization": "Bearer test-token"}
+			}
+		}
+	}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatalf("ParseEnvAndFile: %v", err)
+	}
+	remote := EnvAndFileConf.MCPServers["ov-mcp-server"]
+	if remote.URL != "https://mcp.example.com/mcp" ||
+		headerValue(remote.Headers, "Authorization") != "Bearer test-token" {
+		t.Fatalf("camelCase mcpServers entry = %+v", remote)
 	}
 }
 
@@ -839,13 +880,28 @@ func TestValidateMCPServers(t *testing.T) {
 	}{
 		{"empty", nil, ""},
 		{"stdio ok", map[string]MCPServerConf{"fs": {Command: "npx"}}, ""},
-		{"url reserved", map[string]MCPServerConf{"remote": {URL: "https://x"}}, ""},
+		{"http ok", map[string]MCPServerConf{"remote": {
+			URL: "https://x/mcp", Headers: map[string]string{"Authorization": "Bearer token"},
+		}}, ""},
 		{
 			"both command and url",
 			map[string]MCPServerConf{"x": {Command: "npx", URL: "https://x"}},
 			"exactly one",
 		},
 		{"neither command nor url", map[string]MCPServerConf{"x": {}}, "exactly one"},
+		{"bad url scheme", map[string]MCPServerConf{"x": {URL: "ftp://x/mcp"}}, "invalid HTTP url"},
+		{"headers need url", map[string]MCPServerConf{"x": {
+			Command: "mcp-server", Headers: map[string]string{"Authorization": "x"},
+		}}, "headers require url"},
+		{"invalid header name", map[string]MCPServerConf{"x": {
+			URL: "https://x/mcp", Headers: map[string]string{"Bad Header": "x"},
+		}}, "invalid HTTP header name"},
+		{"header newline", map[string]MCPServerConf{"x": {
+			URL: "https://x/mcp", Headers: map[string]string{"Authorization": "x\ny"},
+		}}, "contains a newline"},
+		{"transport header reserved", map[string]MCPServerConf{"x": {
+			URL: "https://x/mcp", Headers: map[string]string{"Content-Type": "text/plain"},
+		}}, "managed by the MCP transport"},
 		{"blank key", map[string]MCPServerConf{" ": {Command: "npx"}}, "invalid mcp_servers key"},
 		{
 			"disabled exempt",

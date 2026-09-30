@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -205,22 +207,45 @@ func TestAttachFailsOpen(t *testing.T) {
 	}
 }
 
-// TestAttachURLSkipped：P1 仅支持 stdio，url 条目跳过并告警。
-func TestAttachURLSkipped(t *testing.T) {
+// TestStreamableHTTPEndToEnd 覆盖远程 Streamable HTTP：自定义鉴权 header
+// 必须出现在握手、tools/list 和 tools/call 的全部请求上。
+func TestStreamableHTTPEndToEnd(t *testing.T) {
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "http-fake", Version: "test"}, nil)
+	addStandardTools(server)
+	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+		return server
+	}, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
 	reg := tools.NewDefaultRegistry(nil)
 	warnings := &warningCollector{}
-
 	cleanup := Attach(context.Background(), map[string]ServerConfig{
-		"remote": {URL: "https://mcp.example.com/sse"},
+		"remote": {
+			URL:     httpServer.URL,
+			Headers: map[string]string{"Authorization": "Bearer test-token"},
+		},
 	}, reg, warnings.warn)
-	if cleanup != nil {
-		t.Fatal("nothing attachable must yield a nil cleanup")
+	if cleanup == nil {
+		t.Fatalf("Streamable HTTP server must attach; warnings: %s", warnings.joined())
 	}
-	if !strings.Contains(warnings.joined(), "stdio only") {
-		t.Errorf("url server must warn about stdio-only support, got %q", warnings.joined())
+	defer cleanup()
+	if warnings.joined() != "" {
+		t.Fatalf("healthy HTTP server must not warn, got %q", warnings.joined())
 	}
-	if len(reg.GetAvailableTools()) != 0 {
-		t.Error("no tools may be registered from a skipped server")
+
+	result := reg.Execute(context.Background(), &sharedkernel.ToolCall{
+		ID: "http-call", Name: "mcp__remote__echo",
+		Arguments: json.RawMessage(`{"message":"over http"}`),
+	})
+	if result.IsError || result.Output != "echo: over http" {
+		t.Fatalf("HTTP echo: IsError=%v output=%q", result.IsError, result.Output)
 	}
 }
 
