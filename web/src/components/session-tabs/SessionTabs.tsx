@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Folder, LoaderCircle, MessageSquare, Plus } from "lucide-react";
 import type { ContextData, ProjectDTO, SessionDTO } from "../../types/api";
 import laxcodeLogo from "../../assets/laxcode-logo.png";
-import { sessionLabel } from "./label";
+import { contextUsageLabel, sessionLabel } from "./label";
 
 type Props = {
   projects: ProjectDTO[];
@@ -29,7 +29,6 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, contextUs
   const selectedProjectID = projects.find((project) =>
     (sessionsByProject[project.project_id] ?? []).some((session) => session.session_id === selectedID))?.project_id;
   const used = contextUsage ? contextUsage.window_token.token_input + contextUsage.window_token.token_output : 0;
-  const percent = contextUsage && contextUsage.context_window > 0 ? Math.round(used / contextUsage.context_window * 100) : 0;
   const toggle = (projectID: string) => setExpanded((current) => {
     const next = new Set(current);
     if (next.has(projectID)) next.delete(projectID); else next.add(projectID);
@@ -72,7 +71,7 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, contextUs
     <div className="context-usage" aria-label="上下文使用量">
       <strong>Context</strong>
       <span>{contextUsage ? `${new Intl.NumberFormat("en-US").format(used)} tokens` : "— tokens"}</span>
-      <span>{contextUsage ? `${percent}% used` : "— used"}</span>
+      <span>{contextUsage ? contextUsageLabel(used, contextUsage.context_window) : "— used"}</span>
     </div>
     <div className="sidebar-foot"><span className="status-dot" /> 服务连接就绪</div>
   </aside>;
