@@ -17,28 +17,23 @@ package telemetry
 
 import "go.opentelemetry.io/otel/attribute"
 
-// span 名。所有用户入口统一以 chat 为根；QA 检索、LLM 生成与工具执行均为
+// span 名。所有用户入口统一以 chat 为根；LLM 生成与工具执行均为
 // chat 的直接子 span，以开始时间在 Trace UI 中呈现真实执行顺序。
 const (
-	SpanChat            = "chat"
-	SpanQueryEmbedding  = "query-embedding"
-	SpanVectorRetrieval = "vector-retrieval"
-	SpanLLMGenerate     = "llm-generate"
-	SpanToolExec        = "tool-exec"
+	SpanChat        = "chat"
+	SpanLLMGenerate = "llm-generate"
+	SpanToolExec    = "tool-exec"
 )
 
 // laxcode 自有概念的业务属性键
 const (
-	AttrSessionID      attribute.Key = "laxcode.session_id"
-	AttrToolName       attribute.Key = "laxcode.tool_name"
-	AttrAgentRole      attribute.Key = "laxcode.agent_role"
-	AttrTurnSeq        attribute.Key = "laxcode.loop_seq"
-	AttrToolCallCount  attribute.Key = "laxcode.tool_call_count"
-	AttrTimeCostMs     attribute.Key = "laxcode.time_cost_ms"
-	AttrFinishReason   attribute.Key = "laxcode.finish_reason"
-	AttrEmbeddingDims  attribute.Key = "laxcode.embedding.dimensions"
-	AttrRetrievalLimit attribute.Key = "laxcode.retrieval.limit"
-	AttrRetrievalCount attribute.Key = "laxcode.retrieval.result_count"
+	AttrSessionID     attribute.Key = "laxcode.session_id"
+	AttrToolName      attribute.Key = "laxcode.tool_name"
+	AttrAgentRole     attribute.Key = "laxcode.agent_role"
+	AttrTurnSeq       attribute.Key = "laxcode.loop_seq"
+	AttrToolCallCount attribute.Key = "laxcode.tool_call_count"
+	AttrTimeCostMs    attribute.Key = "laxcode.time_cost_ms"
+	AttrFinishReason  attribute.Key = "laxcode.finish_reason"
 )
 
 // AttrAgentRole 的取值

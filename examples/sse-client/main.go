@@ -24,7 +24,7 @@ import (
 	"strings"
 )
 
-// ANSI 颜色，与 run_cli 的终端呈现保持一致：思考灰、正文绿、工具黄、生命周期蓝。
+// ANSI 颜色，思考灰、正文绿、工具黄、生命周期蓝。
 const (
 	colorReset  = "\033[0m"
 	colorGray   = "\033[90m"

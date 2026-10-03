@@ -4,7 +4,7 @@
 // 平台差异（进程组语义）隔离在 proc_unix.go / proc_other.go。
 //
 // 路径安全：临时文件名由 os.CreateTemp 生成，不受模型入参影响；workDir
-// 来自组合根（CLI 参数 / cwd），命令相对路径的沙箱校验属领域层职责。
+// 来自组合根（会话工作目录），命令相对路径的沙箱校验属领域层职责。
 package shell
 
 import (

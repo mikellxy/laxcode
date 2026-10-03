@@ -223,7 +223,7 @@ func TestApprovalIsRemovedWhenStreamEnds(t *testing.T) {
 
 func TestBudgetStateContinuesAcrossSSERequests(t *testing.T) {
 	s := newServer(t.TempDir(), false)
-	s.codeMode, s.tokenBudget = true, 100
+	s.tokenBudget = 100
 	firstSession := session.NewSession("budget-session")
 	firstSession.TokenUsed = sharedkernel.TokenStatistics{TokenInput: 200}
 	firstService := reactservice.NewReActService(firstSession, nil, nil, nil, nil, nil, nil)

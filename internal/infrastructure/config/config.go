@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -73,14 +71,9 @@ type ResolvedModel struct {
 // 解析。Openai* 派生字段不从文件读取（mapstructure:"-"），由 setActiveModel
 // 按活跃模型维护。
 type envAndFileConf struct {
-	UserMemoryExecutable     string `mapstructure:"user_memory_executable"`
-	UserMemoryConcurrency    int    `mapstructure:"user_memory_concurrency"`
-	UserMemoryTimeoutSeconds int    `mapstructure:"user_memory_timeout_seconds"`
 
-	// 辅助模型使用 OPENAI_* 环境变量覆盖时，这两个引用是展示别名，
+	// 辅助模型使用 OPENAI_* 环境变量覆盖时，该引用是展示别名，
 	// 不作为可切换的模型目录条目。
-	EmbeddingModel  string           `mapstructure:"embedding_model"`
-	EmbeddingVecDim int              `mapstructure:"embedding_vec_dim"`
 	CompactionModel string           `mapstructure:"compaction_model"`
 	Model           string           `mapstructure:"model"`
 	ProviderList    []ProviderConfig `mapstructure:"provider_list"`
@@ -95,11 +88,6 @@ type envAndFileConf struct {
 	OpenaiBaseUrl string `mapstructure:"-"`
 	OpenaiModel   string `mapstructure:"-"`
 
-	EmbedOpenaiApiKey               string `mapstructure:"-"`
-	EmbedOpenaiBaseUrl              string `mapstructure:"-"`
-	EmbedOpenaiModel                string `mapstructure:"-"`
-	EmbedOpenaiContextWindow        int    `mapstructure:"-"`
-	EmbedOpenaiMaxOutputTokens      int    `mapstructure:"-"`
 	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
 	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
 	CompactionOpenaiApiKey          string `mapstructure:"-"`
@@ -406,18 +394,6 @@ func (c *envAndFileConf) resolveAuxiliaryModel(key, ref string, env modelEnviron
 // ResolveModel 将 provider:model 引用解析为创建 provider/client 所需的运行时配置。
 func ResolveModel(ref string) (ResolvedModel, error) { return EnvAndFileConf.resolveModel(ref) }
 
-// ModelRefs 返回按 provider、model 名排序的全部合法引用，供 CLI 补全使用。
-func ModelRefs() []string {
-	refs := make([]string, 0)
-	for _, provider := range EnvAndFileConf.ProviderList {
-		for _, model := range provider.ModelList {
-			refs = append(refs, modelRef(provider.ProviderName, model.ModelName))
-		}
-	}
-	sort.Strings(refs)
-	return refs
-}
-
 // SetActiveModel 更新当前进程使用的模型引用及其派生连接参数，不写回配置文件。
 func SetActiveModel(ref string) error { return EnvAndFileConf.setActiveModel(ref) }
 
@@ -432,19 +408,10 @@ func ActiveModelBudget() (contextWindow, maxOutputTokens int) {
 }
 
 type cliConf struct {
-	KB          string `mapstructure:"kb"`
-	SSE         bool   `mapstructure:"sse"`
-	Mode        string `mapstructure:"mode"`
 	Addr        string `mapstructure:"addr"`
-	Session     string `mapstructure:"session"`
 	Plan        bool   `mapstructure:"plan"`
 	TokenBudget int    `mapstructure:"token-budget"`
 }
-
-const (
-	SSEModeCode = "code"
-	SSEModeRAG  = "rag"
-)
 
 // DefaultSSEAddr 是 sse server 模式的缺省监听地址：仅绑定本地回环，因为
 // Agent 具备 bash / 写文件能力，默认不对外暴露；需要对外时以 -addr 覆盖。
@@ -481,19 +448,12 @@ func ParseEnvAndFile() error {
 	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", DefaultContextWindow)
 	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", DefaultMaxOutputTokens)
 	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
-	EnvOrFile.SetDefault("USER_MEMORY_CONCURRENCY", 1)
-	EnvOrFile.SetDefault("USER_MEMORY_TIMEOUT_SECONDS", 120)
-	for _, key := range []string{"USER_MEMORY_EXECUTABLE", "USER_MEMORY_CONCURRENCY", "USER_MEMORY_TIMEOUT_SECONDS"} {
-		_ = EnvOrFile.BindEnv(key, key)
-	}
 	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
 	EnvOrFile.BindEnv("LLM_ROUTER_ADDR", "LLM_ROUTER_ADDR")
-	EnvOrFile.BindEnv("EMBEDDING_MODEL", "EMBEDDING_MODEL")
 	EnvOrFile.BindEnv("COMPACTION_MODEL", "COMPACTION_MODEL")
-	EnvOrFile.BindEnv("EMBEDDING_VEC_DIM", "EMBEDDING_VEC_DIM")
 	EnvOrFile.SetEnvKeyReplacer(strings.NewReplacer("_", "_"))
 
 	if err = EnvOrFile.Unmarshal(&EnvAndFileConf); err != nil {
@@ -551,22 +511,6 @@ func ParseEnvAndFile() error {
 			return err
 		}
 	}
-	embedding, err := EnvAndFileConf.resolveAuxiliaryModel(
-		"EMBEDDING_MODEL", EnvAndFileConf.EmbeddingModel,
-		readModelEnvironment("OPENAI_EMBEDDING_"),
-		ResolvedModel{ContextWindow: EnvAndFileConf.OpenaiContextWindow, MaxOutputTokens: EnvAndFileConf.OpenaiMaxOutputTokens})
-	if err != nil {
-		return err
-	}
-	EnvAndFileConf.EmbeddingModel = embedding.Ref
-	EnvAndFileConf.EmbedOpenaiApiKey = embedding.OpenaiApiKey
-	EnvAndFileConf.EmbedOpenaiBaseUrl = embedding.OpenaiBaseUrl
-	EnvAndFileConf.EmbedOpenaiModel = embedding.UpstreamModel
-	EnvAndFileConf.EmbedOpenaiContextWindow = embedding.ContextWindow
-	EnvAndFileConf.EmbedOpenaiMaxOutputTokens = embedding.MaxOutputTokens
-	if EnvAndFileConf.EmbeddingVecDim < 0 || EnvAndFileConf.EmbeddingVecDim > 8192 {
-		return errors.New("embedding_vec_dim must be between 1 and 8192")
-	}
 	mainModel, _ := EnvAndFileConf.resolveModel(EnvAndFileConf.Model)
 	compaction, err := EnvAndFileConf.resolveAuxiliaryModel(
 		"COMPACTION_MODEL", EnvAndFileConf.CompactionModel,
@@ -603,9 +547,6 @@ func ParseEnvAndFile() error {
 	if window, output := ActiveModelBudget(); window <= 0 || output <= 0 || output >= window {
 		return errors.New("active model limit must have positive context and output smaller than context")
 	}
-	if embedding.UpstreamModel != "" && (embedding.ContextWindow <= 0 || embedding.MaxOutputTokens <= 0 || embedding.MaxOutputTokens >= embedding.ContextWindow) {
-		return errors.New("embedding model limit must have positive context and output smaller than context")
-	}
 
 	return nil
 }
@@ -620,70 +561,23 @@ func ParseEnvAndFile() error {
 // testing 注册 -test.* 参数之前执行 flag.Parse，遇到 -test.v 等以“未定义
 // 参数”直接退出（老 internal/config 亦是由 main 显式调用 Parse）。
 func ParseCli() error {
-	sse := flag.Bool("sse", false, "sse server mode: serve HTTP POST /chat and stream ReAct events over SSE")
-	mode := flag.String("mode", "", "SSE agent mode: code or rag; required with -sse")
-	addr := flag.String("addr", DefaultSSEAddr, "sse server listen address")
-	kb := flag.String("kb", "", "absolute sqlite-vec database file path; required for -sse -mode=rag")
-	session := flag.String("session", "", "session id to resume; empty starts a new session")
+	addr := flag.String("addr", DefaultSSEAddr, "Web backend listen address")
 	plan := flag.Bool("plan", false, "enable plan mode")
-	tokenBudget := flag.Int("token-budget", 0, "token budget for interactive CLI or SSE code sessions; 0 disables confirmation")
-	flag.Parse()
-
-	Cli.Set("sse", *sse)
-	Cli.Set("mode", *mode)
+	tokenBudget := flag.Int("token-budget", 0, "token budget per session; 0 disables confirmation")
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	if flag.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
+	}
 	Cli.Set("addr", *addr)
-	Cli.Set("kb", *kb)
-	Cli.Set("session", *session)
 	Cli.Set("plan", *plan)
 	Cli.Set("token-budget", *tokenBudget)
-
 	if err := Cli.Unmarshal(&CliConf); err != nil {
 		return err
 	}
 	if CliConf.TokenBudget < 0 {
 		return fmt.Errorf("-token-budget must be non-negative")
-	}
-	if CliConf.SSE {
-		if CliConf.Mode != SSEModeCode && CliConf.Mode != SSEModeRAG {
-			return fmt.Errorf("-sse requires -mode=code or -mode=rag")
-		}
-	} else if CliConf.Mode != "" {
-		return fmt.Errorf("-mode requires -sse")
-	}
-	if CliConf.TokenBudget > 0 && CliConf.SSE && CliConf.Mode != SSEModeCode {
-		return fmt.Errorf("-token-budget is only supported in interactive CLI or -sse -mode=code")
-	}
-	if CliConf.SSE && CliConf.Mode == SSEModeRAG {
-		if err := ValidateKBPath(CliConf.KB); err != nil {
-			return err
-		}
-	}
-	if CliConf.SSE && CliConf.Mode == SSEModeRAG && CliConf.Plan {
-		return fmt.Errorf("-plan is only supported in code mode")
-	}
-	return nil
-}
-
-// EmbeddingEnvironmentReady reports whether the external memory pipeline has
-// all three embedding credentials it requires. RAG assembly reads the resolved
-// configuration directly and does not depend on this legacy environment check.
-func EmbeddingEnvironmentReady() bool {
-	for _, key := range []string{"OPENAI_EMBEDDING_MODEL_NAME", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_API_KEY"} {
-		if strings.TrimSpace(os.Getenv(key)) == "" {
-			return false
-		}
-	}
-	return true
-}
-
-// ValidateKBPath checks RAG configuration only. The assembly layer validates the
-// actual database file and schema when it opens the retriever.
-func ValidateKBPath(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("-kb is required for -sse -mode=rag; specify an absolute sqlite-vec database file path")
-	}
-	if !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
-		return errors.New("-kb must be an absolute sqlite-vec database file path")
 	}
 	return nil
 }

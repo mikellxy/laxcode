@@ -24,7 +24,7 @@ func TestAssembleRegistersSkillManagementTools(t *testing.T) {
 	}
 }
 
-func TestCustomPromptDoesNotExposeSkillManagementTools(t *testing.T) {
+func TestEvaluatorExposesOnlyReadOnlyInspectionTools(t *testing.T) {
 	assembled, err := Assemble(context.Background(), Input{
 		Mode: ModeEvaluate, WorkDir: t.TempDir(), HomeDir: t.TempDir(), SystemPrompt: "specialized evaluator",
 	})
@@ -32,9 +32,15 @@ func TestCustomPromptDoesNotExposeSkillManagementTools(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	defer assembled.Cleanup()
-	for _, definition := range assembled.Service.ToolRegistry.GetAvailableTools() {
-		if definition.Name == tools.ToolCreateSkill || definition.Name == tools.ToolUpdateSkill {
-			t.Fatalf("custom-prompt agent must not expose %s", definition.Name)
+	definitions := assembled.Service.ToolRegistry.GetAvailableTools()
+	if len(definitions) != 3 {
+		t.Fatalf("evaluator tools = %+v", definitions)
+	}
+	for _, definition := range definitions {
+		switch definition.Name {
+		case tools.ToolReadFile, tools.ToolGrep, tools.ToolGlob:
+		default:
+			t.Fatalf("evaluator exposes non-inspection tool %s", definition.Name)
 		}
 	}
 }

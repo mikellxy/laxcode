@@ -4,24 +4,20 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	infrastructurerouter "github.com/mikellxy/laxcode/internal/infrastructure/llmrouter"
 )
 
-// ModelSwitcher is the single model-switching entry point for CLI and SSE.
-// A long-lived CLI service needs its LLM client replaced; SSE creates a new
-// service per request and only needs the router and runtime configuration.
+// ModelSwitcher serializes model changes against active Web requests.
 type ModelSwitcher struct {
-	mu      sync.RWMutex
-	router  RouterClientReplacer
-	service *reactservice.ReActService
+	mu     sync.RWMutex
+	router RouterClientReplacer
 }
 
 var ErrRouterUnavailable = errors.New("model switching requires a running LLM router")
 
-func NewModelSwitcher(router RouterClientReplacer, service *reactservice.ReActService) *ModelSwitcher {
-	return &ModelSwitcher{router: router, service: service}
+func NewModelSwitcher(router RouterClientReplacer) *ModelSwitcher {
+	return &ModelSwitcher{router: router}
 }
 
 // RLock and RUnlock keep SSE assembly and its Chat or Resume on one model.
@@ -31,8 +27,7 @@ func (s *ModelSwitcher) RUnlock() { s.mu.RUnlock() }
 func (s *ModelSwitcher) Lock()    { s.mu.Lock() }
 func (s *ModelSwitcher) Unlock()  { s.mu.Unlock() }
 
-// SwitchModel affects subsequent requests. Callers with a long-lived service
-// must invoke it between Chat calls, when that service is idle.
+// SwitchModel affects subsequent requests after active requests finish.
 func (s *ModelSwitcher) SwitchModel(ref string) error {
 	if s == nil || s.router == nil {
 		return ErrRouterUnavailable
@@ -59,8 +54,5 @@ func (s *ModelSwitcher) SwitchModelLocked(ref string) error {
 		return err
 	}
 	s.router.ReplaceClient(client)
-	if s.service != nil {
-		s.service.ReplaceLLMClient(newMainProvider())
-	}
 	return nil
 }

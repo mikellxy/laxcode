@@ -10,7 +10,7 @@
 
 [![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
 
-LaxCode 是一个用 Go 实现的轻量 Agent。支持 coding agent 和 agentic RAG 两种模式，配套提供基于 LangGraph 的知识库制作工作流。需要 Go 版本 >= 1.26。
+LaxCode 是一个用 Go 实现、通过 Web UI 使用的轻量 coding agent。需要 Go 版本 >= 1.26。
 ## 快速开始
 ```shell
 git clone https://github.com/mikellxy/laxcode.git && cd laxcode
@@ -28,8 +28,6 @@ brew install pnpm
 ## 特性
 - 会话存储引擎
   - SQLite 事务 + 乐观锁、上下文压缩in_memory消息分代原子化更新、崩溃恢复时进行 agent 循环完整性检测。 [设计文档](./docs/session-storage-engine.md)
-- Agentic RAG
-  - 提供基于 LangGraph 的知识库制作配套 pipeline，使用标题、chunk_size、overlap_size 三重约束的 chunk splitter（[knowledge-pipeline](./knowledge-pipeline/)）
 - 效果评测
   - 提供 agent 循环效果评测配套工具，多维打分，输出人类可读报告。 [查看单任务评估样例](./docs/readpaged-maxbytes-fix-evaluation.md)
 - 上下文压缩
@@ -40,36 +38,28 @@ brew install pnpm
 
 ## 功能导航
 
-- [**Coding Agent CLI**](#coding-agent-cli)
+- [**Coding Agent Web**](#coding-agent-web)
 - [**Agent 效果评估**](#agent-session-evaluation) — 基于完整 ReAct 日志评估一次任务的完成效果(LLM-as-a-Judge)
-- [**Agentic RAG**](#agentic-rag-qa) — 支持知识库检索与 SSE 交互页面
 - [**架构**](#architecture) 
 
 ### 创建配置文件
 
 [配置文件使用说明](./docs/settings.md)。
 
-<a id="coding-agent-cli"></a>
+<a id="coding-agent-web"></a>
 
-### Coding Agent CLI
+### Coding Agent Web
 > [!TIP]
 > 默认挂载工具：`grep` `glob` `read_file` `write_file` `edit_file` `bash` `read_artifact`
 
-```shell
-make build
-./bin/laxcode
-```
-
-交互模式可设置本次运行的 token 预算，例如 `./bin/laxcode -token-budget=100000`。输入与输出 token 合计达到预算的 1、1.5、2 倍等阈值时，继续执行前会询问是否继续；输入 `yes` 继续，其他输入停止。续接旧会话时，历史用量不计入本次预算。
-
-浏览器代码模式可在 macOS 上两步启动：
+在 macOS 上启动 Web UI：
 
 ```shell
 brew install pnpm
 ./web.sh
 ```
 
-`web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 `-sse -mode=code`，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
+`web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 coding 后端，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
 
 Windows PowerShell 直接运行启动脚本：
 
@@ -79,10 +69,11 @@ Windows PowerShell 直接运行启动脚本：
 
 仓库中的 `bin/win/laxcode.exe` 与 `bin/win/laxcode-web.exe` 是预编译的 Windows x64 程序，后者已嵌入前端生产资源并反向代理到后端的随机端口。因此 Windows 用户无需安装 Go、Node.js、pnpm 或 GCC。脚本会在两个服务均就绪后打开默认浏览器，并在 `Ctrl-C` 后清理两个进程。
 
-维护者更新 Windows 产物时，可在 macOS 安装 `pnpm`、`sqlite` 和 `mingw-w64` 后执行 `make build-windows`。该目标会重新构建前端，并覆盖 `bin/win/` 中的两个 x64 程序。
+维护者更新 Windows 产物时，可在 macOS 安装 Go 和 `pnpm` 后执行 `make build-windows`。该目标会重新构建前端，并覆盖 `bin/win/` 中的两个 x64 程序。
 
-手动启动时仍可使用 `./bin/laxcode -sse -mode=code -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。该模式挂载与 CLI 相同的代码工具；预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
-<img src="examples/laxcode_intro.gif" alt="LaxCode 终端交互演示" width="960" style="max-width: 100%; height: 600px;">  
+手动启动时仍可使用 `./bin/laxcode -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
+
+后端默认启动 coding SSE 服务，仅保留 `-addr`、`-plan`、`-token-budget` 启动参数。原 `-sse`、`-mode`、`-kb`、`-session` 参数已移除；会话通过 Web UI 创建和续接。已有 code 会话仍可使用，旧 RAG 会话不能作为 coding 会话续接；已有数据库中的遗留记忆表保留原数据。
 
 <a id="agent-session-evaluation"></a>
 
@@ -98,66 +89,28 @@ ${workdir}/eval/${session_id}/history.jsonl
 
 评估过程不会续聊或修改被评估任务的 session；评估器使用 `eval_${session_id}_${date_time}` 独立 session 保存自己的消息和 token 统计。
 
-<a id="agentic-rag-qa"></a>
-
-### Agentic RAG 问答
-
-> [!TIP]
-> - 默认不挂载工具
-
-#### Step 1：制作知识库
-
-按照 [knowledge-pipeline 使用说明](./knowledge-pipeline/README.md)配置向量模型并导入文档。
-
-#### Step 2：指定知识库路径并启动 RAG 服务
-
-```shell
-make build
-./bin/laxcode -sse \
-	-mode=rag \
-	-kb=/tmp/laxcode-rag/kb.sqlite \
-	-addr=127.0.0.1:8090
-```
-
-#### Step 3：在另一终端启动 Web 界面
-
-```shell
-pnpm --dir web install --frozen-lockfile
-pnpm --dir web dev
-
-# 或使用 npm
-npm --prefix web install
-npm --prefix web run dev
-```
-
-打开 <http://127.0.0.1:5173>。
-
 <a id="architecture"></a>
 
 ### 架构
 
-Go 后端按 DDD 分层组织，核心依赖方向为 `cmd → application → domain ← infrastructure`；Web 前端和知识库导入管线作为独立子工程协作。
+Go 后端按 DDD 分层组织，核心依赖方向为 `cmd → application → domain ← infrastructure`；Web 前端作为独立子工程。
 
 ```text
 LaxCode/
 ├── cmd/                            # 程序入口与运行模式适配
-│   ├── main/                       # CLI 主入口：加载配置并分流各运行模式
+│   ├── main/                       # 加载配置并启动 coding Web 后端
 │   ├── agentasm/                   # 组合根：装配 Agent、工具、模型、会话与追踪
-│   ├── run_cli/                    # Coding Agent 交互式终端模式
-│   ├── run_sse/                    # Web 后端：SSE、异步评估、RAG、会话、审批与目录选择接口
+│   ├── run_sse/                    # Web 后端：SSE、异步评估、会话、审批与目录选择接口
 │   └── web/                        # 内嵌前端资源及反向代理的独立 Web 程序
 ├── internal/
 │   ├── application/                # 应用层：编排领域能力与完整用例
 │   │   ├── reactservice/           # ReAct 推理循环、上下文压缩与子 Agent 调度
-│   │   ├── qaservice/              # 知识库 RAG 查询预处理中间件
-│   │   ├── usermemory/             # 用户记忆召回、摘要与异步写入流程
 │   │   └── llm_router/             # 本地模型网关的 HTTP/SSE 编排
 │   ├── domain/                     # 领域层：核心模型、规则与基础设施端口
 │   │   ├── session/                # 会话聚合、请求上下文及仓储接口
 │   │   ├── tools/                  # 工具注册表、内置工具行为与执行端口
 │   │   ├── prompt/                 # 系统提示词、Skill 与 Plan Mode 组装
 │   │   ├── compactor/              # 上下文压缩策略
-│   │   ├── knowledgebase/          # 知识库、向量检索与嵌入接口
 │   │   ├── llmprovider/            # LLM 客户端接口
 │   │   ├── llmrouter/              # 模型网关流式传输接口
 │   │   ├── telemetry/              # Trace 名称、属性与观测语义
@@ -165,19 +118,15 @@ LaxCode/
 │   └── infrastructure/             # 基础设施层：领域端口的外部实现
 │       ├── llmprovider/             # OpenAI Responses 协议适配
 │       ├── llmrouter/               # OpenAI 兼容流式网关适配
-│       ├── embedding/               # OpenAI 兼容向量模型适配
-│       ├── knowledgebase/           # SQLite + sqlite-vec 知识库实现
-│       ├── sessionrepo/             # SQLite 会话、历史与记忆任务仓储
+│       ├── sessionrepo/             # SQLite 会话、历史与评估任务仓储
 │       ├── artifactstore/           # 会话产物的文件存储
 │       ├── workfs/                  # 工作区文件读写实现
 │       ├── shell/                   # Shell 执行、超时与进程管理
 │       ├── ripgrep/                 # 文件搜索与内容检索适配
 │       ├── skillrepo/               # 本地 Skill 扫描与加载
 │       ├── skillstore/              # 全局 Skill 包的受限暂存与原子提交
-│       ├── memorypipeline/          # Python 记忆入库管线的进程适配
 │       ├── config/                  # 配置加载与模型目录
 │       ├── layout/                  # 用户数据与会话磁盘布局
-│       ├── cliprinter/              # 交互式终端界面
 │       └── tracing/                 # OpenTelemetry、OTLP 与本地追踪实现
 ├── web/                             # React + TypeScript Web 客户端
 │   └── src/
@@ -187,14 +136,4 @@ LaxCode/
 │       ├── features/                # 聊天状态与身份等业务模块
 │       ├── hooks/                   # 工作区等可复用 React Hooks
 │       └── types/                   # 前端 API 与消息类型
-├── knowledge-pipeline/              # Python/LangGraph 知识与用户记忆导入管线
-│   ├── src/laxcode_knowledge/
-│   │   ├── cmd/                     # 命令行入口
-│   │   ├── models/                  # 配置与数据模型
-│   │   ├── node/                    # LangGraph 处理节点
-│   │   ├── splitter/                # 文档分块策略
-│   │   ├── state/                   # 工作流状态定义
-│   │   ├── store/                   # SQLite 向量数据写入
-│   │   └── tools/                   # 管线工具抽象与注册
-│   └── tests/                       # 知识管线测试
 ```

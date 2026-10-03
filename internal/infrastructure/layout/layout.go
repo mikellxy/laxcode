@@ -39,10 +39,6 @@ const (
 	// sseCodeInstanceFileName 是浏览器代码模式的单实例锁与地址发布文件。
 	sseCodeInstanceFileName = "sse-code.instance"
 
-	// knowledgeBaseDirName 与 knowledgeBaseFileName 定位项目内的向量知识库。
-	knowledgeBaseDirName  = "kb"
-	knowledgeBaseFileName = "kb.sqlite"
-
 	// tracingLogDirName 与 tracingLogFileName 定位会话级 trace 日志。
 	tracingLogDirName  = "log"
 	tracingLogFileName = "tracing.log"
@@ -59,11 +55,6 @@ func Root(homeDir string) string {
 // SessionDB 返回全局会话数据库 ${homeDir}/.laxcode/sessions/sessions.db。
 func SessionDB(homeDir string) string {
 	return filepath.Join(SessionRoot(homeDir), sessionDBFileName)
-}
-
-// KnowledgeBaseDB 返回当前工作目录的知识库 ${workDir}/kb/kb.sqlite。
-func KnowledgeBaseDB(workDir string) string {
-	return filepath.Join(workDir, knowledgeBaseDirName, knowledgeBaseFileName)
 }
 
 // SessionRoot 返回会话文件根 ${homeDir}/.laxcode/sessions；history 冷备、

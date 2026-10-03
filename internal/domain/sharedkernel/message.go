@@ -1,19 +1,5 @@
 package sharedkernel
 
-type MemoryChunk struct {
-	ID      string `json:"id"`
-	Content string `json:"content"`
-}
-
-// ModelContent returns the middleware-produced model input when present and
-// otherwise falls back to the immutable user-visible content.
-func (m Message) ModelContent() string {
-	if m.WrappedContent != "" {
-		return m.WrappedContent
-	}
-	return m.Content
-}
-
 const (
 	RoleSystem    = "system"    // 系统提示词：确立 Agent 的人格与红线
 	RoleUser      = "user"      // 用户输入
@@ -42,11 +28,6 @@ const (
 )
 
 type Message struct {
-	// WrappedContent is the model-facing form produced by BeforeUserQuery. It is
-	// persisted only with the working set; immutable history keeps raw Content.
-	// Compaction may clear it and transparently fall back to Content.
-	WrappedContent string `json:"wrapped_content,omitempty"`
-	ReactTurn      uint64 `json:"react_turn,omitempty"`
 	// Seq 在 session 内单调递增，system 首次创建时也会占用一个序号。
 	Seq uint64 `json:"seq,omitempty"`
 	// OriginalSeq 指向该工作集消息覆盖的不可变原始消息。普通消息只包含自身

@@ -132,7 +132,7 @@ try {
 
     $BackendProcess = Start-Process `
         -FilePath $BackendExe `
-        -ArgumentList @("-sse", "-mode=code", "-addr=127.0.0.1:0") `
+        -ArgumentList @("-addr=127.0.0.1:0") `
         -WorkingDirectory $RepoRoot `
         -NoNewWindow `
         -PassThru

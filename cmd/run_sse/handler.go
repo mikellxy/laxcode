@@ -42,8 +42,6 @@ type server struct {
 	locks              *sessionLocks
 	approvals          *approvalBroker
 	budgets            *budgetStates
-	codeMode           bool
-	mode               agentasm.Mode
 	tokenBudget        int
 	history            session.SessionHistoryRepository
 	contextRepo        session.SessionRepository
@@ -161,7 +159,7 @@ func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "load project failed: "+err.Error())
 		return
 	}
-	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, project.ID, "", project.WorkDir, string(s.mode))
+	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, project.ID, "", project.WorkDir, string(agentasm.ModeCode))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "create session failed: "+err.Error())
 		return
@@ -463,7 +461,7 @@ type switchModelRequest struct {
 // agentasm.ModelSwitcher.SwitchModel 完成切换——替换本地 LLM 路由器的上游 client（SSE 流式流量全经
 // 路由器，凭据与模型名都在其侧），再写回运行时配置；此后每个请求的按次装配
 // 自然以新配置（含模型级 limit 预算）构建 provider。切换等待进行中的 Chat/
-// Resume 结束后生效，与 TUI 的约束一致。
+// Resume 结束后生效。
 func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 	var req switchModelRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
@@ -574,20 +572,14 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ContextData{WindowToken: contextState.WindowToken, ContextWindow: contextWindow})
 }
 
-func newServer(homeDir string, planMode bool, modes ...agentasm.Mode) *server {
-	mode := agentasm.ModeCode
-	if len(modes) > 0 {
-		mode = modes[0]
-	}
+func newServer(homeDir string, planMode bool) *server {
 	evaluationCtx, evaluationCancel := context.WithCancel(context.Background())
 	return &server{
 		homeDir:       homeDir,
 		planMode:      planMode,
-		mode:          mode,
-		codeMode:      mode == agentasm.ModeCode,
 		pickDirectory: pickNativeDirectory,
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
-			in.Mode = mode
+			in.Mode = agentasm.ModeCode
 			return agentasm.Assemble(ctx, in)
 		},
 		assembleEvaluation: agentasm.Assemble,
@@ -597,7 +589,7 @@ func newServer(homeDir string, planMode bool, modes ...agentasm.Mode) *server {
 		evaluationCancel:   evaluationCancel,
 		approvals:          newApprovalBroker(),
 		budgets:            newBudgetStates(),
-		switcher:           agentasm.NewModelSwitcher(nil, nil),
+		switcher:           agentasm.NewModelSwitcher(nil),
 	}
 }
 
@@ -619,7 +611,7 @@ func (s *server) eventConsumer(sw *sseWriter, sessionID *string, requestID strin
 }
 
 func (s *server) configureBudget(assembled *agentasm.Assembled) {
-	if !s.codeMode || s.tokenBudget <= 0 {
+	if s.tokenBudget <= 0 {
 		return
 	}
 	if state, ok := s.budgets.get(assembled.Session.ID); ok {
@@ -630,7 +622,7 @@ func (s *server) configureBudget(assembled *agentasm.Assembled) {
 }
 
 func (s *server) saveBudget(assembled *agentasm.Assembled) {
-	if s.codeMode && s.tokenBudget > 0 {
+	if s.tokenBudget > 0 {
 		s.budgets.put(assembled.Session.ID, assembled.Service.TokenBudgetState())
 	}
 }
@@ -676,9 +668,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), "")
 		return
 	}
-	if selected.Mode != string(s.mode) {
+	if selected.Mode != string(agentasm.ModeCode) {
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeInvalidRequest,
-			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, s.mode), "")
+			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, agentasm.ModeCode), "")
 		return
 	}
 	// 延迟配置场景：模型未配置时在进入 SSE 流之前以 JSON 明确报错，避免
@@ -786,9 +778,9 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), RetryActionResume)
 		return
 	}
-	if selected.Mode != string(s.mode) {
+	if selected.Mode != string(agentasm.ModeCode) {
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeInvalidRequest,
-			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, s.mode), "")
+			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, agentasm.ModeCode), "")
 		return
 	}
 	if s.modelMissing() {

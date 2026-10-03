@@ -17,7 +17,7 @@ func (r *recordingRouter) ReplaceClient(client domainrouter.StreamClient) {
 	r.clients = append(r.clients, client)
 }
 
-func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
+func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
 	previous := config.EnvAndFileConf
 	t.Cleanup(func() { config.EnvAndFileConf = previous })
 	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{
@@ -46,7 +46,7 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 	config.EnvAndFileConf.LlmRouterURL = "http://127.0.0.1:1/openai/generate_stream"
 
 	router := &recordingRouter{}
-	assembled, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir(), Router: router})
+	assembled, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,16 +56,21 @@ func TestAssembledSwitchModelReplacesRouterAndProvider(t *testing.T) {
 		t.Fatalf("初始 provider 预算应回退全局窗口配置：%+v", budget)
 	}
 
-	if err := assembled.Switcher.SwitchModel("second:model-2"); err != nil {
+	if err := NewModelSwitcher(router).SwitchModel("second:model-2"); err != nil {
 		t.Fatal(err)
 	}
 	if len(router.clients) != 1 {
 		t.Fatalf("router replacements=%d，期望 1", len(router.clients))
 	}
-	if assembled.Service.LLMClient == previousClient {
-		t.Fatal("主 ReAct provider 未替换")
+	if assembled.Service.LLMClient != previousClient {
+		t.Fatal("existing request provider changed")
 	}
-	if budget := assembled.Service.LLMClient.ContextBudget(); budget.ContextWindow != 1_048_576 || budget.ReservedOutputTokens != 131_072 {
+	next, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Cleanup()
+	if budget := next.Service.LLMClient.ContextBudget(); budget.ContextWindow != 1_048_576 || budget.ReservedOutputTokens != 131_072 {
 		t.Fatalf("切换后 provider 预算未取新模型的 limit：%+v", budget)
 	}
 	if config.EnvAndFileConf.Model != "second:model-2" ||
@@ -83,7 +88,7 @@ func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
 		ModelList: []config.ModelConfig{{ModelName: "model"}},
 	}}
 	router := &recordingRouter{}
-	switcher := NewModelSwitcher(router, nil)
+	switcher := NewModelSwitcher(router)
 	switcher.RLock()
 	done := make(chan error, 1)
 	go func() { done <- switcher.SwitchModel("p:model") }()

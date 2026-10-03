@@ -263,7 +263,7 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 	setupSwitchModelCatalog(t)
 	router := &recordingModelRouter{}
 	s := newServer(t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(router, nil)
+	s.switcher = agentasm.NewModelSwitcher(router)
 
 	rec := httptest.NewRecorder()
 	s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
@@ -294,7 +294,7 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 	setupSwitchModelCatalog(t)
 	router := &recordingModelRouter{}
 	s := newServer(t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(router, nil)
+	s.switcher = agentasm.NewModelSwitcher(router)
 
 	cases := []struct {
 		name   string
@@ -472,13 +472,6 @@ func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
 	}
 }
 
-func TestNewServerBindsAssemblyMode(t *testing.T) {
-	s := newServer("/server/home", false, agentasm.ModeRAG)
-	if s.mode != agentasm.ModeRAG || s.codeMode {
-		t.Fatalf("server mode = %q, codeMode=%v", s.mode, s.codeMode)
-	}
-}
-
 // TestHandleChatInvalidJSON 验证非法请求体在进入 SSE 流之前返回 400 + JSON。
 func TestHandleChatInvalidJSON(t *testing.T) {
 	s := newServer(t.TempDir(), false)
@@ -647,7 +640,7 @@ func TestHandleChatWithoutModel(t *testing.T) {
 
 func TestChatAndResumeRejectDifferentSessionMode(t *testing.T) {
 	workDir := t.TempDir()
-	s := newServer(t.TempDir(), false, agentasm.ModeCode)
+	s := newServer(t.TempDir(), false)
 	s.catalog = &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{
 		ID: "rag-session", Mode: "rag", WorkDir: workDir,
 	}}}}

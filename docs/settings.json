@@ -14,13 +14,6 @@
           }
         },
         {
-          "model_name": "embedding",
-          "limit": {
-            "context": 128000,
-            "output": 8192
-          }
-        },
-        {
           "model_name": "summary",
           "limit": {
             "context": 128000,
@@ -30,8 +23,6 @@
       ]
     }
   ],
-  "embedding_model": "example:embedding",
-  "embedding_vec_dim": 1024,
   "compaction_model": "example:summary",
   "llm_router_addr": "127.0.0.1:0",
   "mcp_servers": {}

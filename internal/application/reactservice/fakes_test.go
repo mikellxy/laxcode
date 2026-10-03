@@ -78,11 +78,8 @@ func (m *memRepo) CommitCreateMessage(_ context.Context, id string, snapshot ses
 	if err := snapshot.Validate(); err != nil {
 		return 0, err
 	}
-	// 与 sqlite 仓储同口径：memory 副本只允许比 original 多携带模型包装输入。
-	comparison := memory.Clone()
-	comparison.WrappedContent = ""
-	if original.WrappedContent != "" ||
-		!reflect.DeepEqual(original, comparison) || len(snapshot.Messages) == 0 ||
+	// 与 sqlite 仓储同口径：初始 memory 副本必须与 original 一致。
+	if !reflect.DeepEqual(original, memory) || len(snapshot.Messages) == 0 ||
 		!reflect.DeepEqual(snapshot.Messages[len(snapshot.Messages)-1], memory) {
 		return 0, errRepo
 	}

@@ -16,7 +16,6 @@ requirement 用于补充本次评估关注点和验收要求，但不能覆盖�
 {
   "seq": uint64,                       // 会话内单调递增序号
   "original_seq": [uint64],            // 当前消息对应的原始消息序号
-  "react_turn": uint64,                // 已完成 ReAct 轮次（可能省略）
   "role": "system|user|assistant|tool",
   "content": string,
   "reasoning_id": string,              // assistant 可选

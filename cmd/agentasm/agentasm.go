@@ -1,13 +1,6 @@
 package agentasm
 
-// Package agentasm 是 cmd 层的组合根（composition root）：把交互模式
-// （cmd/run_cli）与 SSE 模式（cmd/run_sse，含异步评估任务）共用的 Agent
-// 装配逻辑收口到 Assemble，消除重复。装配产物
-// 是一个可直接 Run 的 ReActService 及其会话与清理钩子；各端的输入解析、校验、
-// 事件呈现与主循环仍留在前端。
-//
-// 之所以独立成包而非放进 cmd/main：main 是 package main，不可被导入，且它已
-// import 两个前端，反向依赖会成环。
+// Package agentasm assembles coding and read-only evaluation agents for the Web backend.
 
 import (
 	"context"
@@ -36,9 +29,7 @@ import (
 type Input struct {
 	// Mode selects the explicit agent capability profile.
 	Mode Mode
-	// KBPath is required by ModeRAG.
-	KBPath string
-	// WorkDir 是 Agent 工作目录（沙箱根）：交互模式取 cwd，服务或评估模式取显式配置。
+	// WorkDir 是会话持久绑定的 Agent 工作目录（沙箱根）。
 	WorkDir string
 	// HomeDir 是全局数据根的用户主目录；空值使用 os.UserHomeDir。
 	// 测试可显式注入临时目录，避免触碰真实用户数据。
@@ -53,17 +44,14 @@ type Input struct {
 	// SystemPrompt 非空时替换默认 coding-agent 系统提示词。评估等复用同一
 	// ReActService、但职责不同的前端通过它注入专用角色；普通前端留空。
 	SystemPrompt string
-	// Consumer 是 ReAct 事件回调；交互模式用它渲染事件，留空时静默丢弃。
+	// Consumer 是 ReAct 事件回调；留空时静默丢弃。
 	Consumer func(*reactservice.ReactEvent)
-	// Router 仅交互模式注入，用于 /model 在两轮 Chat 之间替换本地网关 client。
-	Router RouterClientReplacer
 }
 
 type Mode string
 
 const (
 	ModeCode     Mode = "code"
-	ModeRAG      Mode = "rag"
 	ModeEvaluate Mode = "evaluate"
 )
 
@@ -78,15 +66,10 @@ type Assembled struct {
 	Service *reactservice.ReActService
 	// Session 是 Service 持有的主会话，供前端读取 ID / token 统计。
 	Session *session.Session
-	// Skills 是启动时已校验的技能快照，供 CLI 补全与显式技能调用使用。
-	Skills []prompt.Skill
 	// Cleanup 回收带生命周期的资源，调用方 defer 一次；以 sync.Once 保证幂等，
 	// 使信号处理与正常退出路径可各自安全调用。顺序：先 Close 工具注册表（回收
 	// bash 后台进程与临时文件），再 Shutdown tracer（flush 关闭阶段产生的 span）。
 	Cleanup func()
-
-	// Switcher 供交互模式在两轮 Chat 之间切换模型。
-	Switcher *ModelSwitcher
 }
 
 // newMainProvider 按当前活跃模型构建主 provider：凭据取运行时配置（由
@@ -107,7 +90,7 @@ func newMainProvider() *llmprovider.OpenApiProvider {
 // SystemPrompt 为空时生成默认 coding-agent prompt，非空时原样采用调用方的专用
 // prompt。返回的 error 仅来自会话初始化 / 系统提示词写入。
 func Assemble(ctx context.Context, in Input) (*Assembled, error) {
-	if in.Mode != ModeCode && in.Mode != ModeRAG && in.Mode != ModeEvaluate {
+	if in.Mode != ModeCode && in.Mode != ModeEvaluate {
 		return nil, fmt.Errorf("unsupported agent mode %q", in.Mode)
 	}
 	if in.PlanMode && in.Mode != ModeCode {
@@ -138,18 +121,13 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		readRoots = append(readRoots, planDir)
 		writeRoots = append(writeRoots, planDir)
 	}
-	// Tool registration is owned entirely by this composition root. RAG exposes
-	// none; evaluation receives read-only inspection tools; code receives the
-	// complete coding profile.
+	// Evaluation receives read-only inspection tools; code receives the complete coding profile.
 	var workFS tools.WorkFS = workfs.New()
 	toolReg := core.registry
-	var ripgrepRunner *ripgrep.Runner
-	if in.Mode == ModeCode || in.Mode == ModeEvaluate {
-		ripgrepRunner = ripgrep.New()
-		toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS, readRoots...))
-		toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
-		toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
-	}
+	ripgrepRunner := ripgrep.New()
+	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS, readRoots...))
+	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
+	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
 	if in.Mode == ModeCode {
 		shellRunner := shell.New()
 		toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, core.artifacts, sess.ID))
@@ -198,16 +176,6 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 			return nil, fmt.Errorf("evaluate mode requires a system prompt")
 		}
 		sysPrompt = in.SystemPrompt
-	case ModeRAG:
-		var ragCleanup func()
-		ragCleanup, err = configureRAG(svc, core.tracer, in.KBPath)
-		if err != nil {
-			cleanup()
-			return nil, err
-		}
-		baseCleanup := cleanup
-		cleanup = func() { ragCleanup(); baseCleanup() }
-		sysPrompt = prompt.GetRAGSysPrompt()
 	}
 	if err := svc.InitSysPrompt(ctx, sysPrompt); err != nil {
 		cleanup()
@@ -217,14 +185,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	return &Assembled{
 		Service: svc,
 		Session: sess,
-		Skills:  append([]prompt.Skill(nil), skills...),
 		Cleanup: cleanup,
-		Switcher: func() *ModelSwitcher {
-			if in.Mode == ModeCode {
-				return NewModelSwitcher(in.Router, svc)
-			}
-			return nil
-		}(),
 	}, nil
 }
 

@@ -150,7 +150,7 @@ func (p *OpenApiProvider) buildResponseParams(msgs []sharedkernel.Message, tools
 			item := responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleSystem)
 			inputParams.OfInputItemList = append(inputParams.OfInputItemList, item)
 		case sharedkernel.RoleUser:
-			item := responses.ResponseInputItemParamOfMessage(msg.ModelContent(), responses.EasyInputMessageRoleUser)
+			item := responses.ResponseInputItemParamOfMessage(msg.Content, responses.EasyInputMessageRoleUser)
 			inputParams.OfInputItemList = append(inputParams.OfInputItemList, item)
 		case sharedkernel.RoleTool:
 			item := responses.ResponseInputItemParamOfFunctionCallOutput(msg.ToolCallID, msg.Content)

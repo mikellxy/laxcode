@@ -1,8 +1,7 @@
 # 将 LaxCode Span 上报到 SigNoz
 
 LaxCode 内置 OpenTelemetry OTLP/HTTP exporter。配置 SigNoz 的 OTLP 地址后，
-LaxCode 会将 `chat`、`llm-generate`、`tool-exec`、`query-embedding` 和
-`vector-retrieval` 等 span 批量上报到 SigNoz，并在 Traces 页面展示完整调用瀑布流。
+LaxCode 会将 `chat`、`llm-generate` 和 `tool-exec` 等 span 批量上报到 SigNoz，并在 Traces 页面展示完整调用瀑布流。
 
 ## 1. 使用 Docker 部署 SigNoz
 

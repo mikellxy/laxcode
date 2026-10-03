@@ -204,59 +204,6 @@ func TestCompressRejectsNegativeSavings(t *testing.T) {
 	}
 }
 
-func TestCompressPrunesWrappedContentBeforeProtectedStart(t *testing.T) {
-	wrapped := func(content string) sharedkernel.Message {
-		return sharedkernel.Message{
-			Role: sharedkernel.RoleUser, Content: content,
-			WrappedContent: content + strings.Repeat(" retrieved context", 20),
-		}
-	}
-	msgs := []sharedkernel.Message{
-		{Role: sharedkernel.RoleSystem, Content: "system"},
-		wrapped("old question"),
-		assistantToolTurn("g1"), {Role: sharedkernel.RoleTool, ToolCallID: "g1", Content: "r1"},
-		assistantToolTurn("g2"), {Role: sharedkernel.RoleTool, ToolCallID: "g2", Content: "r2"},
-		assistantToolTurn("g3"), {Role: sharedkernel.RoleTool, ToolCallID: "g3", Content: "r3"},
-		wrapped("latest question"),
-	}
-	if protected := ProtectedStart(msgs); protected != 2 {
-		t.Fatalf("ProtectedStart = %d, want 2", protected)
-	}
-	out, saved, err := SimpleCompactor.Compress(msgs, 1)
-	if err != nil || saved <= 0 {
-		t.Fatalf("saved=%d err=%v", saved, err)
-	}
-	if out[1].WrappedContent != "" {
-		t.Fatal("保护区之前的包装输入应被回收")
-	}
-	latest := out[len(out)-1]
-	if latest.WrappedContent == "" {
-		t.Fatal("保护区内的当前轮包装输入应保留")
-	}
-	if msgs[1].WrappedContent == "" {
-		t.Fatal("原始历史被修改")
-	}
-}
-
-func TestCompressKeepsLatestWrappedUserInputWithoutToolSpans(t *testing.T) {
-	msgs := []sharedkernel.Message{
-		{Role: sharedkernel.RoleSystem, Content: "system"},
-		{Role: sharedkernel.RoleUser, Content: "q1", WrappedContent: "q1" + strings.Repeat(" doc one", 20)},
-		{Role: sharedkernel.RoleAssistant, Content: "a1"},
-		{Role: sharedkernel.RoleUser, Content: "q2", WrappedContent: "q2" + strings.Repeat(" doc two", 20)},
-	}
-	out, saved, err := SimpleCompactor.Compress(msgs, 1)
-	if err != nil || saved <= 0 {
-		t.Fatalf("saved=%d err=%v", saved, err)
-	}
-	if out[1].WrappedContent != "" {
-		t.Fatalf("无调用组时最后一条 user 消息之前的包装输入应被回收：%q", out[1].WrappedContent)
-	}
-	if out[3].WrappedContent == "" {
-		t.Fatal("最后一条 user 消息（当前轮）的包装输入应保留")
-	}
-}
-
 func TestSatisfiesSessionCompactorPort(t *testing.T) {
 	var _ session.Compactor = SimpleCompactor
 }

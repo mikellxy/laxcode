@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/mikellxy/laxcode/cmd/run_cli"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
 	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -23,31 +21,18 @@ func main() {
 	if err := config.ParseCli(); err != nil {
 		panic(err)
 	}
-	// 模式闸门：交互 CLI 保持 fail-fast，必须有可用模型；SSE 模式允许零模型
-	// 启动，进入页面后经 POST /api/models 添加。
-	if !config.CliConf.SSE && strings.TrimSpace(config.EnvAndFileConf.Model) == "" {
-		panic("no model configured: interactive mode requires a model; " +
-			"add provider_list to ~/.laxcode/settings.json or set OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME")
+	// One browser coding backend per user; publish its address after listening.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
 	}
-
-	// Browser code mode is intentionally single-instance per user. Acquire the
-	// guard before starting the local LLM router or any other server resource;
-	// run_sse publishes the resolved random port through the locked file later.
-	var codeInstance *run_sse.CodeInstanceGuard
-	if config.CliConf.SSE && config.CliConf.Mode == config.SSEModeCode {
-		homeDir, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			fmt.Fprintln(os.Stderr, homeErr)
-			return
-		}
-		var acquireErr error
-		codeInstance, acquireErr = run_sse.AcquireCodeInstanceGuard(homeDir)
-		if acquireErr != nil {
-			fmt.Fprintln(os.Stderr, acquireErr)
-			return
-		}
-		defer codeInstance.Close()
+	codeInstance, err := run_sse.AcquireCodeInstanceGuard(homeDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
 	}
+	defer codeInstance.Close()
 
 	logFile, err := configureSlog(appLogPath)
 	if err != nil {
@@ -56,7 +41,7 @@ func main() {
 	}
 	defer logFile.Close()
 
-	// 模型路由器独立使用 llmrouter.log；任何启动模式都先在 goroutine 中启动
+	// 模型路由器独立使用 llmrouter.log；先在 goroutine 中启动
 	// 本地 HTTP server，再把实际端点写入运行时配置供 agentasm 注入 provider。
 	routerLogger, routerLogFile, err := newFileLogger(llmRouterLogPath)
 	if err != nil {
@@ -87,15 +72,5 @@ func main() {
 	}
 	defer shutdownRouter()
 
-	// SSE 起阻塞式 HTTP 服务（同时指定 qa 时由 run_sse 装配知识库 QA），
-	// 其余进入默认 TUI 交互模式。评估任务由 SSE API 异步创建，不再拥有 CLI 入口。
-	switch {
-	case config.CliConf.SSE:
-		// sse server：阻塞式监听，接受 POST /chat 并把 ReAct 事件以 SSE 流式回传；
-		// SIGINT/SIGTERM 触发优雅关闭后 Run 返回。routerServer 一并注入，供
-		// POST /api/model 切换模型时替换路由器的上游 client。
-		run_sse.Run(routerServer, codeInstance)
-	default:
-		run_cli.Run(routerServer)
-	}
+	run_sse.Run(routerServer, codeInstance)
 }

@@ -26,7 +26,6 @@ cp docs/settings.json ~/.laxcode/settings.json
       "openai_base_url": "https://api.example.com/v1",
       "model_list": [
         { "model_name": "chat" },
-        { "model_name": "embedding" },
         { "model_name": "summary" }
       ]
     }
@@ -41,7 +40,7 @@ cp docs/settings.json ~/.laxcode/settings.json
 ## 模型 Token 预算
 
 > [!TIP]
-> 主模型、向量化模型和压缩模型分别使用所选模型条目中的 `limit.context` 与 `limit.output`。
+> 主模型和压缩模型分别使用所选模型条目中的 `limit.context` 与 `limit.output`。
 
 ```json
 {
@@ -56,10 +55,6 @@ cp docs/settings.json ~/.laxcode/settings.json
           "limit": { "context": 128000, "output": 8192 }
         },
         {
-          "model_name": "embedding",
-          "limit": { "context": 128000, "output": 8192 }
-        },
-        {
           "model_name": "summary",
           "limit": { "context": 128000, "output": 8192 }
         }
@@ -70,22 +65,6 @@ cp docs/settings.json ~/.laxcode/settings.json
 ```
 
 `limit.context` 和 `limit.output` 都必须大于 0，且 `output` 必须小于 `context`。
-
----
-
-## 向量化模型与 agentic RAG
-
-> [!TIP]
-> `embedding_model` 指定向量化模型；`embedding_vec_dim` 是向量维度。制作知识库和启动 agentic RAG 保持配置相同以获取最佳召回效果
-
-```json
-{
-  "embedding_model": "example:embedding",
-  "embedding_vec_dim": 1024
-}
-```
-
-向量维度填写 JSON 整数，范围为 `1`～`8192`。
 
 ---
 
@@ -118,7 +97,7 @@ cp docs/settings.json ~/.laxcode/settings.json
 ## MCP server（外部工具生态）
 
 > [!TIP]
-> `mcp_servers` 声明外部 MCP（Model Context Protocol）server；code 模式（`-sse -mode code` 或交互 CLI）装配时接入其工具，工具以 `mcp__<server>__<tool>` 命名注册给模型
+> `mcp_servers` 声明外部 MCP（Model Context Protocol）server；coding agent装配时接入其工具，工具以 `mcp__<server>__<tool>` 命名注册给模型
 
 ```json
 {

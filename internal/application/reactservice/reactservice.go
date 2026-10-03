@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -30,8 +29,6 @@ type ReActService struct {
 	Artifacts                tools.ArtifactStore
 	ReActEventConsumerF      func(reactEvent *ReactEvent)
 	humanConfirmationEnabled bool
-	beforeUserQuery          []BeforeUserQuery
-	postReactTurn            []PostReactTurn
 	// tracer 是 chat 及其子 span 的追踪注入点，经构造注入；nil 缺省
 	// noop，不产生任何观测输出。类型经 telemetry 别名持有，本包不直接
 	// 依赖 OTel（span 的开启与收尾均走 telemetry 辅助函数）。
@@ -49,10 +46,9 @@ type ReActService struct {
 }
 
 var (
-	ErrInvalidContextBudget       = errors.New("reactservice: invalid model context budget")
-	ErrContextTargetNotReach      = errors.New("reactservice: context compaction target cannot be reached")
-	ErrPersistRequestContext      = errors.New("reactservice: persist request context")
-	ErrInvalidUserQueryMiddleware = errors.New("reactservice: before-user-query middleware changed immutable fields")
+	ErrInvalidContextBudget  = errors.New("reactservice: invalid model context budget")
+	ErrContextTargetNotReach = errors.New("reactservice: context compaction target cannot be reached")
+	ErrPersistRequestContext = errors.New("reactservice: persist request context")
 	// ErrNothingToResume 表示会话尾部已经收束，或尚无用户消息。调用方应拒绝
 	// resume，避免在没有待完成输入时让模型重复生成。
 	ErrNothingToResume          = errors.New("reactservice: no interrupted chat to resume")
@@ -192,12 +188,6 @@ func (r *ReActService) confirmTokenBudget(ctx context.Context) error {
 	return nil
 }
 
-// ReplaceLLMClient replaces the main generation client between Chat calls.
-// Callers must not invoke it while a Chat is in progress.
-func (r *ReActService) ReplaceLLMClient(client llmprovider.LLMClient) {
-	r.LLMClient = client
-}
-
 // requestHumanConfirmation 向交互前端发出一次人工确认请求，并等待回复或取消。
 // channel 由 ReActService 创建并持有；前端只获得发送端，不应关闭。容量为 1，
 // 避免取消与用户提交同时发生时让前端发送 goroutine 永久阻塞。
@@ -280,21 +270,12 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	if err = r.recoverBeforeChat(ctx); err != nil {
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
-	query, err := r.prepareUserQuery(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	userMsg := r.Session.BuildUserMessage(query.Original)
+	userMsg := r.Session.BuildUserMessage(p)
 	candidate, err := r.Session.WithAppendedMessage(&userMsg)
 	if err != nil {
 		return nil, err
 	}
-	original := userMsg.Clone()
-	if query.ModelInput != query.Original {
-		userMsg.WrappedContent = query.ModelInput
-		candidate.Messages[len(candidate.Messages)-1] = userMsg.Clone()
-	}
-	if err = r.commitCreatedMessage(ctx, candidate, original, userMsg); err != nil {
+	if err = r.commitCreatedMessage(ctx, candidate, userMsg, userMsg); err != nil {
 		return nil, err
 	}
 	return r.think(ctx)
@@ -599,28 +580,7 @@ func (r *ReActService) handleTurnMsg(ctx context.Context, msg *sharedkernel.Mess
 	if err != nil {
 		return err
 	}
-	completed := len(r.postReactTurn) > 0 && msg.Role == sharedkernel.RoleAssistant && len(msg.ToolCalls) == 0 && msg.FinishReason == sharedkernel.FinishReasonStop
-	if completed {
-		if candidate.ReactTurnCount == ^uint64(0) {
-			return fmt.Errorf("react turn exhausted")
-		}
-		candidate.ReactTurnCount++
-		msg.ReactTurn = candidate.ReactTurnCount
-		candidate.Messages[len(candidate.Messages)-1] = msg.Clone()
-	}
-	if err := r.commitCreatedMessage(ctx, candidate, *msg, *msg); err != nil {
-		return err
-	}
-	if completed {
-		event := CompletedReactTurn{
-			Turn: msg.ReactTurn, SessionID: r.Session.ID, UserID: r.Session.UserID, AssistantSeq: msg.Seq,
-		}
-		if err := r.runPostReactTurn(ctx, event); err != nil {
-			slog.WarnContext(ctx, "post_react_turn_failed", "session_id", event.SessionID,
-				"turn", event.Turn, "assistant_seq", event.AssistantSeq, "error", err)
-		}
-	}
-	return nil
+	return r.commitCreatedMessage(ctx, candidate, *msg, *msg)
 }
 
 func (r *ReActService) commitCreatedMessage(ctx context.Context, candidate *session.Session, original, memory sharedkernel.Message) error {

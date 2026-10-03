@@ -7,7 +7,6 @@ import (
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/session"
-	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -24,7 +23,6 @@ type coreAssembly struct {
 	session   *session.Session
 	service   *reactservice.ReActService
 	registry  *tools.DefaultRegistry
-	tracer    telemetry.Tracer
 	artifacts tools.ArtifactStore
 	cleanup   func()
 }
@@ -76,6 +74,6 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	}
 	return &coreAssembly{
 		homeDir: homeDir, session: sess, service: service, registry: registry,
-		tracer: traceHandle.Tracer, artifacts: artifacts, cleanup: cleanup,
+		artifacts: artifacts, cleanup: cleanup,
 	}, nil
 }

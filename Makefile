@@ -5,9 +5,6 @@ BINARY   := laxcode
 BUILD_DIR := bin
 MAIN_PKG := ./cmd/main
 WINDOWS_BUILD_DIR := $(BUILD_DIR)/win
-WINDOWS_CC ?= x86_64-w64-mingw32-gcc
-WINDOWS_SQLITE_PREFIX ?= $(shell brew --prefix sqlite 2>/dev/null)
-WINDOWS_CGO_CFLAGS ?= $(if $(WINDOWS_SQLITE_PREFIX),-I$(WINDOWS_SQLITE_PREFIX)/include)
 
 .PHONY: all build build-web build-windows vet test clean
 
@@ -24,11 +21,10 @@ build-web:
 	pnpm --dir web install --frozen-lockfile
 	pnpm --dir web build
 
-# Cross-compile the two prebuilt executables consumed by web.ps1. The backend
-# uses SQLite CGO bindings and therefore requires a MinGW-w64 cross compiler.
+# Cross-compile both Web executables without a C toolchain.
 build-windows: build-web
 	@mkdir -p $(WINDOWS_BUILD_DIR)
-	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=$(WINDOWS_CC) CGO_CFLAGS="$(WINDOWS_CGO_CFLAGS)" go build -trimpath -ldflags="-s -w" -o $(WINDOWS_BUILD_DIR)/laxcode.exe $(MAIN_PKG)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o $(WINDOWS_BUILD_DIR)/laxcode.exe $(MAIN_PKG)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags=webdist -trimpath -ldflags="-s -w" -o $(WINDOWS_BUILD_DIR)/laxcode-web.exe ./cmd/web
 	@echo "built: $(WINDOWS_BUILD_DIR)/laxcode.exe"
 	@echo "built: $(WINDOWS_BUILD_DIR)/laxcode-web.exe"

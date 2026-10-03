@@ -44,7 +44,7 @@ func TestSSEWriterSendFrame(t *testing.T) {
 
 // TestEventConsumerMapsToSSEFrames 验证 ReactEvent → SSE 帧的映射：reasoning/text
 // 增量各推一帧，三段式的 start/end 与 ChunkToolCall（参数就绪）静默不发帧，工具执行
-// 提示推 tool_call 帧。与 run_cli 的呈现语义一致。
+// 提示推 tool_call 帧。
 func TestEventConsumerMapsToSSEFrames(t *testing.T) {
 	rf := newRecordFlusher()
 	rcf := newEventConsumer(newSSEWriter(rf, rf))
@@ -79,7 +79,7 @@ func TestEventConsumerMapsToSSEFrames(t *testing.T) {
 }
 
 // TestEventConsumerNilChunkIgnored 验证 chunk 事件缺 ChunkEvent 时安全跳过，
-// 不产生任何帧（对齐 run_cli 的 nil 保护）。
+// 不产生任何帧。
 func TestEventConsumerNilChunkIgnored(t *testing.T) {
 	rf := newRecordFlusher()
 	rcf := newEventConsumer(newSSEWriter(rf, rf))

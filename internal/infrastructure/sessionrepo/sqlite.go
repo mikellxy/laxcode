@@ -32,7 +32,6 @@ var (
 )
 
 type requestContextModel struct {
-	ReactTurnCount    uint64    `gorm:"column:react_turn_count;not null;default:0"`
 	SessionID         string    `gorm:"column:session_id;type:varchar(128);primaryKey"`
 	Mode              string    `gorm:"column:mode;type:varchar(32);not null"`
 	UserID            string    `gorm:"column:user_id;type:varchar(128);not null;default:''"`
@@ -66,7 +65,6 @@ func (projectModel) TableName() string { return "projects" }
 // messageModel 同时承载不可变 original 与各代工作集消息。复合主键使 original
 // 和每一代 memory 在同一 session/seq 下各有且只有一条，无需额外关联表。
 type messageModel struct {
-	ReactTurn        *uint64   `gorm:"column:react_turn"`
 	SessionID        string    `gorm:"column:session_id;type:varchar(128);primaryKey;priority:1"`
 	MessageType      string    `gorm:"column:message_type;type:varchar(32);primaryKey;priority:2"`
 	MemoryGeneration uint64    `gorm:"column:memory_generation;primaryKey;priority:3"`
@@ -75,7 +73,6 @@ type messageModel struct {
 	Role             string    `gorm:"column:role;type:varchar(32);not null"`
 	ToolCallID       string    `gorm:"column:tool_call_id;type:varchar(128);not null"`
 	Content          string    `gorm:"column:content;type:text;not null"`
-	WrappedContent   string    `gorm:"column:wrapped_content;type:text;not null;default:''"`
 	DisplayContent   string    `gorm:"column:display_content;type:text;not null;default:''"`
 	CompactContent   string    `gorm:"column:compact_content;type:text;not null;default:''"`
 	ReasoningID      string    `gorm:"column:reasoning_id;type:varchar(255);not null"`
@@ -164,7 +161,6 @@ func (r *SqliteSessionRepo) migrate() error {
 					role VARCHAR(32) NOT NULL,
 					tool_call_id VARCHAR(128) NOT NULL DEFAULT '',
 					content TEXT NOT NULL,
-					wrapped_content TEXT NOT NULL DEFAULT '',
 					display_content TEXT NOT NULL DEFAULT '',
 					compact_content TEXT NOT NULL DEFAULT '',
 					reasoning_id VARCHAR(255) NOT NULL DEFAULT '',
@@ -235,7 +231,7 @@ func (r *SqliteSessionRepo) migrate() error {
 		if err := migrateEvaluationJobs(tx); err != nil {
 			return err
 		}
-		return migrateUserMemory(tx)
+		return nil
 	})
 }
 
@@ -499,13 +495,6 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 		if err := validateCreateTransition(snapshot, current, exists); err != nil {
 			return err
 		}
-		expectedTurn := current.ReactTurnCount
-		if original.ReactTurn > 0 {
-			expectedTurn++
-		}
-		if snapshot.ReactTurnCount != expectedTurn || (original.ReactTurn > 0 && original.ReactTurn != expectedTurn) {
-			return fmt.Errorf("invalid turn count")
-		}
 		now := time.Now().UTC()
 		if err := writeContext(tx, id, snapshot, newRevision, now, exists); err != nil {
 			return err
@@ -518,13 +507,8 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 		if err != nil {
 			return err
 		}
-		// WrappedContent 随工作集 append-only 保留；只在压缩推进
-		// memory 代际时以裁剪后的快照封存。
 		if err := tx.Create(&[]messageModel{originalRow, memoryRow}).Error; err != nil {
 			return err
-		}
-		if original.ReactTurn > 0 {
-			return recordReactTurn(tx, id, current, original)
 		}
 		return nil
 	})
@@ -561,9 +545,6 @@ func (r *SqliteSessionRepo) CommitUpdateMessage(ctx context.Context, id string, 
 		}
 		if current.WorkDir != "" && snapshot.WorkDir != current.WorkDir {
 			return fmt.Errorf("session workdir is immutable: stored %q, requested %q", current.WorkDir, snapshot.WorkDir)
-		}
-		if snapshot.ReactTurnCount != current.ReactTurnCount {
-			return fmt.Errorf("cannot change turns outside completion")
 		}
 		if current.LastSeq != snapshot.LastSeq {
 			return ErrStaleSequence
@@ -616,9 +597,6 @@ func (r *SqliteSessionRepo) CommitNextMemoryGeneration(ctx context.Context, id s
 		if current.WorkDir != "" && snapshot.WorkDir != current.WorkDir {
 			return fmt.Errorf("session workdir is immutable: stored %q, requested %q", current.WorkDir, snapshot.WorkDir)
 		}
-		if snapshot.ReactTurnCount != current.ReactTurnCount {
-			return fmt.Errorf("cannot change turns outside completion")
-		}
 		if current.LastSeq != snapshot.LastSeq {
 			return ErrStaleSequence
 		}
@@ -664,12 +642,7 @@ func validateCreatedMessage(snapshot session.RequestContext, original, memory sh
 		len(original.OriginalSeq) != 1 || original.OriginalSeq[0] != original.Seq {
 		return fmt.Errorf("%w: invalid original identity", ErrStaleSequence)
 	}
-	comparison := memory.Clone()
-	comparison.WrappedContent = ""
-	if original.WrappedContent != "" {
-		return fmt.Errorf("original cannot contain wrapped content")
-	}
-	if !equalMessage(original, comparison) {
+	if !equalMessage(original, memory) {
 		return fmt.Errorf("%w: original and initial memory differ", ErrStaleSequence)
 	}
 	if len(snapshot.Messages) == 0 || !equalMessage(snapshot.Messages[len(snapshot.Messages)-1], memory) {
@@ -697,9 +670,6 @@ func validateCreateTransition(snapshot session.RequestContext, current requestCo
 	if current.Mode != "" && snapshot.Mode != current.Mode {
 		return fmt.Errorf("session mode is immutable: stored %q, requested %q", current.Mode, snapshot.Mode)
 	}
-	if snapshot.ReactTurnCount < current.ReactTurnCount || snapshot.ReactTurnCount > current.ReactTurnCount+1 {
-		return fmt.Errorf("invalid react turn transition")
-	}
 	if current.Revision != snapshot.Revision {
 		return ErrContextConflict
 	}
@@ -722,10 +692,9 @@ func writeContext(tx *gorm.DB, id string, snapshot session.RequestContext, revis
 		Where("session_id = ? AND revision = ?", id, snapshot.Revision).
 		Updates(map[string]any{
 			"revision": revision, "memory_generation": state.MemoryGeneration,
-			"work_dir":         state.WorkDir,
-			"mode":             state.Mode,
-			"react_turn_count": state.ReactTurnCount,
-			"last_seq":         state.LastSeq, "token_used_input": state.TokenUsedInput,
+			"work_dir": state.WorkDir,
+			"mode":     state.Mode,
+			"last_seq": state.LastSeq, "token_used_input": state.TokenUsedInput,
 			"token_used_output":   state.TokenUsedOutput,
 			"window_token_input":  state.WindowTokenInput,
 			"window_token_output": state.WindowTokenOutput, "updated_at": now,
@@ -743,8 +712,7 @@ func contextToModel(id string, snapshot session.RequestContext, revision uint64,
 	return requestContextModel{
 		SessionID: id, Mode: snapshot.Mode, UserID: snapshot.UserID, WorkDir: snapshot.WorkDir,
 		Revision: revision, MemoryGeneration: snapshot.MemoryGeneration,
-		ReactTurnCount: snapshot.ReactTurnCount,
-		LastSeq:        snapshot.LastSeq, TokenUsedInput: int64(snapshot.TokenUsed.TokenInput),
+		LastSeq: snapshot.LastSeq, TokenUsedInput: int64(snapshot.TokenUsed.TokenInput),
 		TokenUsedOutput:   int64(snapshot.TokenUsed.TokenOutput),
 		WindowTokenInput:  int64(snapshot.WindowToken.TokenInput),
 		WindowTokenOutput: int64(snapshot.WindowToken.TokenOutput), UpdatedAt: now,
@@ -754,7 +722,7 @@ func contextToModel(id string, snapshot session.RequestContext, revision uint64,
 func contextFromModel(state requestContextModel, msgs []sharedkernel.Message) session.RequestContext {
 	return session.RequestContext{
 		Revision: state.Revision, MemoryGeneration: state.MemoryGeneration, LastSeq: state.LastSeq,
-		Mode: state.Mode, UserID: state.UserID, WorkDir: state.WorkDir, ReactTurnCount: state.ReactTurnCount,
+		Mode: state.Mode, UserID: state.UserID, WorkDir: state.WorkDir,
 		Messages:    msgs,
 		TokenUsed:   sharedkernel.TokenStatistics{TokenInput: int(state.TokenUsedInput), TokenOutput: int(state.TokenUsedOutput)},
 		WindowToken: sharedkernel.TokenStatistics{TokenInput: int(state.WindowTokenInput), TokenOutput: int(state.WindowTokenOutput)},
@@ -773,16 +741,12 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 	row := messageModel{
 		SessionID: id, MessageType: messageType, MemoryGeneration: generation,
 		Seq: msg.Seq, OriginalSeqJSON: originalSeq, Role: msg.Role,
-		ToolCallID: msg.ToolCallID, Content: msg.Content, WrappedContent: msg.WrappedContent, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
+		ToolCallID: msg.ToolCallID, Content: msg.Content, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
 		CompactContent:   msg.CompactContent,
 		ReasoningContent: msg.ReasoningContent, ToolCallsJSON: toolCalls,
 		FinishReason: msg.FinishReason,
 		TokenInput:   int64(msg.TokenUsed.TokenInput), TokenOutput: int64(msg.TokenUsed.TokenOutput),
 		CreatedAt: now, UpdatedAt: now,
-	}
-	if messageType == messageTypeOriginal && msg.ReactTurn > 0 {
-		n := msg.ReactTurn
-		row.ReactTurn = &n
 	}
 	if msg.Artifact != nil {
 		artifactID := msg.Artifact.ID
@@ -795,7 +759,7 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 func messagePayload(row messageModel) map[string]any {
 	return map[string]any{
 		"original_seq_json": row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
-		"content": row.Content, "wrapped_content": row.WrappedContent, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
+		"content": row.Content, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
 		"compact_content":   row.CompactContent,
 		"reasoning_content": row.ReasoningContent, "tool_calls_json": row.ToolCallsJSON,
 		"finish_reason": row.FinishReason,
@@ -816,14 +780,11 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 		}
 	}
 	msg := sharedkernel.Message{
-		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content, WrappedContent: row.WrappedContent, DisplayContent: row.DisplayContent,
+		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content, DisplayContent: row.DisplayContent,
 		CompactContent: row.CompactContent,
 		ReasoningID:    row.ReasoningID, ReasoningContent: row.ReasoningContent,
 		ToolCalls: calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,
 		TokenUsed: sharedkernel.TokenStatistics{TokenInput: int(row.TokenInput), TokenOutput: int(row.TokenOutput)},
-	}
-	if row.ReactTurn != nil {
-		msg.ReactTurn = *row.ReactTurn
 	}
 	if row.ArtifactID != nil {
 		msg.Artifact = &sharedkernel.ArtifactRef{ID: *row.ArtifactID}

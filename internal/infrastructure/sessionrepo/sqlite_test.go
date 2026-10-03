@@ -425,13 +425,13 @@ func TestSummaryOriginalSequencesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSchemaContainsSessionAndMemoryTables(t *testing.T) {
+func TestSchemaContainsOnlySessionAndEvaluationTables(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	var names []string
 	if err := repo.db.Raw(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).Scan(&names).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(names, []string{"evaluation_jobs", "messages", "projects", "react_turns", "request_contexts", "user_memory_jobs"}) {
+	if !reflect.DeepEqual(names, []string{"evaluation_jobs", "messages", "projects", "request_contexts"}) {
 		t.Fatalf("tables=%v", names)
 	}
 }
@@ -524,5 +524,56 @@ func TestGenerationFailureRollsBackContextHeadAndRows(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("failed generation left %d rows", count)
+	}
+}
+
+// Old installations have these retired columns and tables. Opening and writing
+// coding sessions must neither depend on them nor delete their existing data.
+func TestReopenLegacyDatabasePreservesCodeSession(t *testing.T) {
+	repo, root := newTestRepo(t)
+	sess := createSystem(t, repo, "legacy-code", "system")
+	user := sharedkernel.Message{Role: sharedkernel.RoleUser, Content: "old question"}
+	appendMessage(t, repo, sess, &user)
+	for _, statement := range []string{
+		`ALTER TABLE request_contexts ADD COLUMN react_turn_count INTEGER NOT NULL DEFAULT 0 CHECK(react_turn_count>=0)`,
+		`ALTER TABLE messages ADD COLUMN react_turn INTEGER CHECK(react_turn IS NULL OR (react_turn>0 AND message_type='original' AND role='assistant' AND finish_reason='stop' AND (tool_calls_json IS NULL OR tool_calls_json='null' OR json_array_length(tool_calls_json)=0)))`,
+		`ALTER TABLE messages ADD COLUMN wrapped_content TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE user_memory_jobs (id INTEGER PRIMARY KEY, summary TEXT)`,
+		`INSERT INTO user_memory_jobs VALUES (1, 'legacy memory')`,
+	} {
+		if err := repo.db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSqliteSessionRepo(filepath.Join(root, "sessions.db"), filepath.Join(root, "history"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	snapshot, err := reopened.GetRequestContext(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot, sess.Snapshot()) {
+		t.Fatalf("legacy session changed: %+v", snapshot)
+	}
+	restored := session.NewSession(sess.ID)
+	restored.Mode = "code"
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	answer := sharedkernel.Message{Role: sharedkernel.RoleAssistant, Content: "continued", FinishReason: sharedkernel.FinishReasonStop}
+	appendMessage(t, reopened, restored, &answer)
+	saved, err := reopened.GetRequestContext(context.Background(), sess.ID)
+	if err != nil || !reflect.DeepEqual(saved, restored.Snapshot()) {
+		t.Fatalf("continue legacy session: %+v, %v", saved, err)
+	}
+	createSystem(t, reopened, "new-code", "new system")
+	var memory string
+	if err := reopened.db.Raw("SELECT summary FROM user_memory_jobs WHERE id=1").Scan(&memory).Error; err != nil || memory != "legacy memory" {
+		t.Fatalf("retired data changed: %q, %v", memory, err)
 	}
 }

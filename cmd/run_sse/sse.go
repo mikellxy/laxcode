@@ -1,8 +1,7 @@
 // Package run_sse 是 sse server 模式的前端入口：起一个标准库 net/http 服务，
 // 接受 POST /chat（body 携带 session_id / task），为每个请求装配一个独立的
 // ReActService，把 ReActEventConsumerF 收到的 ReAct 事件以细粒度语义 SSE 帧流式
-// 回传，本轮结束发 done（成功）或 error（失败）帧收尾。它与交互模式
-// （cmd/run_cli）平级，共用 cmd/agentasm 组合根与
+// 回传，本轮结束发 done（成功）或 error（失败）帧收尾。装配使用 cmd/agentasm 组合根与
 // application/reactservice 的 ReAct 循环，仅依赖 DDD 三层，不引用老的非 DDD 代码。
 //
 // 装配采用「每请求一次」：agentasm.Assemble 在装配时固定 Consumer 与 SessionID，
@@ -119,11 +118,11 @@ func (s *sseWriter) Send(event string, data any) {
 }
 
 // newEventConsumer 返回把 ReAct 事件映射为 SSE 帧的回调，作为 Consumer 注入
-// cmd/agentasm 的装配。映射规则对齐 run_cli 的呈现语义：
+// cmd/agentasm 的装配。事件映射规则：
 //   - reasoning / text 增量分别推 reasoning / message 帧；
 //   - 三段式的 start / end 边界不单独发帧（event 名切换已隐含段落边界，协议精简）；
 //   - ChunkToolCall（参数就绪）静默，等 ReActEventTypeToolCall 的执行提示帧，
-//     与 run_cli「参数就绪不显示、执行前才显示」一致。
+//     参数就绪不显示，执行前才显示。
 func newEventConsumer(sw *sseWriter) func(*reactservice.ReactEvent) {
 	return func(e *reactservice.ReactEvent) {
 		switch e.Type {
