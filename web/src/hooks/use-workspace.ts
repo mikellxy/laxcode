@@ -90,6 +90,12 @@ export function useWorkspace(userID: string) {
         if (event.type === "done") client.setQueryData<ContextData>(["context", sessionID], {
           window_token: event.data.window_token, context_window: event.data.context_window,
         });
+        // tool_call 事件在每轮模型提交后发出，携带最新窗口占用；流式中途直写
+        // context 缓存，让侧边栏不必等 done 才刷新。
+        if (event.type === "tool_call" && event.data.window_token && event.data.context_window)
+          client.setQueryData<ContextData>(["context", sessionID], {
+            window_token: event.data.window_token, context_window: event.data.context_window,
+          });
         if (event.type === "done" || event.type === "error") terminal = true;
         if (event.type === "error") failed = true;
       };

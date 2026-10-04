@@ -72,12 +72,32 @@ const (
 	repeatedToolReminder         = "提醒：你已连续 5 次调用同一个工具。请检查当前目标、已有结果和调用参数，判断是否陷入循环；必要时换一种方法或向用户说明阻碍。"
 )
 
+// ContextUsage 是 tool_call 事件携带的上下文占用快照：此时最近一次模型轮次
+// （含实测 TokenUsed）已提交，WindowToken 是当前最准的实测校正值；本轮后续
+// tool result 的估算增量要等下一轮模型提交才并入。供前端流式中途刷新侧边
+// 栏的窗口占用显示，不必等 done 帧。
+type ContextUsage struct {
+	WindowToken   sharedkernel.TokenStatistics `json:"window_token"`
+	ContextWindow int                          `json:"context_window"`
+}
+
 type ReactEvent struct {
 	Type             string
 	Content          string                    // 工具执行提示或人工确认说明
 	ChunkEvent       *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
 	HumanConfirmChan chan<- string             // 人工确认回复通道，仅 human_in_the_loop 事件携带
 	HumanConfirmKind string                    // 人工确认类别，供前端区分预算和危险命令
+	ContextUsage     *ContextUsage             // 上下文占用快照，仅 tool_call 事件携带
+}
+
+// contextUsageSnapshot 读取当前会话窗口占用与模型上下文窗口。WindowToken 已
+// 由 handleTurnMsg 提交的最近一条消息更新，无需加锁：事件在 Chat 调用
+// goroutine 内同步触发，与会话演化串行。
+func (r *ReActService) contextUsageSnapshot() *ContextUsage {
+	return &ContextUsage{
+		WindowToken:   r.Session.WindowToken,
+		ContextWindow: r.LLMClient.ContextBudget().ContextWindow,
+	}
 }
 
 // TokenBudgetState 是跨 SSE 请求续接同一 session 的预算检查点。
@@ -426,7 +446,7 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		interrupted := false
 		for _, tc := range msg.ToolCalls {
 			info := r.ToolRegistry.BeforeExecInfo(&tc)
-			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info})
+			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info, ContextUsage: r.contextUsageSnapshot()})
 
 			var result *sharedkernel.ToolResult
 			var stopErr error

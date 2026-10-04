@@ -22,7 +22,7 @@ export type StreamEvent =
   | { type: "start"; data: { session_id: string } }
   | { type: "reasoning"; data: { delta: string } }
   | { type: "message"; data: { delta: string } }
-  | { type: "tool_call"; data: { info: string } }
+  | { type: "tool_call"; data: { info: string; window_token?: TokenStatistics; context_window?: number } }
   | { type: "done"; data: { session_id: string; result: string; token_used: TokenStatistics; window_token: TokenStatistics; context_window: number } }
   | { type: "approval_required"; data: ApprovalRequiredData }
   | { type: "error"; data: ErrorPayload };

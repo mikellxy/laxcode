@@ -55,9 +55,13 @@ type DeltaData struct {
 	Delta string `json:"delta"`
 }
 
-// ToolCallData 是 tool_call 帧载荷：工具执行提示（BeforeExecInfo 文本）。
+// ToolCallData 是 tool_call 帧载荷：工具执行提示（BeforeExecInfo 文本），以及
+// 可选的上下文占用快照（最近一次模型轮次提交后的窗口 token 与模型上下文窗口），
+// 供前端流式中途刷新 Context 显示；无快照时两字段省略，保持旧客户端兼容。
 type ToolCallData struct {
-	Info string `json:"info"`
+	Info          string                        `json:"info"`
+	WindowToken   *sharedkernel.TokenStatistics `json:"window_token,omitempty"`
+	ContextWindow int                           `json:"context_window,omitempty"`
 }
 
 // DoneData 是 done 帧载荷：本轮最终结果、token 账目和当前模型上下文窗口。
@@ -138,7 +142,12 @@ func newEventConsumer(sw *sseWriter) func(*reactservice.ReactEvent) {
 				sw.Send(EventMessage, DeltaData{Delta: chunk.Delta})
 			}
 		case reactservice.ReActEventTypeToolCall:
-			sw.Send(EventToolCall, ToolCallData{Info: e.Content})
+			data := ToolCallData{Info: e.Content}
+			if e.ContextUsage != nil {
+				data.WindowToken = &e.ContextUsage.WindowToken
+				data.ContextWindow = e.ContextUsage.ContextWindow
+			}
+			sw.Send(EventToolCall, data)
 		}
 	}
 }

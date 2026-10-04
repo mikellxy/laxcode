@@ -78,6 +78,25 @@ func TestEventConsumerMapsToSSEFrames(t *testing.T) {
 	}
 }
 
+// TestEventConsumerToolCallCarriesContextUsage 验证带上下文占用快照的 tool_call
+// 事件会把 window_token / context_window 序列化进帧；无快照时保持旧载荷
+// （见 TestEventConsumerMapsToSSEFrames）。
+func TestEventConsumerToolCallCarriesContextUsage(t *testing.T) {
+	rf := newRecordFlusher()
+	rcf := newEventConsumer(newSSEWriter(rf, rf))
+	rcf(&reactservice.ReactEvent{
+		Type:   reactservice.ReActEventTypeToolCall, Content: "bash: ls",
+		ContextUsage: &reactservice.ContextUsage{
+			WindowToken: sharedkernel.TokenStatistics{TokenInput: 1200, TokenOutput: 340}, ContextWindow: 200_000,
+		},
+	})
+
+	want := "event: tool_call\ndata: {\"info\":\"bash: ls\",\"window_token\":{\"token_input\":1200,\"token_output\":340},\"context_window\":200000}\n\n"
+	if rf.buf.String() != want {
+		t.Fatalf("tool_call 帧应携带占用快照：\ngot:  %q\nwant: %q", rf.buf.String(), want)
+	}
+}
+
 // TestEventConsumerNilChunkIgnored 验证 chunk 事件缺 ChunkEvent 时安全跳过，
 // 不产生任何帧。
 func TestEventConsumerNilChunkIgnored(t *testing.T) {

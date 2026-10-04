@@ -250,6 +250,12 @@ func TestRunToolCallLoop(t *testing.T) {
 			if !strings.Contains(e.Content, "echo_tool") {
 				t.Errorf("tool_call 事件内容不符：%q", e.Content)
 			}
+			if e.ContextUsage == nil {
+				t.Errorf("tool_call 事件应携带上下文占用快照")
+			} else if e.ContextUsage.WindowToken != sess.WindowToken ||
+				e.ContextUsage.ContextWindow != llm.ContextBudget().ContextWindow {
+				t.Errorf("上下文占用快照不符：事件 %+v，会话 %+v", *e.ContextUsage, sess.WindowToken)
+			}
 		}
 	}
 	if !sawToolCall {
