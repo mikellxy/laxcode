@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/session"
@@ -35,7 +36,9 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	if err != nil {
 		return nil, err
 	}
+	repoStart := time.Now()
 	repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
+	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleRepoInitMs.Float64(float64(time.Since(repoStart)) / float64(time.Millisecond)))
 	if err != nil {
 		return nil, err
 	}

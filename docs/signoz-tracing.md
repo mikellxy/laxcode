@@ -98,6 +98,20 @@ chat
 `agent-assemble` 覆盖技能/MCP 加载、会话恢复和系统提示词初始化；每轮
 `context-prepare` 覆盖工具定义准备、token 计数和必要的上下文压缩。
 
+`agent-assemble` 的阶段耗时直接记录为属性，不额外创建子 span：
+
+| 属性 | 范围 |
+| --- | --- |
+| `laxcode.assemble.repo_init_ms` | 打开 SQLite、设置连接和 schema 检查/迁移 |
+| `laxcode.assemble.skills_load_ms` | 技能发现、读取与解析 |
+| `laxcode.assemble.mcp_connect_ms` | 连接 MCP server、获取和注册工具 |
+| `laxcode.assemble.session_restore_ms` | 从数据库读取工作集并恢复会话 |
+| `laxcode.assemble.sys_prompt_init_ms` | 构造系统提示词并持久化工作集 |
+
+单位为毫秒，保留小数以区分不足 1ms 的步骤。阶段失败时也会记录已耗时间；
+尚未执行或不适用的阶段不填写。阶段耗时不包含失败后的资源清理，也未覆盖
+全部对象构造等零散步骤，因此其和不要求等于 span 总耗时。
+
 根 span 的 `laxcode.operation` 为 `send` 或 `resume`，`laxcode.request_id`
 每次请求独立生成。`laxcode.chat_id` 只在根 span 上记录，并随 user message
 写入 SQLite 和 JSONL；resume 沿用该轮输入已有的 ID，不新增 user message。

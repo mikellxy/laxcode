@@ -57,3 +57,12 @@ const (
 	AttrInputTokens  attribute.Key = "gen_ai.usage.input_tokens"
 	AttrOutputTokens attribute.Key = "gen_ai.usage.output_tokens"
 )
+
+// 装配阶段耗时（毫秒，可含小数）；记录在现有 agent-assemble span 上。
+const (
+	AttrAssembleRepoInitMs       attribute.Key = "laxcode.assemble.repo_init_ms"
+	AttrAssembleSkillsLoadMs     attribute.Key = "laxcode.assemble.skills_load_ms"
+	AttrAssembleMCPConnectMs     attribute.Key = "laxcode.assemble.mcp_connect_ms"
+	AttrAssembleSessionRestoreMs attribute.Key = "laxcode.assemble.session_restore_ms"
+	AttrAssembleSysPromptInitMs  attribute.Key = "laxcode.assemble.sys_prompt_init_ms"
+)

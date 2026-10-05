@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
@@ -113,10 +114,12 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	var writeRoots []string
 	var plan *prompt.PlanMode
 	if in.Mode == ModeCode {
+		skillsStart := time.Now()
 		skillSrc = skillrepo.New(homeDir)
 		skills = prompt.LoadSkills(skillSrc, in.WorkDir, warnSkillSkip)
 		skillsRoot = layout.SkillsRoot(homeDir)
 		readRoots = append([]string{skillsRoot}, readRoots...)
+		telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSkillsLoadMs.Float64(float64(time.Since(skillsStart)) / float64(time.Millisecond)))
 	}
 	if in.Mode == ModeCode && in.PlanMode {
 		planDir := layout.SessionDir(homeDir, sess.ID)
@@ -154,18 +157,25 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		// 连接随本次装配建立、随 cleanup 终止（P1 每请求生命周期）；单个
 		// server 故障 fail-open 跳过并告警，不阻塞装配。子 Agent 不接入
 		// MCP 工具（P1 边界，控制成本与爆炸半径）。
-		if mcpCleanup := attachMCPServers(ctx, toolReg); mcpCleanup != nil {
+		mcpStart := time.Now()
+		mcpCleanup := attachMCPServers(ctx, toolReg)
+		telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPConnectMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
+		if mcpCleanup != nil {
 			baseCleanup := cleanup
 			cleanup = func() { mcpCleanup(); baseCleanup() }
 		}
 	}
 
 	svc := core.service
-	if err := svc.InitSession(ctx); err != nil {
+	sessionStart := time.Now()
+	err = svc.InitSession(ctx)
+	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSessionRestoreMs.Float64(float64(time.Since(sessionStart)) / float64(time.Millisecond)))
+	if err != nil {
 		cleanup()
 		return nil, err
 	}
 
+	sysPromptStart := time.Now()
 	var sysPrompt string
 	switch in.Mode {
 	case ModeCode:
@@ -175,12 +185,15 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		}
 	case ModeEvaluate:
 		if in.SystemPrompt == "" {
+			telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSysPromptInitMs.Float64(float64(time.Since(sysPromptStart)) / float64(time.Millisecond)))
 			cleanup()
 			return nil, fmt.Errorf("evaluate mode requires a system prompt")
 		}
 		sysPrompt = in.SystemPrompt
 	}
-	if err := svc.InitSysPrompt(ctx, sysPrompt); err != nil {
+	err = svc.InitSysPrompt(ctx, sysPrompt)
+	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSysPromptInitMs.Float64(float64(time.Since(sysPromptStart)) / float64(time.Millisecond)))
+	if err != nil {
 		cleanup()
 		return nil, err
 	}

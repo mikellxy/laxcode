@@ -67,6 +67,11 @@ func StartAt(ctx context.Context, tracer Tracer, spanName string, startedAt time
 	return OrNoop(tracer).Start(ctx, spanName, trace.WithTimestamp(startedAt), trace.WithAttributes(attrs...))
 }
 
+// SpanFromContext 返回当前 span；没有埋点的调用路径安全退化为 noop。
+func SpanFromContext(ctx context.Context) Span {
+	return trace.SpanFromContext(ctx)
+}
+
 type chatIDKey struct{}
 
 func ContextWithChatID(ctx context.Context, chatID string) context.Context {
