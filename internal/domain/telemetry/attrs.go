@@ -63,6 +63,7 @@ const (
 	AttrAssembleRepoInitMs       attribute.Key = "laxcode.assemble.repo_init_ms"
 	AttrAssembleSkillsLoadMs     attribute.Key = "laxcode.assemble.skills_load_ms"
 	AttrAssembleMCPConnectMs     attribute.Key = "laxcode.assemble.mcp_connect_ms"
+	AttrAssembleMCPRegisterMs    attribute.Key = "laxcode.assemble.mcp_register_ms"
 	AttrAssembleSessionRestoreMs attribute.Key = "laxcode.assemble.session_restore_ms"
 	AttrAssembleSysPromptInitMs  attribute.Key = "laxcode.assemble.sys_prompt_init_ms"
 )

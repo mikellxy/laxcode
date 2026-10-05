@@ -31,6 +31,9 @@ import (
 type Input struct {
 	// Tracer 由入口注入时，其生命周期归入口所有；nil 保留独立装配的默认追踪。
 	Tracer telemetry.Tracer
+	// MCPPool 由后端服务持有；非 nil 时仅注册工具，Cleanup 不关闭共享连接。
+	// nil 保留独立装配时连接并自行回收的行为。
+	MCPPool *mcpserver.Pool
 	// Mode selects the explicit agent capability profile.
 	Mode Mode
 	// WorkDir 是会话持久绑定的 Agent 工作目录（沙箱根）。
@@ -153,16 +156,19 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 				// 后台进程，不会波及主 Agent 尚在运行的后台服务
 				NewShell: func() tools.ShellRunner { return shell.New() },
 			}))
-		// MCP server（settings.json 的 mcp_servers）在主 Agent 装配期接入：
-		// 连接随本次装配建立、随 cleanup 终止（P1 每请求生命周期）；单个
-		// server 故障 fail-open 跳过并告警，不阻塞装配。子 Agent 不接入
-		// MCP 工具（P1 边界，控制成本与爆炸半径）。
+		// 后端注入共享连接，装配只向本 Agent 的 registry 注册工具。
+		// 独立装配仍自行连接和回收；子 Agent 不接入 MCP 工具。
 		mcpStart := time.Now()
-		mcpCleanup := attachMCPServers(ctx, toolReg)
-		telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPConnectMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
-		if mcpCleanup != nil {
-			baseCleanup := cleanup
-			cleanup = func() { mcpCleanup(); baseCleanup() }
+		if in.MCPPool != nil {
+			in.MCPPool.Register(toolReg)
+			telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPRegisterMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
+		} else {
+			mcpCleanup := attachMCPServers(ctx, toolReg)
+			telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPConnectMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
+			if mcpCleanup != nil {
+				baseCleanup := cleanup
+				cleanup = func() { mcpCleanup(); baseCleanup() }
+			}
 		}
 	}
 
@@ -233,6 +239,12 @@ func attachMCPServers(ctx context.Context, reg tools.Registry) func() {
 		return nil
 	}
 	return mcpserver.Attach(ctx, servers, reg, warnMCPSkip)
+}
+
+// ConnectMCPServers 在后端启动时连接当前配置的 MCP server；调用方持有并关闭 Pool。
+// 即使没有可用 server 也返回非 nil 空池，避免请求装配时重复尝试连接。
+func ConnectMCPServers(ctx context.Context) *mcpserver.Pool {
+	return mcpserver.Connect(ctx, mcpServersFromConf(), warnMCPSkip)
 }
 
 // mcpServersFromConf 把配置层的 MCPServerConf 过滤为已启用条目并转成

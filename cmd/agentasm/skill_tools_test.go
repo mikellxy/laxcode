@@ -11,6 +11,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 )
@@ -66,9 +67,11 @@ func TestAssemblePhaseDurations(t *testing.T) {
 		failRepo    bool
 		failRestore bool
 		failPrompt  bool
+		sharedMCP   bool
 		phases      []string
 	}{
 		{name: "code", mode: ModeCode, phases: []string{"repo_init_ms", "skills_load_ms", "mcp_connect_ms", "session_restore_ms", "sys_prompt_init_ms"}},
+		{name: "shared MCP", mode: ModeCode, sharedMCP: true, phases: []string{"repo_init_ms", "skills_load_ms", "mcp_register_ms", "session_restore_ms", "sys_prompt_init_ms"}},
 		{name: "evaluate", mode: ModeEvaluate, phases: []string{"repo_init_ms", "session_restore_ms", "sys_prompt_init_ms"}},
 		{name: "repo failure", mode: ModeCode, failRepo: true, phases: []string{"repo_init_ms"}},
 		{name: "restore failure", mode: ModeCode, failRestore: true, phases: []string{"repo_init_ms", "skills_load_ms", "mcp_connect_ms", "session_restore_ms"}},
@@ -84,6 +87,9 @@ func TestAssemblePhaseDurations(t *testing.T) {
 			defer handle.Shutdown(context.Background())
 			ctx, span := telemetry.Start(context.Background(), handle.Tracer, telemetry.SpanAgentAssemble)
 			in := Input{Mode: tc.mode, WorkDir: t.TempDir(), HomeDir: t.TempDir(), Tracer: handle.Tracer, SessionID: "phase-test", SystemPrompt: "system"}
+			if tc.sharedMCP {
+				in.MCPPool = &mcpserver.Pool{}
+			}
 			if tc.failRepo {
 				in.HomeDir = filepath.Join(in.HomeDir, "file")
 				if err := os.WriteFile(in.HomeDir, []byte("not a directory"), 0600); err != nil {
