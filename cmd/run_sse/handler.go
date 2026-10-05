@@ -19,6 +19,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
@@ -35,6 +36,7 @@ const maxBodyBytes = 1 << 20
 // server 承载 sse 模式的 HTTP 编排。assemble 字段默认 agentasm.Assemble，测试可
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
+	tracer             telemetry.Tracer
 	homeDir            string
 	planMode           bool
 	assemble           func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
@@ -640,16 +642,25 @@ func (s *server) saveBudget(assembled *agentasm.Assembled) {
 // 错误分界：写 SSE 头之前的用法错误走普通 JSON + HTTP 状态码（400/409/500）；
 // 一旦进入 SSE 流（响应头已发送），失败一律走 event: error 帧，状态码无法再回退。
 func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+	chatID := uuid.NewString()
 	var req chatRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
+	decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req)
+	trace := s.startChatTrace(r.Context(), req.SessionID, "send", chatID, startedAt)
+	defer trace.close()
+	r = r.WithContext(trace.ctx)
+	if err := decodeErr; err != nil {
+		trace.err = err
 		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "invalid request body: "+err.Error(), "")
 		return
 	}
 	if strings.TrimSpace(req.Task) == "" {
+		trace.err = errors.New("task is required")
 		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "task is required", "")
 		return
 	}
 	if strings.TrimSpace(req.SessionID) == "" {
+		trace.err = errors.New("session_id is required")
 		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "session_id is required", "")
 		return
 	}
@@ -657,24 +668,29 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// 冲突返回 409 而非排队，避免客户端无感挂起。
 	unlock, ok := s.locks.TryLock(req.SessionID)
 	if !ok {
+		trace.err = errors.New("session is busy")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "session is busy: "+req.SessionID, RetryActionResend)
 		return
 	}
 	defer unlock()
 	if s.catalog == nil {
+		trace.err = errors.New("session repository is unavailable")
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "session repository is unavailable", "")
 		return
 	}
 	selected, err := s.catalog.GetSession(r.Context(), req.SessionID)
 	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		trace.err = err
 		writeJSONProtocolError(w, http.StatusNotFound, ErrorCodeInvalidRequest, "session not found: "+req.SessionID, "")
 		return
 	}
 	if err != nil {
+		trace.err = err
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), "")
 		return
 	}
 	if selected.Mode != string(agentasm.ModeCode) {
+		trace.err = fmt.Errorf("unsupported session mode %q", selected.Mode)
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeInvalidRequest,
 			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, agentasm.ModeCode), "")
 		return
@@ -682,6 +698,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// 延迟配置场景：模型未配置时在进入 SSE 流之前以 JSON 明确报错，避免
 	// 装配成功后在 LLM 调用处才失败、用户只看到晦涩的上游错误。
 	if s.modelMissing() {
+		trace.err = errors.New("no model is configured")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
 			"no model is configured; add one with the model picker (gear) first", RetryActionResend)
 		return
@@ -689,6 +706,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		trace.err = errors.New("streaming unsupported")
 		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
@@ -704,20 +722,21 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context() // 客户端断开即取消，驱动 Chat 从 LLM/工具调用收敛
-	requestID := uuid.NewString()
+	requestID := trace.requestID
 	defer s.approvals.clearRequest(requestID)
 	var activeSessionID string
 
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
-	assembled, err := s.assemble(ctx, agentasm.Input{
+	assembled, err := s.assembleAgent(trace, agentasm.Input{
 		WorkDir:   selected.WorkDir,
 		HomeDir:   s.homeDir,
 		SessionID: req.SessionID,
 		PlanMode:  s.planMode,
-		Consumer:  s.eventConsumer(sw, &activeSessionID, requestID),
+		Consumer:  trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
 	})
 	if err != nil {
+		trace.err = err
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResend})
 		return
 	}
@@ -730,6 +749,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	userCountBeforeChat := countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser)
 	msg, err := assembled.Service.Chat(ctx, req.Task)
+	trace.err = err
 	if err != nil {
 		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) || errors.Is(err, reactservice.ErrTokenBudgetDeclined) {
 			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
@@ -760,36 +780,47 @@ func countMessagesByRole(messages []sharedkernel.Message, role string) int {
 // handleResume 恢复已持久化但未收束的对话。与 /chat 共用 SSE 事件协议，但不接收
 // task，也不会追加 user message。
 func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
 	sessionID := strings.TrimSpace(r.PathValue("session_id"))
+	trace := s.startChatTrace(r.Context(), sessionID, "resume", "", startedAt)
+	defer trace.close()
+	r = r.WithContext(trace.ctx)
 	if sessionID == "" {
+		trace.err = errors.New("session_id is required")
 		writeJSONProtocolError(w, http.StatusBadRequest, ErrorCodeInvalidRequest, "session_id is required", "")
 		return
 	}
 	unlock, ok := s.locks.TryLock(sessionID)
 	if !ok {
+		trace.err = errors.New("session is busy")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "session is busy: "+sessionID, RetryActionResume)
 		return
 	}
 	defer unlock()
 	if s.catalog == nil {
+		trace.err = errors.New("session repository is unavailable")
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "session repository is unavailable", RetryActionResume)
 		return
 	}
 	selected, err := s.catalog.GetSession(r.Context(), sessionID)
 	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		trace.err = err
 		writeJSONProtocolError(w, http.StatusNotFound, ErrorCodeNothingToResume, "session not found: "+sessionID, "")
 		return
 	}
 	if err != nil {
+		trace.err = err
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "load session failed: "+err.Error(), RetryActionResume)
 		return
 	}
 	if selected.Mode != string(agentasm.ModeCode) {
+		trace.err = fmt.Errorf("unsupported session mode %q", selected.Mode)
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeInvalidRequest,
 			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, agentasm.ModeCode), "")
 		return
 	}
 	if s.modelMissing() {
+		trace.err = errors.New("no model is configured")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
 			"no model is configured; add one with the model picker (gear) first", RetryActionResume)
 		return
@@ -797,6 +828,7 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		trace.err = errors.New("streaming unsupported")
 		writeJSONProtocolError(w, http.StatusInternalServerError, ErrorCodeInternal, "streaming unsupported", RetryActionResume)
 		return
 	}
@@ -810,15 +842,16 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context()
-	requestID := uuid.NewString()
+	requestID := trace.requestID
 	defer s.approvals.clearRequest(requestID)
 	activeSessionID := sessionID
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
-	assembled, err := s.assemble(ctx, agentasm.Input{
-		WorkDir: selected.WorkDir, HomeDir: s.homeDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: s.eventConsumer(sw, &activeSessionID, requestID),
+	assembled, err := s.assembleAgent(trace, agentasm.Input{
+		WorkDir: selected.WorkDir, HomeDir: s.homeDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
 	})
 	if err != nil {
+		trace.err = err
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResume})
 		return
 	}
@@ -827,7 +860,13 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 	defer s.saveBudget(assembled)
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
+	// 恢复同一用户输入；老数据没有 chat_id 时保持缺省，不生成新的 ID。
+	if chatID := latestChatID(assembled.Session.Messages); chatID != "" {
+		trace.span.SetAttributes(telemetry.AttrChatID.String(chatID))
+		ctx = telemetry.ContextWithChatID(ctx, chatID)
+	}
 	msg, err := assembled.Service.Resume(ctx)
+	trace.err = err
 	if errors.Is(err, reactservice.ErrNothingToResume) {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeNothingToResume, Message: err.Error()})
 		return

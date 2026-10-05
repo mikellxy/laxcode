@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
@@ -157,6 +158,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	childCtx := telemetry.ContextWithAgentRole(ctx, telemetry.AgentRoleSub)
+	childCtx = telemetry.ContextWithChatID(childCtx, uuid.NewString())
 	msg, chatErr := childSvc.Chat(childCtx, a.Task)
 	res := &SubAgentResult{
 		Status:         classifySubAgentRun(msg, run, chatErr),

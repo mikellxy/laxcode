@@ -7,16 +7,18 @@ import (
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/session"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 )
 
 // coreAssembly owns the resources shared by every command-layer composition:
-// the global session repository, per-session trace, providers, registry, and
+// the global session repository, owned or injected tracer, providers, registry, and
 // their cleanup order. Callers add mode-specific tools and prompts.
 type coreAssembly struct {
 	homeDir   string
@@ -28,7 +30,7 @@ type coreAssembly struct {
 }
 
 func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
-	consumer func(*reactservice.ReactEvent), withArtifacts bool) (*coreAssembly, error) {
+	consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer) (*coreAssembly, error) {
 	homeDir, err := resolveHomeDir(explicitHome)
 	if err != nil {
 		return nil, err
@@ -38,12 +40,16 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 		return nil, err
 	}
 	sess := session.NewSession(sessionID, workDir)
-	traceHandle, err := newTraceHandle(ctx, layout.TracingLog(homeDir, sess.ID))
-	if err != nil {
-		_ = repo.Close()
-		return nil, fmt.Errorf("init tracing: %w", err)
+	var traceHandle *tracing.Handle
+	if tracer == nil {
+		traceHandle, err = newTraceHandle(ctx, layout.TracingLog(homeDir, sess.ID))
+		if err != nil {
+			_ = repo.Close()
+			return nil, fmt.Errorf("init tracing: %w", err)
+		}
+		tracer = traceHandle.Tracer
 	}
-	registry := tools.NewDefaultRegistry(traceHandle.Tracer)
+	registry := tools.NewDefaultRegistry(tracer)
 	var artifacts tools.ArtifactStore
 	if withArtifacts {
 		artifacts = artifactstore.New(layout.SessionRoot(homeDir))
@@ -59,7 +65,7 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 			c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens),
 		registry,
 		consumer,
-		traceHandle.Tracer,
+		tracer,
 		artifacts,
 	)
 	service.SetWorkDir(workDir)
@@ -69,7 +75,9 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 		once.Do(func() {
 			_ = registry.Close()
 			_ = repo.Close()
-			_ = traceHandle.Shutdown(ctx)
+			if traceHandle != nil {
+				_ = traceHandle.Shutdown(context.WithoutCancel(ctx))
+			}
 		})
 	}
 	return &coreAssembly{

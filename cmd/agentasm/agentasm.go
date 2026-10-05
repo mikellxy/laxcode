@@ -11,6 +11,7 @@ import (
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
@@ -27,6 +28,8 @@ import (
 
 // Input 是装配 ReActService 所需、且因前端而异的输入。
 type Input struct {
+	// Tracer 由入口注入时，其生命周期归入口所有；nil 保留独立装配的默认追踪。
+	Tracer telemetry.Tracer
 	// Mode selects the explicit agent capability profile.
 	Mode Mode
 	// WorkDir 是会话持久绑定的 Agent 工作目录（沙箱根）。
@@ -96,7 +99,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	if in.PlanMode && in.Mode != ModeCode {
 		return nil, fmt.Errorf("plan mode requires code mode")
 	}
-	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode)
+	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode, in.Tracer)
 	if err != nil {
 		return nil, err
 	}

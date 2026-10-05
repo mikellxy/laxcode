@@ -2,9 +2,14 @@ package agentasm
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 )
 
 func TestAssembleRegistersSkillManagementTools(t *testing.T) {
@@ -21,6 +26,28 @@ func TestAssembleRegistersSkillManagementTools(t *testing.T) {
 		if !names[name] {
 			t.Errorf("assembled registry is missing %s", name)
 		}
+	}
+}
+
+func TestAssembleDoesNotCloseInjectedTracer(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tracing.log")
+	provider, err := filetrace.New(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := tracing.New(provider)
+	defer handle.Shutdown(context.Background())
+	ctx, root := handle.Tracer.Start(context.Background(), "request-after-cleanup")
+	assembled, err := Assemble(ctx, Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir(), Tracer: handle.Tracer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembled.Cleanup()
+	assembled.Cleanup()
+	root.End()
+	data, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(data), `"name":"request-after-cleanup"`) {
+		t.Fatalf("injected tracer was closed before request span ended: %s, %v", data, err)
 	}
 }
 

@@ -203,41 +203,6 @@ func TestCloseSpanWithError(t *testing.T) {
 	}
 }
 
-func TestCloseSpanWithTimeCost(t *testing.T) {
-	s := new(recordingSpan)
-	CloseSpan(s, WithTimeCostMs(123))
-	if !s.ended {
-		t.Error("应调用 span.End")
-	}
-	found := false
-	for _, kv := range s.attrs {
-		if kv.Key == AttrTimeCostMs && kv.Value.AsInt64() == 123 {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("应写入 time_cost_ms=123 属性，实际 %v", s.attrs)
-	}
-}
-
-func TestCloseSpanWithErrorAndTimeCost(t *testing.T) {
-	s := new(recordingSpan)
-	sentinel := errors.New("oops")
-	CloseSpan(s, WithErr(sentinel), WithTimeCostMs(7))
-	if s.statusCode != codes.Error {
-		t.Errorf("应置 Error 状态，实际 %v", s.statusCode)
-	}
-	found := false
-	for _, kv := range s.attrs {
-		if kv.Key == AttrTimeCostMs && kv.Value.AsInt64() == 7 {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("应同时写入耗时属性，实际 %v", s.attrs)
-	}
-}
-
 func TestStartWithRecordingTracer(t *testing.T) {
 	tr := &recordingTracer{}
 	_, span := tr.Start(context.Background(), SpanChat)

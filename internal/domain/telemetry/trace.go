@@ -9,6 +9,7 @@ package telemetry
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -61,6 +62,22 @@ func Start(ctx context.Context, tracer Tracer, spanName string, attrs ...KeyValu
 	return OrNoop(tracer).Start(ctx, spanName, trace.WithAttributes(attrs...))
 }
 
+// StartAt 包含读取请求体等创建 span 之前的入口耗时。
+func StartAt(ctx context.Context, tracer Tracer, spanName string, startedAt time.Time, attrs ...KeyValue) (context.Context, Span) {
+	return OrNoop(tracer).Start(ctx, spanName, trace.WithTimestamp(startedAt), trace.WithAttributes(attrs...))
+}
+
+type chatIDKey struct{}
+
+func ContextWithChatID(ctx context.Context, chatID string) context.Context {
+	return context.WithValue(ctx, chatIDKey{}, chatID)
+}
+
+func ChatIDFromContext(ctx context.Context) string {
+	chatID, _ := ctx.Value(chatIDKey{}).(string)
+	return chatID
+}
+
 // sessionIDKey 是 session_id 在 context 中传播的私有键：tools.Registry 等
 // 不持有 session 引用的埋点经它读取业务关联键。span 属性不会自动继承，
 // 故以 ctx value 显式传播。
@@ -94,7 +111,7 @@ func TurnSeqFromContext(ctx context.Context) int {
 	return turnSeq
 }
 
-// ContextWithAgentRole 把当前 Agent 角色写入 ctx，供 chat 根 span 标记
+// ContextWithAgentRole 把当前 Agent 角色写入 ctx，供 react span 标记
 // main/sub，避免为不同运行者派生专用服务构造器。
 func ContextWithAgentRole(ctx context.Context, role string) context.Context {
 	return context.WithValue(ctx, agentRoleKey{}, role)
@@ -106,14 +123,11 @@ func AgentRoleFromContext(ctx context.Context) string {
 	return role
 }
 
-// CloseSpan 统一 span 收尾：按需落耗时属性、记录错误状态，最后 End。
+// CloseSpan 记录错误并结束 span；耗时由 span 起止时间计算。
 func CloseSpan(span Span, opts ...opt) {
 	o := new(options)
 	for _, opt := range opts {
 		opt(o)
-	}
-	if o.timeCostMs > 0 {
-		span.SetAttributes(AttrTimeCostMs.Int64(o.timeCostMs))
 	}
 	if o.err != nil {
 		span.SetStatus(codes.Error, o.err.Error())
@@ -123,18 +137,10 @@ func CloseSpan(span Span, opts ...opt) {
 }
 
 type options struct {
-	timeCostMs int64
-	err        error
+	err error
 }
 
 type opt func(o *options)
-
-// WithTimeCostMs 为 CloseSpan 附带耗时（毫秒）属性。
-func WithTimeCostMs(costMs int64) opt {
-	return func(o *options) {
-		o.timeCostMs = costMs
-	}
-}
 
 // WithErr 为 CloseSpan 附带错误：非 nil 时置 span 状态为 Error 并记录。
 func WithErr(err error) opt {

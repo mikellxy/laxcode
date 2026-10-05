@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
@@ -125,7 +124,6 @@ func (d *DefaultRegistry) Confirmation(ctx context.Context, toolCall *sharedkern
 }
 
 func (d *DefaultRegistry) Execute(ctx context.Context, toolCall *sharedkernel.ToolCall) *sharedkernel.ToolResult {
-	timeStart := time.Now()
 	var execErr error
 
 	attrs := []telemetry.KeyValue{telemetry.AttrToolName.String(toolCall.Name)}
@@ -138,7 +136,6 @@ func (d *DefaultRegistry) Execute(ctx context.Context, toolCall *sharedkernel.To
 	ctx, span := telemetry.Start(ctx, d.tracer, telemetry.SpanToolExec, attrs...)
 	defer func() {
 		telemetry.CloseSpan(span,
-			telemetry.WithTimeCostMs(time.Since(timeStart).Milliseconds()),
 			telemetry.WithErr(execErr),
 		)
 	}()

@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
@@ -177,6 +179,7 @@ func (s *server) startEvaluation(job evaluation.Job) {
 }
 
 func (s *server) runEvaluation(ctx context.Context, job evaluation.Job) error {
+	ctx = telemetry.ContextWithChatID(ctx, uuid.NewString())
 	if err := s.evaluations.UpdateEvaluationJob(ctx, job.ID, evaluation.StatusRunning, "", ""); err != nil {
 		return err
 	}
@@ -204,7 +207,7 @@ func (s *server) runEvaluation(ctx context.Context, job evaluation.Job) error {
 
 	s.switcher.RLock()
 	assembled, err := s.assembleEvaluation(ctx, agentasm.Input{
-		Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir,
+		Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
 		ReadRoots: []string{snapshotDir}, SessionID: job.ID,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(job.SnapshotHistory),
 	})

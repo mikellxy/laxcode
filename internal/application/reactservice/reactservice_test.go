@@ -318,21 +318,21 @@ func TestRunToolCallTraceHierarchy(t *testing.T) {
 		}
 		records = append(records, record)
 	}
-	if len(records) != 4 {
-		t.Fatalf("want 4 spans, got %d: %+v", len(records), records)
+	if len(records) != 6 {
+		t.Fatalf("want 6 spans, got %d: %+v", len(records), records)
 	}
 
 	var root traceRecord
 	for _, record := range records {
-		if record.Name == telemetry.SpanChat {
+		if record.Name == telemetry.SpanReact {
 			root = record
 		}
 	}
 	if root.SpanID == "" || root.ParentSpanID != "" {
-		t.Fatalf("chat must be the root span: %+v", root)
+		t.Fatalf("react must be the root span: %+v", root)
 	}
 	if got := root.Attributes["laxcode.agent_role"]; got != telemetry.AgentRoleSub {
-		t.Fatalf("chat agent_role = %v, want %q", got, telemetry.AgentRoleSub)
+		t.Fatalf("react agent_role = %v, want %q", got, telemetry.AgentRoleSub)
 	}
 
 	llmGenerateCount := 0
@@ -340,13 +340,17 @@ func TestRunToolCallTraceHierarchy(t *testing.T) {
 	llmTurns := make(map[float64]int)
 	for _, record := range records {
 		if record.TraceID != root.TraceID {
-			t.Errorf("span %s is outside chat trace", record.Name)
+			t.Errorf("span %s is outside react trace", record.Name)
 		}
 		switch record.Name {
+		case telemetry.SpanContextPrepare:
+			if record.ParentSpanID != root.SpanID {
+				t.Errorf("context-prepare parent = %s, want react %s", record.ParentSpanID, root.SpanID)
+			}
 		case telemetry.SpanLLMGenerate:
 			llmGenerateCount++
 			if record.ParentSpanID != root.SpanID {
-				t.Errorf("llm-generate parent = %s, want chat %s", record.ParentSpanID, root.SpanID)
+				t.Errorf("llm-generate parent = %s, want react %s", record.ParentSpanID, root.SpanID)
 			}
 			turn, ok := record.Attributes["laxcode.loop_seq"].(float64)
 			if !ok {
@@ -356,7 +360,7 @@ func TestRunToolCallTraceHierarchy(t *testing.T) {
 		case telemetry.SpanToolExec:
 			toolExecCount++
 			if record.ParentSpanID != root.SpanID {
-				t.Errorf("tool-exec parent = %s, want chat %s", record.ParentSpanID, root.SpanID)
+				t.Errorf("tool-exec parent = %s, want react %s", record.ParentSpanID, root.SpanID)
 			}
 			if got := record.Attributes["laxcode.tool_name"]; got != "echo_tool" {
 				t.Errorf("tool name = %v, want echo_tool", got)
@@ -1210,8 +1214,7 @@ func TestNormalizeContextSummaryRejectsUnstructuredOutput(t *testing.T) {
 	}
 }
 
-// TestChatRecordsChatID 验证 chatID 的两处落地：user 消息持久化
-// messages.chat_id，chat span 携带 laxcode.chat_id 属性，且两者为同一值。
+// TestChatRecordsChatID 验证入口传来的 chatID 持久化到 user 消息；业务 span 不重复携带 ID。
 func TestChatRecordsChatID(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "tracing.log")
 	provider, err := filetrace.New(logPath)
@@ -1224,7 +1227,7 @@ func TestChatRecordsChatID(t *testing.T) {
 	sess := newTestSession("s-chat-id", repo)
 	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("answer")}}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(handle.Tracer), nil, handle.Tracer)
-	if _, err := svc.Chat(context.Background(), "question"); err != nil {
+	if _, err := svc.Chat(telemetry.ContextWithChatID(context.Background(), "entry-chat-id"), "question"); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
 
@@ -1234,7 +1237,7 @@ func TestChatRecordsChatID(t *testing.T) {
 			userMsg = &sess.Messages[i]
 		}
 	}
-	if userMsg == nil || userMsg.ChatID == "" {
+	if userMsg == nil || userMsg.ChatID != "entry-chat-id" {
 		t.Fatalf("user 消息应携带非空 ChatID：%+v", userMsg)
 	}
 
@@ -1242,7 +1245,7 @@ func TestChatRecordsChatID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read trace log: %v", err)
 	}
-	if !strings.Contains(string(raw), `"laxcode.chat_id":"`+userMsg.ChatID+`"`) {
-		t.Fatalf("chat span 应携带与消息一致的 chat_id：log=%s", raw)
+	if strings.Contains(string(raw), `"laxcode.chat_id"`) {
+		t.Fatalf("业务 span 不应重复携带 chat_id：log=%s", raw)
 	}
 }

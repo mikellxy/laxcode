@@ -17,12 +17,16 @@ package telemetry
 
 import "go.opentelemetry.io/otel/attribute"
 
-// span 名。所有用户入口统一以 chat 为根；LLM 生成与工具执行均为
-// chat 的直接子 span，以开始时间在 Trace UI 中呈现真实执行顺序。
+// 请求以 chat 为根，装配与 react 为其子 span；每轮准备、生成和工具执行
+// 归属 react，子 Agent 的 react 归属启动它的 tool-exec。
 const (
-	SpanChat        = "chat"
-	SpanLLMGenerate = "llm-generate"
-	SpanToolExec    = "tool-exec"
+	SpanChat           = "chat"
+	SpanAgentAssemble  = "agent-assemble"
+	SpanReact          = "react"
+	SpanContextPrepare = "context-prepare"
+	SpanLLMGenerate    = "llm-generate"
+	SpanToolExec       = "tool-exec"
+	EventFirstOutput   = "first-output"
 )
 
 // laxcode 自有概念的业务属性键
@@ -33,7 +37,10 @@ const (
 	AttrAgentRole     attribute.Key = "laxcode.agent_role"
 	AttrTurnSeq       attribute.Key = "laxcode.loop_seq"
 	AttrToolCallCount attribute.Key = "laxcode.tool_call_count"
-	AttrTimeCostMs    attribute.Key = "laxcode.time_cost_ms"
+	AttrRequestID     attribute.Key = "laxcode.request_id"
+	AttrOperation     attribute.Key = "laxcode.operation"
+	AttrFirstOutputMs attribute.Key = "laxcode.first_output_ms"
+	AttrTTFTMs        attribute.Key = "laxcode.ttft_ms"
 	AttrFinishReason  attribute.Key = "laxcode.finish_reason"
 )
 

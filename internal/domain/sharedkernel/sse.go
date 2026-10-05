@@ -24,3 +24,8 @@ type StreamChunk struct {
 	Delta    string    // *Delta 类事件：本次增量文本
 	ToolCall *ToolCall // ChunkToolCall 事件：一个完整工具调用
 }
+
+// IsOutput 排除空 delta、流边界及工具参数；首输出包括 reasoning 和正文。
+func (c StreamChunk) IsOutput() bool {
+	return c.Delta != "" && (c.Kind == ChunkReasoningDelta || c.Kind == ChunkTextDelta)
+}

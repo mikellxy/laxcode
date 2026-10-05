@@ -15,6 +15,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
+	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 )
 
 // shutdownTimeout 是优雅关闭等待在途 SSE 流结束的上限。一次完整 ReAct 生成可能
@@ -39,6 +40,18 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 		fatal(err)
 	}
 	s := newServer(homeDir, config.CliConf.Plan)
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
+		traceHandle, err := tracing.NewOTLP(context.Background())
+		if err != nil {
+			fatal(fmt.Errorf("init tracing: %w", err))
+		}
+		s.tracer = traceHandle.Tracer
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = traceHandle.Shutdown(ctx)
+		}()
+	}
 	s.tokenBudget = config.CliConf.TokenBudget
 	s.switcher = agentasm.NewModelSwitcher(router)
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(

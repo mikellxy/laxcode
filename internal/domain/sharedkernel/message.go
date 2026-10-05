@@ -36,7 +36,7 @@ type Message struct {
 	Artifact    *ArtifactRef `json:"artifact,omitempty"`
 	Role        string       `json:"role"`
 	Content     string       `json:"content"`
-	// ChatID 标识一次用户输入轮次：Chat 入口生成（UUID），随本轮 user 消息
+	// ChatID 标识一次用户输入轮次：请求入口生成（UUID），随本轮 user 消息
 	// 持久化（messages.chat_id）并挂在 chat span 属性（laxcode.chat_id）上，
 	// 供 trace 与 DB 互查。仅 user 角色填充，其余角色恒为空；老数据为空串。
 	ChatID string `json:"chat_id,omitempty"`

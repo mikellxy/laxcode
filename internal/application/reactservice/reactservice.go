@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
@@ -304,43 +303,20 @@ func (r *ReActService) InitSysPrompt(ctx context.Context, p string) error {
 func (r *ReActService) Chat(ctx context.Context, p string) (
 	msg *sharedkernel.Message, err error,
 ) {
+	ctx, span := r.startReact(ctx)
+	defer func() { r.closeReact(span, msg, err) }()
 	if r.tokenBudgetDeclined {
 		return nil, ErrTokenBudgetDeclined
 	}
-	if err := r.confirmTokenBudget(ctx); err != nil {
+	if err = r.confirmTokenBudget(ctx); err != nil {
 		return nil, err
 	}
-	ctx = telemetry.ContextWithSessionID(ctx, r.Session.ID)
-	agentRole := telemetry.AgentRoleFromContext(ctx)
-	if agentRole == "" {
-		agentRole = telemetry.AgentRoleMain
-	}
-	ctx, chatSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanChat,
-		telemetry.AttrSessionID.String(r.Session.ID),
-		telemetry.AttrAgentRole.String(agentRole),
-	)
-	// chatID 标识本次用户输入轮次：挂在 chat span 上，并随 user 消息持久化，
-	// 使 trace 与 messages.chat_id 可互查。生成必须在 span 之前。
-	chatID := uuid.NewString()
-	chatSpan.SetAttributes(telemetry.AttrChatID.String(chatID))
-	startedAt := time.Now()
-	defer func() {
-		if msg != nil {
-			chatSpan.SetAttributes(
-				telemetry.AttrFinishReason.String(msg.FinishReason),
-			)
-		}
-		telemetry.CloseSpan(chatSpan,
-			telemetry.WithErr(err),
-			telemetry.WithTimeCostMs(time.Since(startedAt).Milliseconds()),
-		)
-	}()
 
 	if err = r.recoverBeforeChat(ctx); err != nil {
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
 	userMsg := r.Session.BuildUserMessage(p)
-	userMsg.ChatID = chatID
+	userMsg.ChatID = telemetry.ChatIDFromContext(ctx)
 	candidate, err := r.Session.WithAppendedMessage(&userMsg)
 	if err != nil {
 		return nil, err
@@ -353,7 +329,9 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 
 // Resume 恢复已经持久化 user message、但尚未以无工具调用 assistant 收束的
 // 对话。它不会创建新的 user message，供断流/生成错误后的显式重试入口使用。
-func (r *ReActService) Resume(ctx context.Context) (*sharedkernel.Message, error) {
+func (r *ReActService) Resume(ctx context.Context) (msg *sharedkernel.Message, err error) {
+	ctx, span := r.startReact(ctx)
+	defer func() { r.closeReact(span, msg, err) }()
 	if r.tokenBudgetDeclined {
 		return nil, ErrTokenBudgetDeclined
 	}
@@ -368,6 +346,24 @@ func (r *ReActService) Resume(ctx context.Context) (*sharedkernel.Message, error
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
 	return r.think(ctx)
+}
+
+// Chat 和 Resume 共用执行 span；chat_id 只由请求入口记录。
+func (r *ReActService) startReact(ctx context.Context) (context.Context, telemetry.Span) {
+	ctx = telemetry.ContextWithSessionID(ctx, r.Session.ID)
+	role := telemetry.AgentRoleFromContext(ctx)
+	if role == "" {
+		role = telemetry.AgentRoleMain
+	}
+	return telemetry.Start(ctx, r.tracer, telemetry.SpanReact,
+		telemetry.AttrSessionID.String(r.Session.ID), telemetry.AttrAgentRole.String(role))
+}
+
+func (r *ReActService) closeReact(span telemetry.Span, msg *sharedkernel.Message, err error) {
+	if msg != nil {
+		span.SetAttributes(telemetry.AttrFinishReason.String(msg.FinishReason))
+	}
+	telemetry.CloseSpan(span, telemetry.WithErr(err))
 }
 
 // needsRecovery 只以已提交工作集判断是否存在未收束的一轮：至少有一条 user，
@@ -450,9 +446,13 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 
 		// 每轮固定一份工具定义：精确计数与随后的生成请求必须
 		// 序列化同一份 tools，不能让 registry map 的遍历顺序在两次读取间漂移。
+		prepareCtx, prepareSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanContextPrepare,
+			telemetry.AttrTurnSeq.Int(turnCnt))
 		toolDefs := r.ToolRegistry.GetAvailableTools()
-		if err := r.compactContext(ctx, toolDefs); err != nil {
-			return nil, err
+		prepareErr := r.compactContext(prepareCtx, toolDefs)
+		telemetry.CloseSpan(prepareSpan, telemetry.WithErr(prepareErr))
+		if prepareErr != nil {
+			return nil, prepareErr
 		}
 		if err := r.confirmTokenBudget(ctx); err != nil {
 			return nil, err
@@ -462,7 +462,13 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		llmCtx, llmSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanLLMGenerate,
 			telemetry.AttrTurnSeq.Int(turnCnt),
 		)
+		firstOutput := false
 		msg, err := r.LLMClient.GenerateStream(llmCtx, r.Session.Messages, toolDefs, func(chunkEvent sharedkernel.StreamChunk) {
+			if !firstOutput && chunkEvent.IsOutput() {
+				firstOutput = true
+				llmSpan.AddEvent(telemetry.EventFirstOutput)
+				llmSpan.SetAttributes(telemetry.AttrTTFTMs.Int64(time.Since(llmStart).Milliseconds()))
+			}
 			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeChunk, ChunkEvent: &chunkEvent})
 		})
 		if msg != nil {
@@ -474,7 +480,6 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 			)
 		}
 		telemetry.CloseSpan(llmSpan,
-			telemetry.WithTimeCostMs(time.Since(llmStart).Milliseconds()),
 			telemetry.WithErr(err),
 		)
 		if err != nil {

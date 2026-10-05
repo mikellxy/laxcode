@@ -82,6 +82,37 @@ LaxCode 根据 `OTEL_EXPORTER_OTLP_ENDPOINT` 判断是否启用远端 exporter�
 ${HOME}/.laxcode/sessions/${session_id}/log/tracing.log
 ```
 
+请求追踪层级如下，`/chat` 与 `/resume` 共用：
+
+```text
+chat
+├─ agent-assemble
+└─ react
+   ├─ context-prepare
+   ├─ llm-generate
+   ├─ tool-exec
+   └─ …
+```
+
+`chat` 从 HTTP handler 入口计时，包含请求校验、装配、ReAct 和清理。
+`agent-assemble` 覆盖技能/MCP 加载、会话恢复和系统提示词初始化；每轮
+`context-prepare` 覆盖工具定义准备、token 计数和必要的上下文压缩。
+
+根 span 的 `laxcode.operation` 为 `send` 或 `resume`，`laxcode.request_id`
+每次请求独立生成。`laxcode.chat_id` 只在根 span 上记录，并随 user message
+写入 SQLite 和 JSONL；resume 沿用该轮输入已有的 ID，不新增 user message。
+没有 chat ID 的旧会话恢复时不补造 ID。
+
+根 span 和每个 `llm-generate` 都在首个非空 reasoning/text delta 到达时记录
+`first-output` 事件。根 span 的 `laxcode.first_output_ms` 表示入口到首输出的
+时间，生成 span 的 `laxcode.ttft_ms` 表示该次模型调用到首输出的时间。
+SSE 响应头、start 帧、空 delta 和工具参数不计入；没有输出的调用不填写这两个
+耗时属性。这里测量后端收到输出的时间，不包含浏览器接收延迟。
+
+span 总耗时直接使用起止时间，移除了重复的 `laxcode.time_cost_ms` 属性。
+OTLP exporter 在服务启动时创建，服务退出时统一 flush/关闭；本地 filetrace
+仍按会话落盘，在请求根 span 结束后关闭。
+
 ## 3. Docker 网络地址
 
 如果 LaxCode 也运行在容器中，容器内的 `localhost` 指向 LaxCode 容器自身，
