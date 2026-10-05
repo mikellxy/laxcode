@@ -2,9 +2,9 @@
 // 体系：为每个已配置的 stdio 或 Streamable HTTP server 建立连接、拉取
 // tools/list 快照，并把每个工具经 domain/tools.MCPTool 适配器注册进工具注册表。
 //
-// 生命周期（P1）：连接随每次 Agent 装配建立、随装配 cleanup 终止。单个
-// server 连接失败不阻塞装配（fail-open，warn 后跳过），由调用方决定警告
-// 呈现方式。SDK 依赖收口在本包，domain/tools 只见 MCPClient 端口。
+// 后端服务通过 Connect 持有共享连接，各 Agent 通过 Register 注册独立工具；
+// 独立装配也可通过 Attach 自行连接和回收。单个 server 连接失败时 fail-open
+// 跳过并告警。SDK 依赖收口在本包，domain/tools 只见 MCPClient 端口。
 package mcp
 
 import (
@@ -33,8 +33,8 @@ const (
 )
 
 // 连接与单次工具调用的默认时限。connectTimeout 覆盖 spawn + initialize +
-// tools/list 全程：装配发生在请求路径上（SSE 头已发出），坏配置必须快速
-// 失败而不是拖住整个会话。callTimeout 防止单个 server 挂起阻塞 ReAct 轮。
+// tools/list 全程：坏配置必须限时失败，避免拖住服务启动或独立装配。
+// callTimeout 防止单个 server 挂起阻塞 ReAct 轮。
 // 以变量而非常量暴露，测试可缩短。
 var (
 	connectTimeout = 20 * time.Second
@@ -56,9 +56,9 @@ type ServerConfig struct {
 	transport mcpsdk.Transport
 }
 
-// Pool 持有全部成功建立的 server 连接及其工具快照，非并发安全：连接与
-// 注册都发生在装配期（单 goroutine），之后的调用经 serverConn 交给 SDK
-// 的会话（SDK 内部按 JSON-RPC 请求串行化）。
+// Pool 持有全部成功建立的 server 连接及其只读工具快照。Connect 返回后不再
+// 修改，可并发注册到各自独立的 registry，并经 SDK 会话并发调用工具。
+// 调用方负责在服务停止接收请求并结束在途调用后统一 Close。
 type Pool struct {
 	conns []*serverConn
 }

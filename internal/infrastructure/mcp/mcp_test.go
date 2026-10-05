@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
@@ -294,6 +297,127 @@ func TestStreamableHTTPEndToEnd(t *testing.T) {
 	})
 	if result.IsError || result.Output != "echo: over http" {
 		t.Fatalf("HTTP echo: IsError=%v output=%q", result.IsError, result.Output)
+	}
+}
+
+func TestSharedPoolConcurrentCalls(t *testing.T) {
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "shared-http", Version: "test"}, nil)
+	addStandardTools(server)
+	httpServer := httptest.NewServer(mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+		return server
+	}, nil))
+	defer httpServer.Close()
+	pool := Connect(context.Background(), map[string]ServerConfig{
+		"http": {URL: httpServer.URL},
+		"stdio": {
+			Command: os.Args[0], Args: []string{"-test.run=TestMCPServerHelperProcess"},
+			Env: []string{"LAXCODE_MCP_HELPER=1"},
+		},
+	}, nil)
+	defer pool.Close()
+	if len(pool.conns) != 2 {
+		t.Fatalf("both transports must connect, got %d", len(pool.conns))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Go(func() {
+			// 每个 agent 拥有独立 registry，共享同一 Pool/ClientSession。
+			reg := tools.NewDefaultRegistry(nil)
+			pool.Register(reg)
+			defer reg.Close()
+			message := fmt.Sprintf("chat-%d", i)
+			args, _ := json.Marshal(echoArgs{Message: message})
+			for _, name := range []string{"http", "stdio"} {
+				result := reg.Execute(ctx, &sharedkernel.ToolCall{
+					ID: message, Name: "mcp__" + name + "__echo", Arguments: args,
+				})
+				if result.IsError || result.Output != "echo: "+message {
+					t.Errorf("%s/%s: %+v", name, message, result)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	// 关闭所有 agent 的 registry 不得关闭共享连接。
+	for _, conn := range pool.conns {
+		if _, err := conn.CallTool(ctx, "echo", json.RawMessage(`{"message":"still alive"}`)); err != nil {
+			t.Errorf("%s closed by request cleanup: %v", conn.name, err)
+		}
+	}
+}
+
+func TestSharedPoolCancellationIsolation(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	transport := newFakeServer(t, func(server *mcpsdk.Server) {
+		addStandardTools(server)
+		server.AddTool(&mcpsdk.Tool{Name: "block", InputSchema: map[string]any{"type": "object"}},
+			func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+				var args echoArgs
+				if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+					return nil, err
+				}
+				started <- args.Message
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-release:
+					return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: args.Message}}}, nil
+				}
+			})
+	})
+	pool := Connect(context.Background(), map[string]ServerConfig{"shared": {transport: transport}}, nil)
+	defer pool.Close()
+	if len(pool.conns) != 1 {
+		t.Fatal("shared server must connect")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	defer cancelFirst()
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := pool.conns[0].CallTool(firstCtx, "block", json.RawMessage(`{"message":"first"}`))
+		first <- err
+	}()
+	go func() {
+		out, err := pool.conns[0].CallTool(ctx, "block", json.RawMessage(`{"message":"second"}`))
+		if err == nil && out.Text != "second" {
+			err = fmt.Errorf("mismatched response: %q", out.Text)
+		}
+		second <- err
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("both calls must reach the server concurrently")
+		}
+	}
+	cancelFirst()
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("first call must be canceled: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("first call did not cancel")
+	}
+	select {
+	case err := <-second:
+		t.Fatalf("second call ended before release: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("canceling first affected second: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("second call did not complete")
 	}
 }
 
