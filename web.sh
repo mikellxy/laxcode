@@ -6,30 +6,36 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 instance_file="${HOME}/.laxcode/sse-code.instance"
 frontend_url="http://127.0.0.1:5173"
 backend_pid=""
-vite_pid=""
+web_pid=""
 
 cleanup() {
   trap - EXIT INT TERM HUP
-  if [[ -n "${vite_pid}" ]] && kill -0 "${vite_pid}" 2>/dev/null; then
-    kill "${vite_pid}" 2>/dev/null || true
+  if [[ -n "${web_pid}" ]] && kill -0 "${web_pid}" 2>/dev/null; then
+    kill "${web_pid}" 2>/dev/null || true
   fi
   if [[ -n "${backend_pid}" ]] && kill -0 "${backend_pid}" 2>/dev/null; then
     kill "${backend_pid}" 2>/dev/null || true
   fi
-  [[ -z "${vite_pid}" ]] || wait "${vite_pid}" 2>/dev/null || true
+  [[ -z "${web_pid}" ]] || wait "${web_pid}" 2>/dev/null || true
   [[ -z "${backend_pid}" ]] || wait "${backend_pid}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM HUP
 
-for command_name in pnpm make curl open; do
+for command_name in pnpm make go curl open; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "required command not found: ${command_name}" >&2
     exit 1
   fi
 done
 
-pnpm --dir "${repo_root}/web" install --frozen-lockfile
-make -C "${repo_root}" build
+make -C "${repo_root}" build build-web
+(
+  cd "${repo_root}"
+  go build -tags=webdist -o bin/laxcode-web ./cmd/web
+)
+
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+export OTEL_SERVICE_NAME="laxcode"
 
 "${repo_root}/bin/laxcode" -addr=127.0.0.1:0 &
 backend_pid=$!
@@ -61,8 +67,8 @@ if [[ -z "${backend_url}" ]] || ! curl --silent --fail --max-time 1 "${backend_u
   exit 1
 fi
 
-LAXCODE_PROXY_TARGET="${backend_url}" pnpm --dir "${repo_root}/web" dev &
-vite_pid=$!
+"${repo_root}/bin/laxcode-web" -addr=127.0.0.1:5173 -backend="${backend_url}" &
+web_pid=$!
 
 frontend_ready=false
 for _ in $(seq 1 300); do
@@ -70,9 +76,9 @@ for _ in $(seq 1 300); do
     echo "LaxCode backend exited while starting the web UI" >&2
     exit 1
   fi
-  if ! kill -0 "${vite_pid}" 2>/dev/null; then
-    wait "${vite_pid}" || true
-    echo "Vite exited before becoming ready; port 5173 may already be in use" >&2
+  if ! kill -0 "${web_pid}" 2>/dev/null; then
+    wait "${web_pid}" || true
+    echo "LaxCode web server exited before becoming ready; port 5173 may already be in use" >&2
     exit 1
   fi
   if curl --silent --fail --max-time 1 "${frontend_url}" >/dev/null 2>&1; then
@@ -92,13 +98,13 @@ open "${frontend_url}"
 
 # Bash 3.2 (the macOS default) has no wait -n. Monitor both long-running
 # children so either failure tears down the other process through the trap.
-while kill -0 "${backend_pid}" 2>/dev/null && kill -0 "${vite_pid}" 2>/dev/null; do
+while kill -0 "${backend_pid}" 2>/dev/null && kill -0 "${web_pid}" 2>/dev/null; do
   sleep 1
 done
 
 if ! kill -0 "${backend_pid}" 2>/dev/null; then
   echo "LaxCode backend stopped" >&2
 else
-  echo "Vite web server stopped" >&2
+  echo "LaxCode web server stopped" >&2
 fi
 exit 1

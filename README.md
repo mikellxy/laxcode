@@ -59,7 +59,7 @@ brew install pnpm
 ./web.sh
 ```
 
-`web.sh` 会安装前端依赖、构建 Go 程序，以随机本地端口启动 coding 后端，再启动固定于 `127.0.0.1:5173` 的 Vite 页面。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
+`web.sh` 会安装前端依赖、构建前端生产资源和两个 Go 程序，以随机本地端口启动 coding 后端，再启动固定于 `127.0.0.1:5173` 的静态 Web 服务，将 API 和 SSE 请求代理到后端。前端不启用热更新，修改源码后需重新运行脚本才会生效。脚本在启动后端前设置 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` 和 `OTEL_SERVICE_NAME=laxcode`，通过 OTLP/HTTP 上报 trace。只有前后端均通过健康检查后才会打开默认浏览器；按 `Ctrl-C` 可同时停止两个服务。
 
 Windows PowerShell 直接运行启动脚本：
 

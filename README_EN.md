@@ -59,7 +59,7 @@ brew install pnpm
 ./web.sh
 ```
 
-`web.sh` installs frontend dependencies, builds the Go program, starts the coding backend on a random local port, and then launches the Vite page pinned to `127.0.0.1:5173`. The default browser opens only after both the frontend and backend pass their health checks; press `Ctrl-C` to stop both services.
+`web.sh` installs frontend dependencies, builds the production frontend bundle and both Go programs, starts the coding backend on a random local port, and then serves the static UI at `127.0.0.1:5173`, proxying API and SSE requests to the backend. Hot reload is disabled; rerun the script to apply source changes. Before starting the backend, the script sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and `OTEL_SERVICE_NAME=laxcode` to export traces via OTLP/HTTP. The default browser opens only after both the frontend and backend pass their health checks; press `Ctrl-C` to stop both services.
 
 On Windows PowerShell, run the launcher directly:
 

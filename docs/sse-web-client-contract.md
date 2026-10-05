@@ -87,9 +87,9 @@ export default defineConfig(({ mode }) => {
 
 `web.sh` 与 `web.ps1` 启动后端时使用 `127.0.0.1:0`，后端在持有
 用户目录下 `.laxcode/sse-code.instance` 排他锁的同时写入实际地址。两个脚本
-都会从该文件读取与子进程 PID 匹配的地址。macOS 的 `web.sh` 通过
-`LAXCODE_PROXY_TARGET` 将地址传给 Vite；Windows 的 `web.ps1` 则把地址作为
-`-backend` 参数传给预编译的 `bin/win/laxcode-web.exe`。该程序嵌入
+都会从该文件读取与子进程 PID 匹配的地址，并把地址作为 `-backend` 参数传给
+静态 Web 服务。macOS 的 `web.sh` 构建并启动 `bin/laxcode-web`；Windows 的
+`web.ps1` 启动预编译的 `bin/win/laxcode-web.exe`。该程序嵌入
 `web/dist/` 的生产资源，并代理 `/api`、`/chat` 和 `/healthz`。
 
 前端 API 地址始终使用相对路径，例如 `/api/sessions` 和 `/chat`，不要在组件中硬编码主机或端口。
