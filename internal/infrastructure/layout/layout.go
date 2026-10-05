@@ -33,6 +33,9 @@ const (
 	// settingsFileName 是用户主目录数据根下的配置文件名。
 	settingsFileName = "settings.json"
 
+	// envConfFileName 是用户主目录数据根下的进程环境注入文件名。
+	envConfFileName = "env.conf"
+
 	// sessionDBFileName 是全局 SQLite 会话数据库文件名。
 	sessionDBFileName = "sessions.db"
 
@@ -112,6 +115,13 @@ func SkillsRoot(homeDir string) string {
 // 与工作目录布局共用 RootDirName 但根不同，故单列一个函数而非复用 Root。
 func UserSettings(homeDir string) string {
 	return filepath.Join(homeDir, RootDirName, settingsFileName)
+}
+
+// EnvConf 返回用户级进程环境注入文件 ${homeDir}/.laxcode/env.conf：每行
+// 一条 k=v，进程启动早期经 os.Setenv 注入，作为 bash 工具与 MCP server
+// 子进程的环境基线（网络代理等）。
+func EnvConf(homeDir string) string {
+	return filepath.Join(homeDir, RootDirName, envConfFileName)
 }
 
 // SSECodeInstance 返回浏览器代码模式的单实例文件路径。文件在服务

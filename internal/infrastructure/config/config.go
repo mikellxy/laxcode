@@ -422,6 +422,16 @@ var CliConf cliConf
 var Cli = viper.New()
 
 func ParseEnvAndFile() error {
+	// env.conf 是进程环境基线，先于其余配置注入：settings.json 与 OPENAI_*
+	// 环境绑定读到的是注入后的环境，bash 工具与 MCP server 派生的子进程也
+	// 一并继承。必须早于任何出站 HTTP 请求——net/http 的代理环境经
+	// sync.Once 在首次请求时缓存，之后注入 HTTP(S)_PROXY 不再生效。
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		if err := ApplyEnvFile(homeDir); err != nil {
+			return err
+		}
+	}
+
 	var filePath string
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
