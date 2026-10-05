@@ -2,6 +2,7 @@ package run_sse
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -71,12 +72,23 @@ func (t *chatTrace) consumer(base func(*reactservice.ReactEvent)) func(*reactser
 	}
 }
 
-func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (*agentasm.Assembled, error) {
+func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agentasm.Assembled, err error) {
 	ctx, span := telemetry.Start(t.ctx, t.tracer, telemetry.SpanAgentAssemble)
+	defer func() { telemetry.CloseSpan(span, telemetry.WithErr(err)) }()
+	// Resume 必须在 MCP 连接前取得原 chat_id，供装配阶段的日志检索。
+	if telemetry.ChatIDFromContext(ctx) == "" && s.contextRepo != nil {
+		snapshot, loadErr := s.contextRepo.GetRequestContext(ctx, in.SessionID)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load resume chat id: %w", loadErr)
+		}
+		if chatID := latestChatID(snapshot.Messages); chatID != "" {
+			ctx = telemetry.ContextWithChatID(ctx, chatID)
+			t.ctx = telemetry.ContextWithChatID(t.ctx, chatID)
+			t.span.SetAttributes(telemetry.AttrChatID.String(chatID))
+		}
+	}
 	in.Tracer = t.tracer
-	assembled, err := s.assemble(ctx, in)
-	telemetry.CloseSpan(span, telemetry.WithErr(err))
-	return assembled, err
+	return s.assemble(ctx, in)
 }
 
 func latestChatID(messages []sharedkernel.Message) string {

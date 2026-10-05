@@ -112,6 +112,19 @@ chat
 尚未执行或不适用的阶段不填写。阶段耗时不包含失败后的资源清理，也未覆盖
 全部对象构造等零散步骤，因此其和不要求等于 span 总耗时。
 
+每个 MCP server 的连接尝试会在 `log/laxcode.log` 写入一条 JSON 日志，
+`msg` 为 `mcp_connect`，包含 `chat_id`、`server_name`、`duration_ms`、
+`tool_count` 和 `status`（`connected`、`failed` 或 `no_tools`）。失败时还包含
+`error`；有有效追踪上下文时附带 `trace_id` 和 `span_id`。耗时覆盖连接与工具
+发现，成功但没有工具的连接随后会被关闭。resume 在装配前读取原 chat ID；
+没有 ID 的旧会话对应日志的 `chat_id` 为空串。
+
+按 chat ID 检索：
+
+```shell
+jq -c 'select(.msg == "mcp_connect" and .chat_id == "你的-chat-id")' log/laxcode.log
+```
+
 根 span 的 `laxcode.operation` 为 `send` 或 `resume`，`laxcode.request_id`
 每次请求独立生成。`laxcode.chat_id` 只在根 span 上记录，并随 user message
 写入 SQLite 和 JSONL；resume 沿用该轮输入已有的 ID，不新增 user message。

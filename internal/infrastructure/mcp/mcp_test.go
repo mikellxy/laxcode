@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,9 +13,55 @@ import (
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestConnectLogsEachServerWithChatID(t *testing.T) {
+	var output bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	ctx := telemetry.ContextWithChatID(context.Background(), "entry-chat-id")
+	pool := Connect(ctx, map[string]ServerConfig{
+		"healthy": {transport: newFakeServer(t, addStandardTools)},
+		"empty":   {transport: newFakeServer(t, nil)},
+		"broken":  {},
+	}, nil)
+	defer pool.Close()
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want one log per attempt, got %s", output.String())
+	}
+	statuses := map[string]string{"healthy": "connected", "empty": "no_tools", "broken": "failed"}
+	for _, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		name, _ := record["server_name"].(string)
+		status, ok := statuses[name]
+		if !ok || record["msg"] != "mcp_connect" || record["chat_id"] != "entry-chat-id" || record["status"] != status {
+			t.Fatalf("invalid log: %s", line)
+		}
+		delete(statuses, name)
+		ms, ok := record["duration_ms"].(float64)
+		if !ok || ms < 0 {
+			t.Fatalf("invalid duration: %s", line)
+		}
+		wantTools := float64(0)
+		if name == "healthy" {
+			wantTools = 3
+		}
+		if record["tool_count"] != wantTools {
+			t.Fatalf("invalid tool count: %s", line)
+		}
+		if (record["error"] != nil) != (name == "broken") {
+			t.Fatalf("invalid error detail: %s", line)
+		}
+	}
+}
 
 // newFakeServer 在进程内起一个走 InMemory 传输的 MCP server（真实 SDK 协议
 // 栈，无子进程），返回客户端侧传输供 ServerConfig.transport 注入。

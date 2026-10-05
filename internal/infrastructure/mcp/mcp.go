@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -97,7 +99,27 @@ func Connect(ctx context.Context, servers map[string]ServerConfig, warn func(str
 
 	pool := &Pool{}
 	for _, name := range names {
+		startedAt := time.Now()
 		conn, err := connectServer(ctx, name, servers[name])
+		durationMs := float64(time.Since(startedAt)) / float64(time.Millisecond)
+		status, level, toolCount := "connected", slog.LevelInfo, 0
+		if err != nil {
+			status, level = "failed", slog.LevelWarn
+		} else {
+			toolCount = len(conn.tools)
+			if toolCount == 0 {
+				status, level = "no_tools", slog.LevelWarn
+			}
+		}
+		attrs := []any{"chat_id", telemetry.ChatIDFromContext(ctx), "server_name", name,
+			"duration_ms", durationMs, "status", status, "tool_count", toolCount}
+		if spanCtx := telemetry.SpanFromContext(ctx).SpanContext(); spanCtx.IsValid() {
+			attrs = append(attrs, "trace_id", spanCtx.TraceID().String(), "span_id", spanCtx.SpanID().String())
+		}
+		if err != nil {
+			attrs = append(attrs, "error", err.Error())
+		}
+		slog.Log(ctx, level, "mcp_connect", attrs...)
 		if err != nil {
 			warn(fmt.Sprintf("mcp server %q unavailable, skipped: %v", name, err))
 			continue

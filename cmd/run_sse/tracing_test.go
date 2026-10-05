@@ -16,6 +16,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
@@ -84,7 +85,15 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 					defer handle.Shutdown(context.Background())
 				}
 				llm := &traceFlowLLM{output: output}
+				contextRepo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(home), layout.SessionRoot(home))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer contextRepo.Close()
+				s.contextRepo = contextRepo
+				var assemblyChatIDs []string
 				s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
+					assemblyChatIDs = append(assemblyChatIDs, telemetry.ChatIDFromContext(ctx))
 					repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(home), layout.SessionRoot(home))
 					if err != nil {
 						return nil, err
@@ -139,6 +148,14 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 				}
 				if len(roots) != 3 || len(records) != 15 {
 					t.Fatalf("roots=%d records=%d", len(roots), len(records))
+				}
+				if len(assemblyChatIDs) != 3 {
+					t.Fatalf("unexpected assembly count: %v", assemblyChatIDs)
+				}
+				for i, chatID := range assemblyChatIDs {
+					if chatID == "" || chatID != roots[i].Attrs["laxcode.chat_id"] {
+						t.Fatalf("request %d: chat ID unavailable during MCP assembly: %q", i, chatID)
+					}
 				}
 				if roots[0].Attrs["laxcode.chat_id"] == nil || roots[0].Attrs["laxcode.chat_id"] != roots[1].Attrs["laxcode.chat_id"] || roots[0].Attrs["laxcode.chat_id"] == roots[2].Attrs["laxcode.chat_id"] {
 					t.Fatal("send/resume chat IDs do not identify the same user input")
