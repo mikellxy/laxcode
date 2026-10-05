@@ -104,7 +104,8 @@ chat
 | --- | --- |
 | `laxcode.assemble.repo_init_ms` | 打开 SQLite、设置连接和 schema 检查/迁移 |
 | `laxcode.assemble.skills_load_ms` | 技能发现、读取与解析 |
-| `laxcode.assemble.mcp_connect_ms` | 连接 MCP server、获取和注册工具 |
+| `laxcode.assemble.mcp_register_ms` | 后端请求使用共享 MCP 连接，只注册工具 |
+| `laxcode.assemble.mcp_connect_ms` | 未注入共享连接的独立装配：连接 MCP server、获取和注册工具 |
 | `laxcode.assemble.session_restore_ms` | 从数据库读取工作集并恢复会话 |
 | `laxcode.assemble.sys_prompt_init_ms` | 构造系统提示词并持久化工作集 |
 
@@ -116,12 +117,14 @@ chat
 `msg` 为 `mcp_connect`，包含 `chat_id`、`server_name`、`duration_ms`、
 `tool_count` 和 `status`（`connected`、`failed` 或 `no_tools`）。失败时还包含
 `error`；有有效追踪上下文时附带 `trace_id` 和 `span_id`。耗时覆盖连接与工具
-发现，成功但没有工具的连接随后会被关闭。resume 在装配前读取原 chat ID；
-没有 ID 的旧会话对应日志的 `chat_id` 为空串。
+发现，成功但没有工具的连接随后会被关闭。后端在服务启动时建立连接，请求
+只复用连接；启动日志的 `chat_id` 为空串，不属于某次 chat。独立装配时，
+日志沿用调用上下文的 chat ID。
 
-按 chat ID 检索：
+后端启动连接按 server 名检索，独立装配可按 chat ID 检索：
 
 ```shell
+jq -c 'select(.msg == "mcp_connect" and .server_name == "ov-mcp-server")' log/laxcode.log
 jq -c 'select(.msg == "mcp_connect" and .chat_id == "你的-chat-id")' log/laxcode.log
 ```
 

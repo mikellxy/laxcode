@@ -19,6 +19,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
+	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
@@ -91,8 +92,12 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 				}
 				defer contextRepo.Close()
 				s.contextRepo = contextRepo
+				s.mcpPool = &mcpserver.Pool{}
 				var assemblyChatIDs []string
 				s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
+					if in.MCPPool != s.mcpPool {
+						t.Fatal("chat/resume must inject the service-owned MCP pool")
+					}
 					assemblyChatIDs = append(assemblyChatIDs, telemetry.ChatIDFromContext(ctx))
 					repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(home), layout.SessionRoot(home))
 					if err != nil {

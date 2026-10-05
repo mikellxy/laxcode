@@ -23,7 +23,7 @@ import (
 // 取消驱动在途 Chat 收敛、Cleanup 回收资源。
 const shutdownTimeout = 15 * time.Second
 
-// fatal 用于启动期错误：此时尚未进入服务循环，直接写 stderr 并 os.Exit(1) 安全。
+// fatal 由 Run 在资源清理完成后调用，保留命令失败时的非零退出码。
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
@@ -35,15 +35,21 @@ func fatal(err error) {
 // handler），本函数只负责 server 级配置、路由注册与生命周期管理。router 是
 // main 启动的本地 LLM 路由器，供模型切换端点替换其上游 client。
 func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) {
+	if err := run(router, codeInstance); err != nil {
+		fatal(err)
+	}
+}
+
+func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	s := newServer(homeDir, config.CliConf.Plan)
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
 		traceHandle, err := tracing.NewOTLP(context.Background())
 		if err != nil {
-			fatal(fmt.Errorf("init tracing: %w", err))
+			return fmt.Errorf("init tracing: %w", err)
 		}
 		s.tracer = traceHandle.Tracer
 		defer func() {
@@ -57,7 +63,7 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
 	if err != nil {
-		fatal(fmt.Errorf("init session history repository: %w", err))
+		return fmt.Errorf("init session history repository: %w", err)
 	}
 	defer historyRepo.Close()
 	s.history = historyRepo
@@ -66,7 +72,7 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	s.contextRepo = historyRepo
 	s.evaluations = historyRepo
 	if err := historyRepo.FailActiveEvaluationJobs(context.Background(), "evaluation interrupted by server restart"); err != nil {
-		fatal(fmt.Errorf("reconcile evaluation jobs: %w", err))
+		return fmt.Errorf("reconcile evaluation jobs: %w", err)
 	}
 	mux := http.NewServeMux()
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
@@ -94,13 +100,22 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 
 	listener, err := net.Listen("tcp", config.CliConf.Addr)
 	if err != nil {
-		fatal(fmt.Errorf("listen SSE server on %s: %w", config.CliConf.Addr, err))
+		return fmt.Errorf("listen SSE server on %s: %w", config.CliConf.Addr, err)
 	}
 	actualAddr := listener.Addr().String()
 	srv := &http.Server{Addr: actualAddr, Handler: mux}
 	if err := codeInstance.Publish("http://" + actualAddr); err != nil {
 		_ = listener.Close()
-		fatal(err)
+		return err
+	}
+	// 每条 MCP 连接只在服务启动时初始化，完成后才接收请求。即使连接失败
+	// 也注入空池，避免每个请求重新启动坏 server。连接不绑定任何 chat context。
+	// ponytail: 暂不自动重连；运行中断线需重启服务恢复。
+	s.mcpPool = agentasm.ConnectMCPServers(ctx)
+	defer s.mcpPool.Close()
+	if ctx.Err() != nil {
+		_ = listener.Close()
+		return nil
 	}
 
 	fmt.Printf("LaxCode SSE code listening on %s (data: %s)\n", actualAddr, layout.Root(homeDir))
@@ -116,9 +131,9 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	}()
 
 	// 等待关闭信号或监听致命错误，二者任一即结束服务循环。
+	var serveErr error
 	select {
-	case err := <-errChan:
-		fatal(err)
+	case serveErr = <-errChan:
 	case <-ctx.Done():
 	}
 
@@ -130,4 +145,5 @@ func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 		_ = srv.Close()
 	}
 	s.stopEvaluations()
+	return serveErr
 }

@@ -132,5 +132,7 @@ Streamable HTTP server 可通过 `url` 接入，并用 `headers` 传递 Bearer T
 - `headers` 仅用于 HTTP server，并会注入握手、工具调用、SSE 接收与连接关闭请求；敏感 header 不会转发到跨源重定向地址。
 - 顶层推荐使用 LaxCode 风格的 `mcp_servers`；同时兼容 MCP 生态常见的 `mcpServers` 写法。
 - `enabled` 缺省为 true（写配置即启用）；设为 false 可保留声明但暂停接入。
-- 单个 server 连接失败不会阻塞启动或会话：该 server 被跳过并在 stderr 告警（fail-open）。
+- 后端在启动时连接 MCP server，多个 chat 共享连接，各 Agent 使用独立工具注册表；请求结束不会关闭连接，服务退出时统一关闭。
+- 单个 server 连接失败不会导致启动或会话失败：该 server 被跳过并在 stderr 告警（fail-open）。启动仍需等待连接尝试完成。
+- 配置在服务启动时读取，修改后需要重启。暂不自动重连；启动时连接失败或运行中连接断开后，重启服务恢复。
 - 注意：stdio MCP server 以子进程运行，其行为不受 laxcode 工作目录沙箱约束；HTTP MCP server 会收到配置的凭据和模型发起的工具调用。仅配置你信任的 server，且不要提交真实 Token。

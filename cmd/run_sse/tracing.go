@@ -75,7 +75,7 @@ func (t *chatTrace) consumer(base func(*reactservice.ReactEvent)) func(*reactser
 func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agentasm.Assembled, err error) {
 	ctx, span := telemetry.Start(t.ctx, t.tracer, telemetry.SpanAgentAssemble)
 	defer func() { telemetry.CloseSpan(span, telemetry.WithErr(err)) }()
-	// Resume 必须在 MCP 连接前取得原 chat_id，供装配阶段的日志检索。
+	// Resume 在装配前取得原 chat_id，供装配阶段的日志检索。
 	if telemetry.ChatIDFromContext(ctx) == "" && s.contextRepo != nil {
 		snapshot, loadErr := s.contextRepo.GetRequestContext(ctx, in.SessionID)
 		if loadErr != nil {
@@ -88,6 +88,7 @@ func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agen
 		}
 	}
 	in.Tracer = t.tracer
+	in.MCPPool = s.mcpPool
 	return s.assemble(ctx, in)
 }
 

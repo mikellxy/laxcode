@@ -21,6 +21,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
@@ -37,6 +38,7 @@ const maxBodyBytes = 1 << 20
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
 	tracer             telemetry.Tracer
+	mcpPool            *mcpserver.Pool // 启动时建立，请求只读复用，退出时统一关闭。
 	homeDir            string
 	planMode           bool
 	assemble           func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
