@@ -15,6 +15,7 @@ export const MessageItem = memo(function MessageItem({ message }: { message: Cha
     <div className="avatar">{message.role === "user" ? <UserRound size={17} /> : <Bot size={18} />}</div>
     <div className="message-body">
       <header><strong>{message.role === "user" ? "你" : "LaxCode"}</strong><time>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(message.createdAt))}</time></header>
+      {message.role === "user" && message.chatId && <div className="chat-id" title={message.chatId}>{message.chatId}</div>}
       <ReasoningPanel content={message.reasoningContent ?? ""} streaming={message.reasoningStreaming} />
       {message.content && (message.role === "assistant"
         ? <div className="message-content markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>

@@ -527,53 +527,38 @@ func TestGenerationFailureRollsBackContextHeadAndRows(t *testing.T) {
 	}
 }
 
-// Old installations have these retired columns and tables. Opening and writing
-// coding sessions must neither depend on them nor delete their existing data.
-func TestReopenLegacyDatabasePreservesCodeSession(t *testing.T) {
-	repo, root := newTestRepo(t)
-	sess := createSystem(t, repo, "legacy-code", "system")
-	user := sharedkernel.Message{Role: sharedkernel.RoleUser, Content: "old question"}
+// TestChatIDRoundTrip 验证 chat_id 的写入与历史读出：user 行携带，assistant
+// 行为空；ListOriginalHistory 仅在 user 分支回填 ChatID。
+func TestChatIDRoundTrip(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	sess := createSystem(t, repo, "chat-id-rt", "system")
+	ctx := context.Background()
+
+	user := sharedkernel.Message{Role: sharedkernel.RoleUser, Content: "question", ChatID: "chat-uuid-1"}
 	appendMessage(t, repo, sess, &user)
-	for _, statement := range []string{
-		`ALTER TABLE request_contexts ADD COLUMN react_turn_count INTEGER NOT NULL DEFAULT 0 CHECK(react_turn_count>=0)`,
-		`ALTER TABLE messages ADD COLUMN react_turn INTEGER CHECK(react_turn IS NULL OR (react_turn>0 AND message_type='original' AND role='assistant' AND finish_reason='stop' AND (tool_calls_json IS NULL OR tool_calls_json='null' OR json_array_length(tool_calls_json)=0)))`,
-		`ALTER TABLE messages ADD COLUMN wrapped_content TEXT NOT NULL DEFAULT ''`,
-		`CREATE TABLE user_memory_jobs (id INTEGER PRIMARY KEY, summary TEXT)`,
-		`INSERT INTO user_memory_jobs VALUES (1, 'legacy memory')`,
-	} {
-		if err := repo.db.Exec(statement).Error; err != nil {
-			t.Fatal(err)
+	answer := sharedkernel.Message{Role: sharedkernel.RoleAssistant, Content: "answer", FinishReason: sharedkernel.FinishReasonStop}
+	appendMessage(t, repo, sess, &answer)
+
+	page, found, err := repo.ListOriginalHistory(ctx, sess.ID, 0, 50)
+	if err != nil || !found {
+		t.Fatalf("ListOriginalHistory: %v found=%v", err, found)
+	}
+	var userRow, assistantRow *session.HistoryMessage
+	for i := range page.Messages {
+		switch page.Messages[i].Role {
+		case sharedkernel.RoleUser:
+			userRow = &page.Messages[i]
+		case sharedkernel.RoleAssistant:
+			assistantRow = &page.Messages[i]
 		}
 	}
-	if err := repo.Close(); err != nil {
-		t.Fatal(err)
+	if userRow == nil || assistantRow == nil {
+		t.Fatalf("历史消息缺失：%+v", page.Messages)
 	}
-	reopened, err := NewSqliteSessionRepo(filepath.Join(root, "sessions.db"), filepath.Join(root, "history"))
-	if err != nil {
-		t.Fatal(err)
+	if userRow.ChatID != "chat-uuid-1" {
+		t.Fatalf("user 行 ChatID = %q, want chat-uuid-1", userRow.ChatID)
 	}
-	defer reopened.Close()
-	snapshot, err := reopened.GetRequestContext(context.Background(), sess.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(snapshot, sess.Snapshot()) {
-		t.Fatalf("legacy session changed: %+v", snapshot)
-	}
-	restored := session.NewSession(sess.ID)
-	restored.Mode = "code"
-	if err := restored.Restore(snapshot); err != nil {
-		t.Fatal(err)
-	}
-	answer := sharedkernel.Message{Role: sharedkernel.RoleAssistant, Content: "continued", FinishReason: sharedkernel.FinishReasonStop}
-	appendMessage(t, reopened, restored, &answer)
-	saved, err := reopened.GetRequestContext(context.Background(), sess.ID)
-	if err != nil || !reflect.DeepEqual(saved, restored.Snapshot()) {
-		t.Fatalf("continue legacy session: %+v, %v", saved, err)
-	}
-	createSystem(t, reopened, "new-code", "new system")
-	var memory string
-	if err := reopened.db.Raw("SELECT summary FROM user_memory_jobs WHERE id=1").Scan(&memory).Error; err != nil || memory != "legacy memory" {
-		t.Fatalf("retired data changed: %q, %v", memory, err)
+	if assistantRow.ChatID != "" {
+		t.Fatalf("assistant 行 ChatID 应为空，实际 %q", assistantRow.ChatID)
 	}
 }

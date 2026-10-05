@@ -28,6 +28,7 @@ const (
 // laxcode 自有概念的业务属性键
 const (
 	AttrSessionID     attribute.Key = "laxcode.session_id"
+	AttrChatID        attribute.Key = "laxcode.chat_id"
 	AttrToolName      attribute.Key = "laxcode.tool_name"
 	AttrAgentRole     attribute.Key = "laxcode.agent_role"
 	AttrTurnSeq       attribute.Key = "laxcode.loop_seq"

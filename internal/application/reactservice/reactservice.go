@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
@@ -318,6 +319,10 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 		telemetry.AttrSessionID.String(r.Session.ID),
 		telemetry.AttrAgentRole.String(agentRole),
 	)
+	// chatID 标识本次用户输入轮次：挂在 chat span 上，并随 user 消息持久化，
+	// 使 trace 与 messages.chat_id 可互查。生成必须在 span 之前。
+	chatID := uuid.NewString()
+	chatSpan.SetAttributes(telemetry.AttrChatID.String(chatID))
 	startedAt := time.Now()
 	defer func() {
 		if msg != nil {
@@ -335,6 +340,7 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
 	userMsg := r.Session.BuildUserMessage(p)
+	userMsg.ChatID = chatID
 	candidate, err := r.Session.WithAppendedMessage(&userMsg)
 	if err != nil {
 		return nil, err

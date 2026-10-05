@@ -73,6 +73,7 @@ type messageModel struct {
 	Role             string    `gorm:"column:role;type:varchar(32);not null"`
 	ToolCallID       string    `gorm:"column:tool_call_id;type:varchar(128);not null"`
 	Content          string    `gorm:"column:content;type:text;not null"`
+	ChatID           string    `gorm:"column:chat_id;type:varchar(64);not null;default:''"`
 	DisplayContent   string    `gorm:"column:display_content;type:text;not null;default:''"`
 	CompactContent   string    `gorm:"column:compact_content;type:text;not null;default:''"`
 	ReasoningID      string    `gorm:"column:reasoning_id;type:varchar(255);not null"`
@@ -194,6 +195,11 @@ func (r *SqliteSessionRepo) migrate() error {
 		if !tx.Migrator().HasColumn(&messageModel{}, "display_content") {
 			if err := tx.Exec("ALTER TABLE messages ADD COLUMN display_content TEXT NOT NULL DEFAULT ''").Error; err != nil {
 				return fmt.Errorf("add display content column: %w", err)
+			}
+		}
+		if !tx.Migrator().HasColumn(&messageModel{}, "chat_id") {
+			if err := tx.Exec("ALTER TABLE messages ADD COLUMN chat_id VARCHAR(64) NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add chat id column: %w", err)
 			}
 		}
 		if !tx.Migrator().HasColumn(&requestContextModel{}, "user_id") {
@@ -390,7 +396,7 @@ func (r *SqliteSessionRepo) ListOriginalHistory(ctx context.Context, id string, 
 		found = true
 
 		query := tx.Model(&messageModel{}).
-			Select("seq", "role", "content", "reasoning_content", "display_content", "created_at").
+			Select("seq", "role", "content", "reasoning_content", "display_content", "chat_id", "created_at").
 			Where("session_id = ? AND message_type = ? AND memory_generation = 0 AND role <> ?",
 				id, messageTypeOriginal, sharedkernel.RoleSystem)
 		if beforeSeq != 0 {
@@ -411,6 +417,7 @@ func (r *SqliteSessionRepo) ListOriginalHistory(ctx context.Context, id string, 
 			switch row.Role {
 			case sharedkernel.RoleUser:
 				msg.Content = row.Content
+				msg.ChatID = row.ChatID
 			case sharedkernel.RoleAssistant:
 				msg.Content = row.Content
 				msg.ReasoningContent = row.ReasoningContent
@@ -741,7 +748,7 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 	row := messageModel{
 		SessionID: id, MessageType: messageType, MemoryGeneration: generation,
 		Seq: msg.Seq, OriginalSeqJSON: originalSeq, Role: msg.Role,
-		ToolCallID: msg.ToolCallID, Content: msg.Content, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
+		ToolCallID: msg.ToolCallID, Content: msg.Content, ChatID: msg.ChatID, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
 		CompactContent:   msg.CompactContent,
 		ReasoningContent: msg.ReasoningContent, ToolCallsJSON: toolCalls,
 		FinishReason: msg.FinishReason,
@@ -759,7 +766,7 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 func messagePayload(row messageModel) map[string]any {
 	return map[string]any{
 		"original_seq_json": row.OriginalSeqJSON, "role": row.Role, "tool_call_id": row.ToolCallID,
-		"content": row.Content, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
+		"content": row.Content, "chat_id": row.ChatID, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
 		"compact_content":   row.CompactContent,
 		"reasoning_content": row.ReasoningContent, "tool_calls_json": row.ToolCallsJSON,
 		"finish_reason": row.FinishReason,
@@ -780,7 +787,7 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 		}
 	}
 	msg := sharedkernel.Message{
-		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content, DisplayContent: row.DisplayContent,
+		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content, ChatID: row.ChatID, DisplayContent: row.DisplayContent,
 		CompactContent: row.CompactContent,
 		ReasoningID:    row.ReasoningID, ReasoningContent: row.ReasoningContent,
 		ToolCalls: calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,

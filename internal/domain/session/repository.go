@@ -14,7 +14,9 @@ type HistoryMessage struct {
 	Content          string
 	ReasoningContent string
 	ToolSummary      string
-	CreatedAt        time.Time
+	// ChatID 是 user 消息所属轮次的标识（messages.chat_id）；其余角色为空。
+	ChatID    string
+	CreatedAt time.Time
 }
 
 type HistoryPage struct {

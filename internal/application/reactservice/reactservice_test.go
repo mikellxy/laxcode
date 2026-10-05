@@ -1209,3 +1209,40 @@ func TestNormalizeContextSummaryRejectsUnstructuredOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestChatRecordsChatID 验证 chatID 的两处落地：user 消息持久化
+// messages.chat_id，chat span 携带 laxcode.chat_id 属性，且两者为同一值。
+func TestChatRecordsChatID(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tracing.log")
+	provider, err := filetrace.New(logPath)
+	if err != nil {
+		t.Fatalf("filetrace.New: %v", err)
+	}
+	handle := tracing.New(provider)
+
+	repo := newMemRepo()
+	sess := newTestSession("s-chat-id", repo)
+	llm := &scriptedLLM{responses: []scriptedResp{{msg: assistantMsg("answer")}}}
+	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(handle.Tracer), nil, handle.Tracer)
+	if _, err := svc.Chat(context.Background(), "question"); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var userMsg *sharedkernel.Message
+	for i := range sess.Messages {
+		if sess.Messages[i].Role == sharedkernel.RoleUser {
+			userMsg = &sess.Messages[i]
+		}
+	}
+	if userMsg == nil || userMsg.ChatID == "" {
+		t.Fatalf("user 消息应携带非空 ChatID：%+v", userMsg)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read trace log: %v", err)
+	}
+	if !strings.Contains(string(raw), `"laxcode.chat_id":"`+userMsg.ChatID+`"`) {
+		t.Fatalf("chat span 应携带与消息一致的 chat_id：log=%s", raw)
+	}
+}

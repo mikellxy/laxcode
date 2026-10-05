@@ -346,6 +346,7 @@ type historyMessageDTO struct {
 	Content          string    `json:"content,omitempty"`
 	ReasoningContent string    `json:"reasoning_content,omitempty"`
 	ToolSummary      string    `json:"tool_summary,omitempty"`
+	ChatID           string    `json:"chat_id,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -540,7 +541,7 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		response.Messages[i] = historyMessageDTO{
 			Seq: msg.Seq, Role: msg.Role, Content: msg.Content,
 			ReasoningContent: msg.ReasoningContent, ToolSummary: msg.ToolSummary,
-			CreatedAt: msg.CreatedAt,
+			ChatID: msg.ChatID, CreatedAt: msg.CreatedAt,
 		}
 	}
 	if page.HasMore && len(page.Messages) > 0 {

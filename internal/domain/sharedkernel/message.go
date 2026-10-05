@@ -36,6 +36,10 @@ type Message struct {
 	Artifact    *ArtifactRef `json:"artifact,omitempty"`
 	Role        string       `json:"role"`
 	Content     string       `json:"content"`
+	// ChatID 标识一次用户输入轮次：Chat 入口生成（UUID），随本轮 user 消息
+	// 持久化（messages.chat_id）并挂在 chat span 属性（laxcode.chat_id）上，
+	// 供 trace 与 DB 互查。仅 user 角色填充，其余角色恒为空；老数据为空串。
+	ChatID string `json:"chat_id,omitempty"`
 	// DisplayContent 是面向用户界面的安全展示文本。目前仅用于 tool 消息保存
 	// 执行前摘要；完整工具输出仍只存放在 Content 中并回送模型。
 	DisplayContent string `json:"-"`
