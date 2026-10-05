@@ -6,6 +6,7 @@ import { useWorkspace } from "../hooks/use-workspace";
 import { historyToMessage } from "../types/chat";
 import { SessionTabs } from "../components/session-tabs/SessionTabs";
 import { MessageList } from "../components/message-list/MessageList";
+import { CommandBlock } from "../components/approval/CommandBlock";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { ChatComposer } from "../components/chat-composer/ChatComposer";
 import { ProjectOnboarding } from "../components/project-onboarding/ProjectOnboarding";
@@ -86,8 +87,12 @@ export function App() {
           ? "Token 预算已达到阈值"
           : workspace.stream.approval.kind === "skill_write"
             ? "确认修改全局 Skill"
-            : "确认危险命令"}</h2>
-        <p>{workspace.stream.approval.content}</p>
+            : workspace.stream.approval.kind === "file_path"
+              ? "确认访问工作目录之外的文件"
+              : "确认危险命令"}</h2>
+        {workspace.stream.approval.command
+          ? <><div className="approval-meta"><strong>{workspace.stream.approval.tool}</strong>{workspace.stream.approval.risk && <span>{workspace.stream.approval.risk}</span>}</div><CommandBlock key={workspace.stream.approval.approval_id} command={workspace.stream.approval.command} /></>
+          : <p>{workspace.stream.approval.content}</p>}
         {approvalError && <small className="approval-error">{approvalError}</small>}
         <div className="approval-actions"><button onClick={() => void answer(false)} disabled={approvalSubmitting}>停止</button><button onClick={() => void answer(true)} disabled={approvalSubmitting}>继续</button></div>
       </div></div>}

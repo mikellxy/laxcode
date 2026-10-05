@@ -34,6 +34,29 @@ func NewEditFileTool(workDir string, workFS WorkFS, writeRoots ...string) *EditF
 	return &EditFileTool{WorkDir: workDir, WriteRoots: append([]string(nil), writeRoots...), FS: workFS}
 }
 
+// Confirmation 对沙箱外的编辑目标发起人工确认：resolveWriteTarget 通过
+// （含 symlink 重定向探测）则返回 nil 不打扰；参数类错误交由 Execute 走
+// 标准错误路径（返回 nil, nil）。
+func (e *EditFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
+	var a editFileArgs
+	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Path) == "" {
+		return nil, nil
+	}
+	_, _, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, a.Path)
+	if err == nil {
+		return nil, nil
+	}
+	var ose *OutsideSandboxError
+	if !errors.As(err, &ose) {
+		return nil, nil
+	}
+	real, err := realPath(ose.Requested)
+	if err != nil {
+		return nil, nil
+	}
+	return confirmFileAccess("编辑文件", ose.Requested, real), nil
+}
+
 func (e *EditFileTool) AfterExecInfo(message json.RawMessage) string {
 	return ""
 }
@@ -114,7 +137,13 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	target, displayRoot, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, argsObj.Path)
 	if err != nil {
-		return "", err
+		var ose *OutsideSandboxError
+		if !errors.As(err, &ose) || !GrantAllows(ctx, ose.Requested) {
+			return "", err
+		}
+		// 人工批准的沙箱外访问：放行确认过的目标
+		target = ose.Requested
+		displayRoot = e.WorkDir
 	}
 
 	b, err := e.FS.ReadFile(target)

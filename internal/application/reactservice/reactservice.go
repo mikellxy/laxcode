@@ -81,6 +81,36 @@ type ContextUsage struct {
 	ContextWindow int                          `json:"context_window"`
 }
 
+// ApprovalDetail 是危险 Bash 命令确认的结构化载荷：前端按“工具与风险在上、
+// 命令原文在下”布局渲染，命令支持折叠展开与 shell 语法高亮。
+type ApprovalDetail struct {
+	Tool    string `json:"tool,omitempty"`
+	Risk    string `json:"risk,omitempty"`
+	Command string `json:"command,omitempty"`
+}
+
+// Get* 对 nil 接收者安全：SSE 装配侧无需先判空。
+func (d *ApprovalDetail) GetTool() string {
+	if d == nil {
+		return ""
+	}
+	return d.Tool
+}
+
+func (d *ApprovalDetail) GetRisk() string {
+	if d == nil {
+		return ""
+	}
+	return d.Risk
+}
+
+func (d *ApprovalDetail) GetCommand() string {
+	if d == nil {
+		return ""
+	}
+	return d.Command
+}
+
 type ReactEvent struct {
 	Type             string
 	Content          string                    // 工具执行提示或人工确认说明
@@ -88,6 +118,7 @@ type ReactEvent struct {
 	HumanConfirmChan chan<- string             // 人工确认回复通道，仅 human_in_the_loop 事件携带
 	HumanConfirmKind string                    // 人工确认类别，供前端区分预算和危险命令
 	ContextUsage     *ContextUsage             // 上下文占用快照，仅 tool_call 事件携带
+	Approval         *ApprovalDetail           // 结构化审批载荷，仅 human_in_the_loop 事件携带
 }
 
 // contextUsageSnapshot 读取当前会话窗口占用与模型上下文窗口。WindowToken 已
@@ -216,6 +247,18 @@ func (r *ReActService) requestHumanConfirmation(ctx context.Context, content str
 }
 
 func (r *ReActService) requestHumanConfirmationKind(ctx context.Context, kind, content string) (string, error) {
+	return r.requestHumanConfirmationDetail(ctx, kind, content, nil)
+}
+
+// requestBashCommandConfirmation 发出危险命令确认：content 保留完整人读文案
+// （日志与降级渲染用），Approval 携带结构化字段供前端分块渲染。
+func (r *ReActService) requestBashCommandConfirmation(ctx context.Context, command, reason string) (string, error) {
+	return r.requestHumanConfirmationDetail(ctx, HumanConfirmKindBashCommand,
+		fmt.Sprintf("危险 Bash 命令：%s\n原因：%s\n输入 yes 执行；其他输入取消。", command, reason),
+		&ApprovalDetail{Tool: tools.ToolBash, Risk: reason, Command: command})
+}
+
+func (r *ReActService) requestHumanConfirmationDetail(ctx context.Context, kind, content string, detail *ApprovalDetail) (string, error) {
 	if !r.humanConfirmationEnabled {
 		return "", nil
 	}
@@ -225,6 +268,7 @@ func (r *ReActService) requestHumanConfirmationKind(ctx context.Context, kind, c
 		Content:          content,
 		HumanConfirmChan: confirmChan,
 		HumanConfirmKind: kind,
+		Approval:         detail,
 	})
 	select {
 	case confirmation := <-confirmChan:
@@ -563,7 +607,7 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 		}
 		if json.Unmarshal(call.Arguments, &args) == nil && strings.TrimSpace(args.Command) != "" {
 			if reason, risky := tools.AssessBashRisk(args.Command, r.workDir); risky {
-				answer, err := r.requestHumanConfirmationKind(ctx, HumanConfirmKindBashCommand, fmt.Sprintf("危险 Bash 命令：%s\n原因：%s\n输入 yes 执行；其他输入取消。", args.Command, reason))
+				answer, err := r.requestBashCommandConfirmation(ctx, args.Command, reason)
 				if err != nil {
 					return nil, err
 				}
@@ -582,6 +626,15 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 		}, nil
 	}
 	if confirmation != nil {
+		if !r.humanConfirmationEnabled {
+			// 强制型确认（全局 Skill 写入）无前端即无法批准，维持既有的拒绝终止
+			// 语义；放行型确认（沙箱外文件访问）无前端时按既有沙箱规则失败，
+			// 不终止本轮。
+			if confirmation.Mandatory {
+				return rejectedToolResult(call.ID, "用户未批准敏感工具操作，操作未执行。"), ErrSensitiveToolDeclined
+			}
+			return r.ToolRegistry.Execute(ctx, call), nil
+		}
 		answer, err := r.requestHumanConfirmationKind(ctx, confirmation.Kind, confirmation.Content)
 		if err != nil {
 			return nil, err
@@ -589,6 +642,8 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 		if !strings.EqualFold(strings.TrimSpace(answer), "yes") {
 			return rejectedToolResult(call.ID, "用户未批准敏感工具操作，操作未执行。"), ErrSensitiveToolDeclined
 		}
+		// 批准后把授权目标注入执行 ctx：工具据此放行确认过的越界操作
+		ctx = tools.WithApprovalGrants(ctx, confirmation.Grants)
 	}
 	return r.ToolRegistry.Execute(ctx, call), nil
 }

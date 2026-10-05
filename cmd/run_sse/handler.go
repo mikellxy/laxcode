@@ -604,8 +604,13 @@ func (s *server) eventConsumer(sw *sseWriter, sessionID *string, requestID strin
 			return
 		}
 		id := s.approvals.register(*sessionID, requestID, event.HumanConfirmChan)
+		var detail *reactservice.ApprovalDetail
+		if event.Approval != nil {
+			detail = event.Approval
+		}
 		sw.Send(EventApprovalRequired, ApprovalRequiredData{
 			ApprovalID: id, SessionID: *sessionID, Kind: event.HumanConfirmKind, Content: event.Content,
+			Tool: detail.GetTool(), Risk: detail.GetRisk(), Command: detail.GetCommand(),
 		})
 	}
 }

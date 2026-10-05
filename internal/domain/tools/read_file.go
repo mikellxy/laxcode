@@ -31,6 +31,33 @@ func NewReadFileTool(workDir string, workFS WorkFS, readRoots ...string) *ReadFi
 	return &ReadFileTool{WorkDir: workDir, ReadRoots: append([]string(nil), readRoots...), FS: workFS}
 }
 
+// Confirmation 对沙箱外的读取目标发起人工确认：解析后的真实路径落在
+// workDir 或任一 readRoot 内则返回 nil 不打扰；参数类错误交由 Execute 走
+// 标准错误路径（返回 nil, nil）。
+func (r *ReadFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
+	var a readFileToolArgs
+	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Path) == "" {
+		return nil, nil
+	}
+	requested, _, err := resolveReadTarget(r.WorkDir, r.ReadRoots, a.Path)
+	if err != nil {
+		var ose *OutsideSandboxError
+		if !errors.As(err, &ose) {
+			return nil, nil
+		}
+		requested = ose.Requested
+	}
+	real, err := realPath(requested)
+	if err != nil {
+		// 目标无法定位（不存在等）：交由 Execute 返回标准文件错误
+		return nil, nil
+	}
+	if realPathWithinRoots(real, r.WorkDir, r.ReadRoots) {
+		return nil, nil
+	}
+	return confirmFileAccess("读取文件", requested, real), nil
+}
+
 func (r *ReadFileTool) AfterExecInfo(message json.RawMessage) string {
 	return ""
 }
@@ -95,9 +122,13 @@ func (r *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	pathSafe, root, err := resolveReadTarget(r.WorkDir, r.ReadRoots, argsObj.Path)
 	if err != nil {
-		return "", NewErrorWithPrompt(&FilePathError{}, err)
-	}
-	if err := ensureRealPathWithin(root, pathSafe); err != nil {
+		var ose *OutsideSandboxError
+		if !errors.As(err, &ose) || !GrantAllows(ctx, ose.Requested) {
+			return "", NewErrorWithPrompt(&FilePathError{}, err)
+		}
+		// 人工批准的沙箱外访问：放行确认过的目标
+		pathSafe = ose.Requested
+	} else if err := ensureRealPathWithin(root, pathSafe); err != nil && !GrantAllows(ctx, pathSafe) {
 		return "", NewErrorWithPrompt(&FilePathError{}, err)
 	}
 

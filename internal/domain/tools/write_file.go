@@ -22,6 +22,33 @@ func NewWriteFileTool(workDir string, workFS WorkFS, writeRoots ...string) *Writ
 	return &WriteFileTool{WorkDir: workDir, WriteRoots: append([]string(nil), writeRoots...), FS: workFS}
 }
 
+// Confirmation 对沙箱外的写入目标发起人工确认：resolveWriteTarget 通过
+// （含 symlink 重定向探测）则返回 nil 不打扰；参数类错误交由 Execute 走
+// 标准错误路径（返回 nil, nil）。
+func (w *WriteFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
+	var argsMap map[string]string
+	if err := json.Unmarshal(raw, &argsMap); err != nil {
+		return nil, nil
+	}
+	path := argsMap["path"]
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	_, _, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path)
+	if err == nil {
+		return nil, nil
+	}
+	var ose *OutsideSandboxError
+	if !errors.As(err, &ose) {
+		return nil, nil
+	}
+	real, err := realPath(ose.Requested)
+	if err != nil {
+		return nil, nil
+	}
+	return confirmFileAccess("写入文件", ose.Requested, real), nil
+}
+
 func (w *WriteFileTool) AfterExecInfo(message json.RawMessage) string {
 	return ""
 }
@@ -82,7 +109,13 @@ func (w *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 
 	target, displayRoot, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path)
 	if err != nil {
-		return "", NewErrorWithPrompt(&FilePathError{}, err)
+		var ose *OutsideSandboxError
+		if !errors.As(err, &ose) || !GrantAllows(ctx, ose.Requested) {
+			return "", NewErrorWithPrompt(&FilePathError{}, err)
+		}
+		// 人工批准的沙箱外访问：放行确认过的目标
+		target = ose.Requested
+		displayRoot = w.WorkDir
 	}
 
 	// 写入沙箱内目标路径，父目录不存在时由端口实现自动创建

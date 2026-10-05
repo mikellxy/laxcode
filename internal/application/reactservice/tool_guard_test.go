@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 )
 
 func TestToolCallFingerprintCanonicalizesArguments(t *testing.T) {
@@ -294,4 +297,74 @@ func TestBashRedirectOutsideWorkDirRequiresConfirmation(t *testing.T) {
 	if !errors.Is(err, ErrDangerousCommandDeclined) || len(shell.calls) != 0 || !strings.Contains(result.Output, "未执行") {
 		t.Fatalf("result=%+v err=%v calls=%v", result, err, shell.calls)
 	}
+}
+
+// TestFileOutsideWorkdirConfirmationFlow 覆盖 read/write/edit 沙箱外访问的
+// 审批全链路：确认帧带 file_path kind；批准后授权注入、工具放行；拒绝维持
+// 既有拒绝终止语义；无交互前端时按沙箱规则失败且不终止本轮。
+func TestFileOutsideWorkdirConfirmationFlow(t *testing.T) {
+	workDir, outside := t.TempDir(), t.TempDir()
+
+	newSvc := func(consumer func(*ReactEvent)) *ReActService {
+		repo := newMemRepo()
+		sess := newTestSession("file-confirm", repo)
+		reg := tools.NewDefaultRegistry(nil)
+		reg.Register(tools.NewWriteFileTool(workDir, workfs.New()))
+		return NewReActService(sess, repo, &scriptedLLM{}, nil, reg, consumer, nil)
+	}
+
+	t.Run("批准后放行写入", func(t *testing.T) {
+		target := filepath.Join(outside, "approved.txt")
+		args, _ := json.Marshal(map[string]string{"path": target, "content": "hi"})
+		var kinds []string
+		svc := newSvc(func(event *ReactEvent) {
+			if event.Type == ReActEventTypeHumanInTheLoop {
+				kinds = append(kinds, event.HumanConfirmKind)
+				event.HumanConfirmChan <- "yes"
+			}
+		})
+		result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "w1", Name: "write_file", Arguments: args})
+		if err != nil || result.IsError {
+			t.Fatalf("批准后应执行成功：result=%+v err=%v", result, err)
+		}
+		if len(kinds) != 1 || kinds[0] != tools.FileAccessConfirmationKind {
+			t.Fatalf("确认类别不符：%v", kinds)
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("文件应已写入: %v", err)
+		}
+	})
+
+	t.Run("拒绝终止本轮", func(t *testing.T) {
+		target := filepath.Join(outside, "declined.txt")
+		args, _ := json.Marshal(map[string]string{"path": target, "content": "hi"})
+		svc := newSvc(func(event *ReactEvent) {
+			if event.Type == ReActEventTypeHumanInTheLoop {
+				event.HumanConfirmChan <- "no"
+			}
+		})
+		result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "w1", Name: "write_file", Arguments: args})
+		if !errors.Is(err, ErrSensitiveToolDeclined) || !strings.Contains(result.Output, "未执行") {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Fatalf("拒绝后不应写入文件: %v", statErr)
+		}
+	})
+
+	t.Run("无交互前端按沙箱规则失败不终止本轮", func(t *testing.T) {
+		target := filepath.Join(outside, "no-frontend.txt")
+		args, _ := json.Marshal(map[string]string{"path": target, "content": "hi"})
+		svc := newSvc(nil)
+		result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "w1", Name: "write_file", Arguments: args})
+		if err != nil {
+			t.Fatalf("无前端不应终止本轮: %v", err)
+		}
+		if !result.IsError || !strings.Contains(result.Output, "outside configured write roots") {
+			t.Fatalf("应以沙箱错误结果失败: %+v", result)
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Fatalf("无前端不应写入文件: %v", statErr)
+		}
+	})
 }

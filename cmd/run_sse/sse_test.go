@@ -85,7 +85,7 @@ func TestEventConsumerToolCallCarriesContextUsage(t *testing.T) {
 	rf := newRecordFlusher()
 	rcf := newEventConsumer(newSSEWriter(rf, rf))
 	rcf(&reactservice.ReactEvent{
-		Type:   reactservice.ReActEventTypeToolCall, Content: "bash: ls",
+		Type: reactservice.ReActEventTypeToolCall, Content: "bash: ls",
 		ContextUsage: &reactservice.ContextUsage{
 			WindowToken: sharedkernel.TokenStatistics{TokenInput: 1200, TokenOutput: 340}, ContextWindow: 200_000,
 		},

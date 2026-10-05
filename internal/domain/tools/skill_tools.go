@@ -94,7 +94,7 @@ func (t *CreateSkillTool) Confirmation(ctx context.Context, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	return &ToolConfirmation{Kind: skillConfirmationKind, Content: fmt.Sprintf(
+	return &ToolConfirmation{Kind: skillConfirmationKind, Mandatory: true, Content: fmt.Sprintf(
 		"即将创建全局 Skill %q。\n目标：%s\n文件：%s\n该操作会影响后续 LaxCode 会话。输入 yes 创建；其他输入取消。",
 		name, filepath.Join(t.SkillsRoot, name), strings.Join(skillFileNames(files), "、"))}, nil
 }
@@ -214,7 +214,7 @@ func (t *UpdateSkillTool) Confirmation(ctx context.Context, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	return &ToolConfirmation{Kind: skillConfirmationKind, Content: fmt.Sprintf(
+	return &ToolConfirmation{Kind: skillConfirmationKind, Mandatory: true, Content: fmt.Sprintf(
 		"即将更新全局 Skill %q。\n目标：%s\n变更文件：%s\n精确替换：%d 处\n该操作会影响后续 LaxCode 会话。输入 yes 更新；其他输入取消。",
 		prepared.name, filepath.Join(t.SkillsRoot, prepared.name), strings.Join(prepared.changed, "、"), prepared.replaceOps)}, nil
 }

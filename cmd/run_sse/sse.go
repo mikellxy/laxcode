@@ -78,6 +78,9 @@ type ApprovalRequiredData struct {
 	SessionID  string `json:"session_id"`
 	Kind       string `json:"kind"`
 	Content    string `json:"content"`
+	Tool       string `json:"tool,omitempty"`
+	Risk       string `json:"risk,omitempty"`
+	Command    string `json:"command,omitempty"`
 }
 
 type ContextData struct {
