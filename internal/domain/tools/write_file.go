@@ -73,7 +73,7 @@ func (w *WriteFileTool) Name() string {
 func (w *WriteFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        w.Name(),
-		Description: "写入完整文件内容，创建新文件或覆写已有文件。相对路径严格限制在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。全局 skills 等只读目录不可写；若父目录不存在会自动创建",
+		Description: "写入完整文件内容，创建新文件或覆写已有文件。相对路径在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。工作目录之外的路径会请求用户确认后执行；修改全局 Skill 请使用 create_skill/update_skill 专用工具；若父目录不存在会自动创建",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

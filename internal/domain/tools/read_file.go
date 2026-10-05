@@ -81,7 +81,7 @@ func (r *ReadFileTool) Name() string {
 func (r *ReadFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        r.Name(),
-		Description: "读取文件内容。相对路径限制在工作目录内；系统明确提供的只读目录（如全局 skills）可使用绝对路径。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
+		Description: "读取文件内容。相对路径在工作目录内；系统明确提供的只读目录（如全局 skills）可使用绝对路径。工作目录之外的路径会请求用户确认后执行。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

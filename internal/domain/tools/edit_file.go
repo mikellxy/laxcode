@@ -80,7 +80,7 @@ func (e *EditFileTool) Name() string {
 func (e *EditFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        e.Name(),
-		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。相对路径严格限制在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。全局 skills 等只读目录不可编辑",
+		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。相对路径在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。工作目录之外的路径会请求用户确认后执行",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

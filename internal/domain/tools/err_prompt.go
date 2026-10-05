@@ -62,7 +62,7 @@ type FilePathError struct {
 func (f *FilePathError) AsPrompt() (string, bool) {
 	return buildErrPrompt(errTypeTool,
 		f.Err.Error(),
-		"检查文件路径格式标准，是否逃逸出限制目录，并修正",
+		"检查文件路径格式标准，是否逃逸出限制目录，并修正；若任务确需访问该路径，向用户说明并由其确认放行",
 	), true
 }
 
