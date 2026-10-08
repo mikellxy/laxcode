@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -116,12 +117,11 @@ func (p *OpenApiProvider) Generate(ctx context.Context, msgs []sharedkernel.Mess
 				msg.ReasoningContent += c.Text
 			}
 		case "function_call":
-			c := output.AsFunctionCall()
-			msg.ToolCalls = append(msg.ToolCalls, sharedkernel.ToolCall{
-				ID:        c.CallID,
-				Name:      c.Name,
-				Arguments: json.RawMessage(c.Arguments),
-			})
+			call, err := parseToolCall(output.AsFunctionCall())
+			if err != nil {
+				return msg, err
+			}
+			msg.ToolCalls = append(msg.ToolCalls, call)
 		}
 	}
 
@@ -193,7 +193,17 @@ func (p *OpenApiProvider) buildResponseParams(msgs []sharedkernel.Message, tools
 
 	if len(toolsDefs) > 0 {
 		for _, td := range toolsDefs {
-			tool := responses.ToolParamOfFunction(td.Name, td.Parameters, true)
+			parameters := td.Parameters
+			if len(parameters) == 0 {
+				parameters = map[string]any{"type": "object"}
+			}
+			// MCP 的无参对象 schema 可能省略 properties；百炼要求显式对象，
+			// 火山引擎则要求保留 parameters。复制后补齐，避免改动共享工具定义。
+			if parameters["type"] == "object" && parameters["properties"] == nil {
+				parameters = maps.Clone(parameters)
+				parameters["properties"] = map[string]any{}
+			}
+			tool := responses.ToolParamOfFunction(td.Name, parameters, true)
 			tool.OfFunction.Description = openai.String(td.Description)
 			reqParams.Tools = append(reqParams.Tools, tool)
 		}
@@ -279,11 +289,9 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 					reasoningStarted = false
 				}
 			case "function_call":
-				c := item.AsFunctionCall()
-				tc := sharedkernel.ToolCall{
-					ID:        c.CallID,
-					Name:      c.Name,
-					Arguments: json.RawMessage(c.Arguments),
+				tc, err := parseToolCall(item.AsFunctionCall())
+				if err != nil {
+					return msg, err
 				}
 				msg.ToolCalls = append(msg.ToolCalls, tc)
 				emit(sharedkernel.StreamChunk{Kind: sharedkernel.ChunkToolCall, ToolCall: &tc})
@@ -337,6 +345,13 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 	}
 
 	return msg, nil
+}
+
+func parseToolCall(call responses.ResponseFunctionToolCall) (sharedkernel.ToolCall, error) {
+	if !json.Valid([]byte(call.Arguments)) {
+		return sharedkernel.ToolCall{}, fmt.Errorf("model tool call %q (%s): invalid JSON arguments", call.CallID, call.Name)
+	}
+	return sharedkernel.ToolCall{ID: call.CallID, Name: call.Name, Arguments: json.RawMessage(call.Arguments)}, nil
 }
 
 func hasCompleteUsage(usage responses.ResponseUsage) bool {

@@ -6,11 +6,68 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
+
+func TestProviderToolCallArguments(t *testing.T) {
+	for _, args := range []string{`{"path":"a.go"}`, `{}`, "", `{"path":`, "not JSON"} {
+		for _, streaming := range []bool{false, true} {
+			mode := "batch"
+			if streaming {
+				mode = "stream"
+			}
+			t.Run(mode+"/"+args, func(t *testing.T) {
+				item := map[string]any{"type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": args}
+				response := map[string]any{"status": "completed", "output": []any{item}, "usage": map[string]int{"input_tokens": 10, "output_tokens": 5}}
+				body, _ := json.Marshal(response)
+				contentType := "application/json"
+				if streaming {
+					done, _ := json.Marshal(map[string]any{"type": "response.output_item.done", "item": item})
+					completed, _ := json.Marshal(map[string]any{"type": "response.completed", "response": response})
+					body = []byte("event: response.output_item.done\ndata: " + string(done) + "\n\nevent: response.completed\ndata: " + string(completed) + "\n\n")
+					contentType = "text/event-stream"
+				}
+				client := &http.Client{Transport: providerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{contentType}},
+						Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
+				})}
+				p := NewOpenApiProviderWithStreamGateway("test", "https://upstream.example/v1", "m", "http://127.0.0.1:1/openai/generate_stream")
+				p.httpClient = client
+				p.client = openai.NewClient(option.WithAPIKey("test"), option.WithHTTPClient(client))
+				var msg *sharedkernel.Message
+				var err error
+				var calls int
+				if streaming {
+					msg, err = p.GenerateStream(context.Background(), nil, nil, func(chunk sharedkernel.StreamChunk) {
+						if chunk.Kind == sharedkernel.ChunkToolCall {
+							calls++
+						}
+					})
+				} else {
+					msg, err = p.Generate(context.Background(), nil, nil)
+				}
+				if !json.Valid([]byte(args)) {
+					if err == nil || !strings.Contains(err.Error(), "invalid JSON arguments") || !strings.Contains(err.Error(), "call-1") || !strings.Contains(err.Error(), "read_file") {
+						t.Fatalf("invalid arguments error = %v", err)
+					}
+					if len(msg.ToolCalls) != 0 || calls != 0 {
+						t.Fatal("invalid tool call was returned or emitted")
+					}
+					return
+				}
+				if err != nil || len(msg.ToolCalls) != 1 || string(msg.ToolCalls[0].Arguments) != args || msg.FinishReason != sharedkernel.FinishReasonStop {
+					t.Fatalf("valid tool call: msg=%+v err=%v", msg, err)
+				}
+			})
+		}
+	}
+}
 
 func TestNewOpenApiProvider(t *testing.T) {
 	// 仅验证构造装配，不发起任何网络请求
@@ -31,6 +88,55 @@ func TestProviderContextBudgetAndMaxOutputTokens(t *testing.T) {
 	m := paramsJSON(t, p, nil, nil)
 	if m["max_output_tokens"] != float64(8_192) {
 		t.Fatalf("max_output_tokens must match the reserved budget: %v", m)
+	}
+}
+
+func TestBuildResponseParamsNormalizesNoInputToolSchema(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		schema map[string]any
+	}{
+		{"ov-health", map[string]any{"type": "object", "additionalProperties": false}},
+		{"missing", nil},
+		{"empty", map[string]any{}},
+		{"explicit-empty", map[string]any{"type": "object", "properties": map[string]any{}}},
+		{"with-input", map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before, _ := json.Marshal(test.schema)
+			p := &OpenApiProvider{model: "test"}
+			defs := []sharedkernel.ToolDefinition{{Name: "mcp__ov-mcp-server__health", Parameters: test.schema}}
+			body := paramsJSON(t, p, nil, defs)
+			tool := body["tools"].([]any)[0].(map[string]any)
+			parameters, ok := tool["parameters"].(map[string]any)
+			if !ok || parameters["type"] != "object" {
+				t.Fatalf("parameters must remain an object: %v", tool)
+			}
+			if _, ok := parameters["properties"].(map[string]any); !ok {
+				t.Fatalf("properties must be a JSON object: %v", parameters)
+			}
+			if test.name == "ov-health" && parameters["additionalProperties"] != false {
+				t.Fatal("OV health's additionalProperties constraint was lost")
+			}
+			if test.name == "with-input" && !reflect.DeepEqual(parameters["required"], []any{"query"}) {
+				t.Fatal("required input was changed")
+			}
+			after, _ := json.Marshal(test.schema)
+			if string(before) != string(after) {
+				t.Fatal("request construction mutated the shared schema")
+			}
+			countJSON, err := json.Marshal(p.buildInputTokenCountParams(nil, defs))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var countBody map[string]any
+			if err := json.Unmarshal(countJSON, &countBody); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(body["tools"], countBody["tools"]) {
+				t.Fatal("counting and generation used different tool schemas")
+			}
+		})
 	}
 }
 
@@ -66,7 +172,9 @@ func TestGenerateStreamUsesLocalRouter(t *testing.T) {
 
 	msg, err := p.GenerateStream(context.Background(), []sharedkernel.Message{{
 		Role: sharedkernel.RoleUser, Content: "hello",
-	}}, nil, func(sharedkernel.StreamChunk) {})
+	}}, []sharedkernel.ToolDefinition{{Name: "mcp__ov-mcp-server__health", Parameters: map[string]any{
+		"type": "object", "additionalProperties": false,
+	}}}, func(sharedkernel.StreamChunk) {})
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
@@ -78,6 +186,11 @@ func TestGenerateStreamUsesLocalRouter(t *testing.T) {
 	}
 	if _, ok := received["input"].([]any); !ok {
 		t.Fatalf("input was not forwarded: %v", received)
+	}
+	tool := received["tools"].([]any)[0].(map[string]any)
+	parameters := tool["parameters"].(map[string]any)
+	if properties, ok := parameters["properties"].(map[string]any); !ok || len(properties) != 0 || parameters["additionalProperties"] != false {
+		t.Fatalf("OV health schema was not normalized in the router request: %v", parameters)
 	}
 }
 
