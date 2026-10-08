@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
@@ -34,18 +35,18 @@ func fatal(err error) {
 // cmd/agentasm 组合根按「每请求一次」完成（见
 // handler），本函数只负责 server 级配置、路由注册与生命周期管理。router 是
 // main 启动的本地 LLM 路由器，供模型切换端点替换其上游 client。
-func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) {
-	if err := run(router, codeInstance); err != nil {
+func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) {
+	if err := run(router, codeInstance, models); err != nil {
 		fatal(err)
 	}
 }
 
-func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) error {
+func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	s := newServer(homeDir, config.CliConf.Plan)
+	s := newServer(homeDir, config.CliConf.Plan, models)
 	defer s.oauth.Close()
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
 		traceHandle, err := tracing.NewOTLP(context.Background())
@@ -59,8 +60,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 			_ = traceHandle.Shutdown(ctx)
 		}()
 	}
-	s.tokenBudget = config.CliConf.TokenBudget
-	s.switcher = agentasm.NewModelSwitcher(router, homeDir)
+	s.switcher = agentasm.NewModelSwitcher(router, models)
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
 	if err != nil {

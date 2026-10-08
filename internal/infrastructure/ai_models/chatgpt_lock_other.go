@@ -1,6 +1,6 @@
 //go:build !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !windows
 
-package chatgpt
+package ai_models
 
 import (
 	"errors"

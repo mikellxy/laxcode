@@ -73,7 +73,7 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				stubActiveModel(t)
 				home, work := t.TempDir(), t.TempDir()
-				s := newServer(home, false)
+				s := newTestServer(t, home, false)
 				s.catalog = catalogWithSession("trace-session", work)
 				logPath := layout.TracingLog(home, "trace-session")
 				if shared {

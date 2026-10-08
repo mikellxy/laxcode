@@ -71,9 +71,9 @@ The repository includes prebuilt Windows x64 binaries at `bin/win/laxcode.exe` a
 
 To refresh the Windows artifacts, maintainers can install Go and `pnpm` on macOS and run `make build-windows`. This target rebuilds the frontend and replaces both x64 executables in `bin/win/`.
 
-For manual startup, you can still run `./bin/laxcode -token-budget=100000`. When creating a session, the page supplies the working directory, which is persisted alongside the `session_id` and `mode`. The budget is tracked continuously per `session_id` within the current SSE server process, and a new baseline is established after the server restarts. When a threshold is reached or a dangerous Bash command is encountered, the page pauses the current stream and shows a confirmation dialog.
+When creating a session, the page supplies the working directory, which is persisted alongside the `session_id` and `mode`. When a tool operation requires approval, the page pauses the current stream and shows a confirmation dialog.
 
-The backend starts as a coding SSE service by default. Startup options are `-addr`, `-plan`, and `-token-budget`; the former `-sse`, `-mode`, `-kb`, and `-session` flags have been removed. Create and resume sessions through the Web UI. Existing code sessions remain usable; old RAG sessions cannot be resumed as coding sessions. Retired memory tables in existing databases are left intact.
+The backend starts as a coding SSE service by default. Startup options are `-addr` and `-plan`; the former `-sse`, `-mode`, `-kb`, and `-session` flags have been removed. Create and resume sessions through the Web UI. Existing code sessions remain usable; old RAG sessions cannot be resumed as coding sessions. Retired memory tables in existing databases are left intact.
 
 <a id="agent-session-evaluation"></a>
 
@@ -117,7 +117,7 @@ LaxCode/
 │   │   └── sharedkernel/           # Shared types for messages, tools, SSE, tokens, etc.
 │   └── infrastructure/             # Infrastructure layer: external implementations of domain ports
 │       ├── llmprovider/            # OpenAI Responses protocol adapter
-│       ├── llmrouter/              # OpenAI-compatible streaming gateway adapter
+│       ├── ai_models/              # Model catalog, connections, OAuth and upstream stream clients
 │       ├── sessionrepo/            # SQLite session, history, and evaluation repositories
 │       ├── artifactstore/          # File storage for session artifacts
 │       ├── workfs/                 # Workspace file read/write implementation
@@ -125,7 +125,7 @@ LaxCode/
 │       ├── ripgrep/                # File search and content retrieval adapter
 │       ├── skillrepo/              # Local Skill scanning and loading
 │       ├── skillstore/             # Restricted staging and atomic commits for global Skills
-│       ├── config/                 # Config loading and model catalog
+│       ├── config/                 # Settings inputs, raw provider_list and MCP configuration
 │       ├── layout/                 # User data and session disk layout
 │       └── tracing/                # OpenTelemetry, OTLP, and local tracing implementations
 ├── web/                            # React + TypeScript web client

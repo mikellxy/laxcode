@@ -240,6 +240,7 @@ func TestCompositionRootWiresEveryAdapter(t *testing.T) {
 		modulePath + "internal/infrastructure/artifactstore",
 		modulePath + "internal/infrastructure/sessionrepo",
 		modulePath + "internal/infrastructure/llmprovider",
+		modulePath + "internal/infrastructure/ai_models",
 		modulePath + "internal/infrastructure/workfs",
 		modulePath + "internal/infrastructure/shell",
 		modulePath + "internal/infrastructure/skillrepo",

@@ -37,7 +37,7 @@ func TestCreateEvaluationReturnsBeforeAsyncFailure(t *testing.T) {
 	if err := os.WriteFile(layout.SessionHistory(homeDir, "source-1"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := newServer(homeDir, false)
+	s := newTestServer(t, homeDir, false)
 	s.catalog = repo
 	s.evaluations = repo
 	s.assembleEvaluation = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {

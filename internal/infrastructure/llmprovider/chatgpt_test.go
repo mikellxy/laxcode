@@ -10,19 +10,19 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 )
 
 func TestChatGPTSummaryAndToolContinuation(t *testing.T) {
 	home := t.TempDir()
-	if err := chatgpt.NewStore(home).Save(context.Background(), chatgpt.CredentialRef, chatgpt.Credential{ClientID: "issued", Subject: "user", AccessToken: "oauth-access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{chatgpt.DirectScope}}); err != nil {
+	if err := ai_models.NewStore(home).Save(context.Background(), ai_models.CredentialRef, ai_models.Credential{ClientID: "issued", Subject: "user", AccessToken: "oauth-access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{ai_models.DirectScope}}); err != nil {
 		t.Fatal(err)
 	}
 	previous := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = previous })
 	requests := []map[string]any{}
 	http.DefaultTransport = providerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.String() != chatgpt.BaseURL+"responses" || r.Header.Get("Authorization") != "Bearer oauth-access" {
+		if r.URL.String() != ai_models.BaseURL+"responses" || r.Header.Get("Authorization") != "Bearer oauth-access" {
 			t.Fatalf("wrong OAuth destination or auth")
 		}
 		var body map[string]any
@@ -45,7 +45,7 @@ func TestChatGPTSummaryAndToolContinuation(t *testing.T) {
 		sse.WriteString("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n")
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse.String())), Request: r}, nil
 	})
-	provider := NewOpenApiProvider("", "", "gpt-6.1-sol").WithChatGPT(home, chatgpt.CredentialRef).WithReasoningEffort("high")
+	provider := NewOpenApiProvider("", "", "gpt-6.1-sol").WithChatGPT(home, ai_models.CredentialRef).WithReasoningEffort("high")
 	tools := []sharedkernel.ToolDefinition{{Name: "read_file", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}}
 	messages := []sharedkernel.Message{{Role: sharedkernel.RoleSystem, Content: "rules"}, {Role: sharedkernel.RoleUser, Content: "question"}}
 	message, err := provider.Generate(context.Background(), messages, tools)
@@ -77,7 +77,7 @@ func TestChatGPTSummaryAndToolContinuation(t *testing.T) {
 
 func TestChatGPTReportsUpstreamErrorsAndTruncatedStreams(t *testing.T) {
 	home := t.TempDir()
-	if err := chatgpt.NewStore(home).Save(context.Background(), chatgpt.CredentialRef, chatgpt.Credential{ClientID: "issued", Subject: "user", AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{chatgpt.DirectScope}}); err != nil {
+	if err := ai_models.NewStore(home).Save(context.Background(), ai_models.CredentialRef, ai_models.Credential{ClientID: "issued", Subject: "user", AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{ai_models.DirectScope}}); err != nil {
 		t.Fatal(err)
 	}
 	previous := http.DefaultTransport
@@ -92,7 +92,7 @@ func TestChatGPTReportsUpstreamErrorsAndTruncatedStreams(t *testing.T) {
 		http.DefaultTransport = providerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: test.status, Header: http.Header{"Content-Type": {test.contentType}}, Body: io.NopCloser(strings.NewReader(test.body)), Request: r}, nil
 		})
-		provider := NewOpenApiProvider("", "", "gpt-6.1-sol").WithChatGPT(home, chatgpt.CredentialRef)
+		provider := NewOpenApiProvider("", "", "gpt-6.1-sol").WithChatGPT(home, ai_models.CredentialRef)
 		_, err := provider.Generate(context.Background(), []sharedkernel.Message{{Role: sharedkernel.RoleUser, Content: "test"}}, nil)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("error=%v want=%s", err, test.want)

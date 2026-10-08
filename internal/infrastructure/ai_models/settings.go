@@ -1,4 +1,4 @@
-package config
+package ai_models
 
 import (
 	"encoding/json"
@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -37,7 +36,7 @@ func (in *AddModelInput) normalizeAndValidate() error {
 	in.APIKey = strings.TrimSpace(in.APIKey)
 	in.BaseURL = strings.TrimSpace(in.BaseURL)
 	in.ReasoningEffort = strings.TrimSpace(in.ReasoningEffort)
-	if err := chatgpt.ValidateEffort(in.Model, in.ReasoningEffort); err != nil {
+	if err := ValidateEffort(in.Model, in.ReasoningEffort); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 	}
 	if !validCatalogName(in.Provider) || in.Provider == envProviderName {
@@ -61,7 +60,9 @@ func (in *AddModelInput) normalizeAndValidate() error {
 
 // AddModelToSettings 将模型原子写入 ${home}/.laxcode/settings.json，并在写入
 // 成功后更新当前进程的模型目录。调用方必须与模型切换共用同一把写锁。
-func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error) {
+func (m *Manager) AddModelToSettings(input AddModelInput) (ModelConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := input.normalizeAndValidate(); err != nil {
 		return ModelConfig{}, err
 	}
@@ -71,36 +72,31 @@ func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error
 		Limit:           &ModelLimit{Context: input.ContextWindow, Output: input.MaxOutputTokens},
 	}
 
-	runtimeProviders, err := appendModelToProviders(EnvAndFileConf.ProviderList, input, model)
+	runtimeProviders, err := appendModelToProviders(m.state.providers, input, model)
 	if err != nil {
 		return ModelConfig{}, err
 	}
-	runtimeCandidate := EnvAndFileConf
-	runtimeCandidate.ProviderList = runtimeProviders
+	runtimeCandidate := m.state
+	runtimeCandidate.providers = runtimeProviders
 	// 此前没有任何模型（延迟配置场景）：新模型自动成为活跃模型，维持
 	// 「目录非空 ⟹ 活跃模型可解析」的校验不变式。
-	activated := strings.TrimSpace(runtimeCandidate.Model) == ""
+	activated := strings.TrimSpace(runtimeCandidate.active.Ref) == ""
 	if activated {
-		runtimeCandidate.Model = modelRef(input.Provider, model.ModelName)
+		runtimeCandidate.active.Ref = modelRef(input.Provider, model.ModelName)
 	}
-	if err := runtimeCandidate.validateModelCatalog(); err != nil {
+	if err := runtimeCandidate.initializeSelection(); err != nil {
 		return ModelConfig{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 	}
 
-	settingsPath := layout.UserSettings(homeDir)
-	raw, err := os.ReadFile(settingsPath)
-	var document map[string]json.RawMessage
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &document); err != nil {
-			return ModelConfig{}, fmt.Errorf("parse settings: %w", err)
+	if !activated {
+		if err := runtimeCandidate.setActiveModel(m.state.active.Ref, m.state.active.ReasoningEffort); err != nil {
+			return ModelConfig{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 		}
-	case errors.Is(err, os.ErrNotExist):
-		// 首次使用尚无 settings.json：以空文档起步，provider_list 由下方
-		// 写入步骤补齐（等价于种子 {"provider_list": []} 后追加）。
-		document = map[string]json.RawMessage{}
-	default:
-		return ModelConfig{}, fmt.Errorf("read settings: %w", err)
+	}
+	settingsPath := layout.UserSettings(m.homeDir)
+	document, err := readSettings(settingsPath)
+	if err != nil {
+		return ModelConfig{}, err
 	}
 	var diskProviders []ProviderConfig
 	if providerJSON, ok := document["provider_list"]; ok {
@@ -116,6 +112,9 @@ func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error
 	if err != nil {
 		return ModelConfig{}, fmt.Errorf("encode provider list: %w", err)
 	}
+	if activated {
+		document["model"], _ = json.Marshal(runtimeCandidate.active.Ref)
+	}
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return ModelConfig{}, fmt.Errorf("encode settings: %w", err)
@@ -127,12 +126,10 @@ func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error
 	if err := writeSettingsAtomic(settingsPath, encoded); err != nil {
 		return ModelConfig{}, err
 	}
-	EnvAndFileConf.ProviderList = runtimeProviders
-	if activated {
-		if err := EnvAndFileConf.setActiveModel(runtimeCandidate.Model); err != nil {
-			return ModelConfig{}, fmt.Errorf("activate added model: %w", err)
-		}
-	}
+	m.state = runtimeCandidate
+	// The returned configuration must not expose a pointer into the live catalog.
+	limit := *model.Limit
+	model.Limit = &limit
 	return model, nil
 }
 
@@ -165,6 +162,36 @@ func appendModelToProviders(providers []ProviderConfig, input AddModelInput, mod
 func credentialsEqual(provider *ProviderConfig, input AddModelInput) bool {
 	return provider.AuthType != "oauth" && strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
 		strings.TrimRight(strings.TrimSpace(provider.OpenaiBaseUrl), "/") == strings.TrimRight(input.BaseURL, "/")
+}
+
+// readSettings retains unrelated JSON fields and accepts legacy uppercase model
+// keys. Writes normalize only the keys owned by this package.
+func readSettings(path string) (map[string]json.RawMessage, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]json.RawMessage{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read settings: %w", err)
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parse settings: %w", err)
+	}
+	if document == nil {
+		return nil, errors.New("settings must be a JSON object")
+	}
+	for key, value := range document {
+		for _, canonical := range []string{"provider_list", "model"} {
+			if key != canonical && strings.EqualFold(key, canonical) {
+				if _, exists := document[canonical]; !exists {
+					document[canonical] = value
+				}
+				delete(document, key)
+			}
+		}
+	}
+	return document, nil
 }
 
 func writeSettingsAtomic(path string, content []byte) (err error) {

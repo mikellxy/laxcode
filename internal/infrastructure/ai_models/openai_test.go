@@ -1,9 +1,8 @@
-package llmrouter
+package ai_models
 
 import (
 	"context"
 	"encoding/json"
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"io"
 	"net/http"
 	"strings"
@@ -82,7 +81,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestOpenAIStreamClientRejectsInvalidRequest(t *testing.T) {
-	client := NewOpenAIStreamClient("key", "http://127.0.0.1:1", "model")
+	client := newOpenAIStreamClient("key", "http://127.0.0.1:1", "model")
 	if _, err := client.GenerateStream(context.Background(), []byte(`{"input":`)); err == nil {
 		t.Fatal("invalid request must fail before calling upstream")
 	}
@@ -90,7 +89,7 @@ func TestOpenAIStreamClientRejectsInvalidRequest(t *testing.T) {
 
 func TestChatGPTRouterRefreshesAndUsesConfiguredModelAndEffort(t *testing.T) {
 	home := t.TempDir()
-	if err := chatgpt.NewStore(home).Save(context.Background(), chatgpt.CredentialRef, chatgpt.Credential{ClientID: "issued", Subject: "user", AccessToken: "expired", RefreshToken: "refresh", ExpiresAt: time.Now(), Scopes: []string{chatgpt.DirectScope}}); err != nil {
+	if err := NewStore(home).Save(context.Background(), CredentialRef, Credential{ClientID: "issued", Subject: "user", AccessToken: "expired", RefreshToken: "refresh", ExpiresAt: time.Now(), Scopes: []string{DirectScope}}); err != nil {
 		t.Fatal(err)
 	}
 	previous := http.DefaultTransport
@@ -99,10 +98,10 @@ func TestChatGPTRouterRefreshesAndUsesConfiguredModelAndEffort(t *testing.T) {
 	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host == "auth.openai.com" {
 			refreshes++
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"scope":"chatgpt.tokens.use.direct","token_type":"Bearer"}`)), Request: r}, nil
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"scope":"tokens.use.direct","token_type":"Bearer"}`)), Request: r}, nil
 		}
 		calls++
-		if r.URL.String() != chatgpt.BaseURL+"responses" || r.Header.Get("Authorization") != "Bearer fresh" {
+		if r.URL.String() != BaseURL+"responses" || r.Header.Get("Authorization") != "Bearer fresh" {
 			t.Fatal("OAuth router used stale credentials or wrong endpoint")
 		}
 		var body map[string]any
@@ -114,7 +113,7 @@ func TestChatGPTRouterRefreshesAndUsesConfiguredModelAndEffort(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")), Request: r}, nil
 	})
-	client := NewChatGPTStreamClient(home, chatgpt.CredentialRef, "gpt-6.1-sol").WithReasoningEffort("high")
+	client := newChatGPTStreamClient(home, CredentialRef, "gpt-6.1-sol").WithReasoningEffort("high")
 	for range 2 {
 		stream, err := client.GenerateStream(context.Background(), []byte(`{"model":"caller-model","reasoning":{"effort":"low"},"input":[],"max_output_tokens":100}`))
 		if err != nil {

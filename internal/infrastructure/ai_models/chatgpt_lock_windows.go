@@ -1,6 +1,6 @@
 //go:build windows
 
-package chatgpt
+package ai_models
 
 import (
 	"errors"

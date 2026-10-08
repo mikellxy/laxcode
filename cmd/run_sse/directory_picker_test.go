@@ -120,7 +120,7 @@ func TestPickNativeDirectoryOutcomes(t *testing.T) {
 }
 
 func TestHandlePickDirectory(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.pickDirectory = func(context.Context) (string, error) { return "/Users/test/project/", nil }
 
 	response := httptest.NewRecorder()
@@ -145,7 +145,7 @@ func TestHandlePickDirectory(t *testing.T) {
 }
 
 func TestHandlePickDirectoryRejectsConcurrentPicker(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	s.pickDirectory = func(context.Context) (string, error) {

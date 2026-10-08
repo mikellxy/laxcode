@@ -71,9 +71,9 @@ Windows PowerShell 直接运行启动脚本：
 
 维护者更新 Windows 产物时，可在 macOS 安装 Go 和 `pnpm` 后执行 `make build-windows`。该目标会重新构建前端，并覆盖 `bin/win/` 中的两个 x64 程序。
 
-手动启动时仍可使用 `./bin/laxcode -token-budget=100000`。新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。预算按当前 SSE 服务进程中的 `session_id` 连续计算，服务重启后重新建立基线。达到阈值或遇到危险 Bash 命令时，页面会暂停当前流并显示确认框。
+新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。遇到需要确认的工具操作时，页面会暂停当前流并显示确认框。
 
-后端默认启动 coding SSE 服务，仅保留 `-addr`、`-plan`、`-token-budget` 启动参数。原 `-sse`、`-mode`、`-kb`、`-session` 参数已移除；会话通过 Web UI 创建和续接。已有 code 会话仍可使用，旧 RAG 会话不能作为 coding 会话续接；已有数据库中的遗留记忆表保留原数据。
+后端默认启动 coding SSE 服务，仅保留 `-addr`、`-plan` 启动参数。原 `-sse`、`-mode`、`-kb`、`-session` 参数已移除；会话通过 Web UI 创建和续接。已有 code 会话仍可使用，旧 RAG 会话不能作为 coding 会话续接；已有数据库中的遗留记忆表保留原数据。
 
 <a id="agent-session-evaluation"></a>
 
@@ -117,7 +117,7 @@ LaxCode/
 │   │   └── sharedkernel/           # 消息、工具、SSE 与 token 等共享类型
 │   └── infrastructure/             # 基础设施层：领域端口的外部实现
 │       ├── llmprovider/             # OpenAI Responses 协议适配
-│       ├── llmrouter/               # OpenAI 兼容流式网关适配
+│       ├── ai_models/               # 模型目录、连接、OAuth 鉴权与上游流式 client
 │       ├── sessionrepo/             # SQLite 会话、历史与评估任务仓储
 │       ├── artifactstore/           # 会话产物的文件存储
 │       ├── workfs/                  # 工作区文件读写实现
@@ -125,7 +125,7 @@ LaxCode/
 │       ├── ripgrep/                 # 文件搜索与内容检索适配
 │       ├── skillrepo/               # 本地 Skill 扫描与加载
 │       ├── skillstore/              # 全局 Skill 包的受限暂存与原子提交
-│       ├── config/                  # 配置加载与模型目录
+│       ├── config/                  # 配置输入、原始 provider_list 与 MCP 配置
 │       ├── layout/                  # 用户数据与会话磁盘布局
 │       └── tracing/                 # OpenTelemetry、OTLP 与本地追踪实现
 ├── web/                             # React + TypeScript Web 客户端

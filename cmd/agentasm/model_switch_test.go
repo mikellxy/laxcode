@@ -2,96 +2,81 @@ package agentasm
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
-	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 )
 
-type recordingRouter struct {
-	clients []domainrouter.StreamClient
-}
+type recordingRouter struct{ clients []domainrouter.StreamClient }
 
 func (r *recordingRouter) ReplaceClient(client domainrouter.StreamClient) {
 	r.clients = append(r.clients, client)
 }
 
-func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{
-		{
-			ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1",
-			ModelList: []config.ModelConfig{{ModelName: "model-1"}},
-		},
-		{
-			ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1",
-			ModelList: []config.ModelConfig{{
-				ModelName: "model-2",
-				Limit:     &config.ModelLimit{Context: 1_048_576, Output: 131_072},
-			}},
-		},
-	}
-	if err := config.SetActiveModel("first:model-1"); err != nil {
+func switchTestModels(t *testing.T) *ai_models.Manager {
+	t.Helper()
+	raw, err := json.Marshal([]ai_models.ProviderConfig{
+		{ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "model-1"}}},
+		{ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "model-2", Limit: &ai_models.ModelLimit{Context: 1_048_576, Output: 131_072}}}},
+		{ProviderName: "summary", OpenaiApiKey: "summary-key", OpenaiBaseUrl: "https://summary.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "summary-model", Limit: &ai_models.ModelLimit{Context: 128_000, Output: 4096}}}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	config.EnvAndFileConf.OpenaiContextWindow = 128_000
-	config.EnvAndFileConf.OpenaiMaxOutputTokens = 16_384
-	config.EnvAndFileConf.CompactionOpenaiApiKey = "summary-key"
-	config.EnvAndFileConf.CompactionOpenaiBaseUrl = "https://summary.example/v1"
-	config.EnvAndFileConf.CompactionOpenaiModel = "summary-model"
-	config.EnvAndFileConf.CompactionOpenaiContextWindow = 128_000
-	config.EnvAndFileConf.CompactionOpenaiMaxOutputTokens = 4_096
-	config.EnvAndFileConf.LlmRouterURL = "http://127.0.0.1:1/openai/generate_stream"
+	models, err := ai_models.New(t.TempDir(), raw, ai_models.Options{Model: "first:model-1", CompactionModel: "summary:summary-model", ContextWindow: 128_000, MaxOutputTokens: 16_384})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return models
+}
 
+func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
+	models := switchTestModels(t)
 	router := &recordingRouter{}
-	assembled, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
+	assembled, err := Assemble(context.Background(), Input{Models: models, Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer assembled.Cleanup()
 	previousClient := assembled.Service.LLMClient
 	if budget := previousClient.ContextBudget(); budget.ContextWindow != 128_000 || budget.ReservedOutputTokens != 16_384 {
-		t.Fatalf("初始 provider 预算应回退全局窗口配置：%+v", budget)
+		t.Fatalf("initial budget: %+v", budget)
 	}
-
-	if err := NewModelSwitcher(router).SwitchModel("second:model-2"); err != nil {
+	if err := NewModelSwitcher(router, models).SwitchModel("second:model-2"); err != nil {
 		t.Fatal(err)
 	}
 	if len(router.clients) != 1 {
-		t.Fatalf("router replacements=%d，期望 1", len(router.clients))
+		t.Fatalf("router replacements=%d", len(router.clients))
 	}
-	if assembled.Service.LLMClient != previousClient {
-		t.Fatal("existing request provider changed")
+	if assembled.Service.LLMClient != previousClient || previousClient.ContextBudget().ContextWindow != 128_000 {
+		t.Fatal("existing request provider or limits changed")
 	}
-	next, err := Assemble(context.Background(), Input{Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
+	next, err := Assemble(context.Background(), Input{Models: models, Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer next.Cleanup()
 	if budget := next.Service.LLMClient.ContextBudget(); budget.ContextWindow != 1_048_576 || budget.ReservedOutputTokens != 131_072 {
-		t.Fatalf("切换后 provider 预算未取新模型的 limit：%+v", budget)
+		t.Fatalf("next budget: %+v", budget)
 	}
-	if config.EnvAndFileConf.Model != "second:model-2" ||
-		config.EnvAndFileConf.OpenaiApiKey != "key-2" ||
-		config.EnvAndFileConf.OpenaiModel != "model-2" {
-		t.Fatalf("运行时配置未切换：%+v", config.EnvAndFileConf)
+	if budget := next.Service.ContextSummaryLLMClient.ContextBudget(); budget.ContextWindow != 128_000 || budget.ReservedOutputTokens != 4096 {
+		t.Fatalf("explicit summary model changed: %+v", budget)
+	}
+	if model := models.Active(); model.Ref != "second:model-2" || model.OpenaiApiKey != "key-2" || model.UpstreamModel != "model-2" {
+		t.Fatalf("active model: %+v", model)
 	}
 }
 
 func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{{
-		ProviderName: "p", OpenaiApiKey: "key", OpenaiBaseUrl: "https://example.com/v1",
-		ModelList: []config.ModelConfig{{ModelName: "model"}},
-	}}
+	models := switchTestModels(t)
 	router := &recordingRouter{}
-	switcher := NewModelSwitcher(router)
+	switcher := NewModelSwitcher(router, models)
 	switcher.RLock()
 	done := make(chan error, 1)
-	go func() { done <- switcher.SwitchModel("p:model") }()
+	go func() { done <- switcher.SwitchModel("second:model-2") }()
 	select {
 	case err := <-done:
 		switcher.RUnlock()
@@ -106,5 +91,19 @@ func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("switch did not complete after request ended")
+	}
+}
+
+func TestFailedModelSwitchKeepsSelectionAndRouter(t *testing.T) {
+	models := switchTestModels(t)
+	router := &recordingRouter{}
+	before := models.Active()
+	for _, ref := range []string{"missing:model", "bad-reference"} {
+		if err := NewModelSwitcher(router, models).SwitchModel(ref); err == nil {
+			t.Fatal("invalid switch succeeded")
+		}
+	}
+	if models.Active() != before || len(router.clients) != 0 {
+		t.Fatal("failed switch changed runtime state")
 	}
 }

@@ -20,8 +20,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
-	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
@@ -46,8 +45,6 @@ type server struct {
 	assembleEvaluation func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
 	locks              *sessionLocks
 	approvals          *approvalBroker
-	budgets            *budgetStates
-	tokenBudget        int
 	history            session.SessionHistoryRepository
 	contextRepo        session.SessionRepository
 	catalog            session.SessionCatalogRepository
@@ -60,8 +57,9 @@ type server struct {
 	evaluationCancel   context.CancelFunc
 	evaluationWG       sync.WaitGroup
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
+	models           *ai_models.Manager
 	switcher         *agentasm.ModelSwitcher
-	oauth            *chatgpt.LoginManager
+	oauth            *ai_models.LoginManager
 	oauthInstallMu   sync.Mutex
 	oauthInstalledID string
 }
@@ -317,7 +315,7 @@ type directoryPickerResponse struct {
 func (s *server) modelMissing() bool {
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
-	return strings.TrimSpace(config.EnvAndFileConf.Model) == ""
+	return strings.TrimSpace(s.models.Active().Ref) == ""
 }
 
 func (s *server) handlePickDirectory(w http.ResponseWriter, r *http.Request) {
@@ -393,25 +391,25 @@ type addModelRequest struct {
 	MaxOutputTokens int    `json:"max_output_tokens"`
 }
 
-// handleListModels 处理 GET /api/models：返回 EnvAndFileConf.ProviderList 的
+// handleListModels 处理 GET /api/models：返回 ai_models.Manager.List() 的
 // 脱敏视图（各 provider 的 ModelList）与当前生效模型引用，供客户端做模型
 // 选择、切换与展示，不暴露凭据与端点。
 func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 	s.switcher.RLock()
-	providers := config.EnvAndFileConf.ProviderList
+	providers := s.models.List()
 	response := providerListModelDTO{
-		CurrentReasoningEffort: config.EnvAndFileConf.ReasoningEffort,
-		CurrentModel:           config.EnvAndFileConf.Model,
+		CurrentReasoningEffort: s.models.Active().ReasoningEffort,
+		CurrentModel:           s.models.Active().Ref,
 		Providers:              make([]providerModelsDTO, len(providers)),
 	}
 	for i, provider := range providers {
 		models := make([]modelConfigDTO, len(provider.ModelList))
 		for j, model := range provider.ModelList {
 			models[j] = modelConfigDTO{
-				DisplayName: model.DisplayName, ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: chatgpt.ReasoningEfforts(model.ModelName),
+				DisplayName: model.DisplayName, ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: model.ReasoningEfforts,
 				ModelName:     model.ModelName,
 				UpstreamModel: model.UpstreamModel,
-				ModelRef:      provider.ProviderName + ":" + model.ModelName,
+				ModelRef:      model.Ref,
 			}
 		}
 		response.Providers[i] = providerModelsDTO{AuthType: provider.AuthType, ModelList: models}
@@ -433,10 +431,10 @@ func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.switcher.Lock()
 	// 延迟配置场景：此前没有任何模型，AddModelToSettings 会把新模型自动
-	// 激活为运行时配置；路由器上游 client 仍指向空配置，需在同一把写锁内
+	// 激活为运行时配置；路由器尚无上游 client，需在同一把写锁内
 	// 同步替换，保证紧随其后的 /chat 即可用。
-	hadActiveModel := strings.TrimSpace(config.EnvAndFileConf.Model) != ""
-	model, err := config.AddModelToSettings(s.homeDir, config.AddModelInput{
+	hadActiveModel := strings.TrimSpace(s.models.Active().Ref) != ""
+	model, err := s.models.AddModelToSettings(ai_models.AddModelInput{
 		ReasoningEffort: req.ReasoningEffort,
 		Provider:        req.Provider, Model: req.Model, APIKey: req.APIKey, BaseURL: req.BaseURL,
 		ContextWindow: req.ContextWindow, MaxOutputTokens: req.MaxOutputTokens,
@@ -451,9 +449,9 @@ func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
 	s.switcher.Unlock()
 	if err != nil {
 		switch {
-		case errors.Is(err, config.ErrInvalidModelConfig):
+		case errors.Is(err, ai_models.ErrInvalidModelConfig):
 			writeJSONError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, config.ErrModelAlreadyExists), errors.Is(err, config.ErrProviderCredentialsConflict):
+		case errors.Is(err, ai_models.ErrModelAlreadyExists), errors.Is(err, ai_models.ErrProviderCredentialsConflict):
 			writeJSONError(w, http.StatusConflict, err.Error())
 		default:
 			writeJSONError(w, http.StatusInternalServerError, "save model failed: "+err.Error())
@@ -500,7 +498,7 @@ func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.switcher.Lock()
 	err := s.switcher.SwitchModelLocked(provider+":"+model, effort...)
-	currentEffort := config.EnvAndFileConf.ReasoningEffort
+	currentEffort := s.models.Active().ReasoningEffort
 	s.switcher.Unlock()
 	if err != nil {
 		if errors.Is(err, agentasm.ErrRouterUnavailable) {
@@ -593,16 +591,17 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.switcher.RLock()
-	contextWindow, _ := config.ActiveModelBudget()
+	contextWindow := s.models.Active().ContextWindow
 	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(ContextData{WindowToken: contextState.WindowToken, ContextWindow: contextWindow})
 }
 
-func newServer(homeDir string, planMode bool) *server {
+func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server {
 	evaluationCtx, evaluationCancel := context.WithCancel(context.Background())
 	return &server{
-		oauth:         chatgpt.NewLoginManager(homeDir),
+		models:        models,
+		oauth:         ai_models.NewLoginManager(homeDir),
 		homeDir:       homeDir,
 		planMode:      planMode,
 		pickDirectory: pickNativeDirectory,
@@ -616,8 +615,7 @@ func newServer(homeDir string, planMode bool) *server {
 		evaluationCtx:      evaluationCtx,
 		evaluationCancel:   evaluationCancel,
 		approvals:          newApprovalBroker(),
-		budgets:            newBudgetStates(),
-		switcher:           agentasm.NewModelSwitcher(nil, homeDir),
+		switcher:           agentasm.NewModelSwitcher(nil, models),
 	}
 }
 
@@ -640,23 +638,6 @@ func (s *server) eventConsumer(sw *sseWriter, sessionID *string, requestID strin
 			ApprovalID: id, SessionID: *sessionID, Kind: event.HumanConfirmKind, Content: event.Content,
 			Tool: detail.GetTool(), Risk: detail.GetRisk(), Command: detail.GetCommand(),
 		})
-	}
-}
-
-func (s *server) configureBudget(assembled *agentasm.Assembled) {
-	if s.tokenBudget <= 0 {
-		return
-	}
-	if state, ok := s.budgets.get(assembled.Session.ID); ok {
-		assembled.Service.RestoreTokenBudget(state)
-	} else {
-		assembled.Service.SetTokenBudget(s.tokenBudget)
-	}
-}
-
-func (s *server) saveBudget(assembled *agentasm.Assembled) {
-	if s.tokenBudget > 0 {
-		s.budgets.put(assembled.Session.ID, assembled.Service.TokenBudgetState())
 	}
 }
 
@@ -767,8 +748,6 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer assembled.Cleanup()
 	activeSessionID = assembled.Session.ID
-	s.configureBudget(assembled)
-	defer s.saveBudget(assembled)
 
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
@@ -776,7 +755,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	msg, err := assembled.Service.Chat(ctx, req.Task)
 	trace.err = err
 	if err != nil {
-		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) || errors.Is(err, reactservice.ErrTokenBudgetDeclined) {
+		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) {
 			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
 			return
 		}
@@ -881,8 +860,6 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer assembled.Cleanup()
-	s.configureBudget(assembled)
-	defer s.saveBudget(assembled)
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
 	// 恢复同一用户输入；老数据没有 chat_id 时保持缺省，不生成新的 ID。
@@ -897,7 +874,7 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) || errors.Is(err, reactservice.ErrTokenBudgetDeclined) {
+		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) {
 			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
 			return
 		}

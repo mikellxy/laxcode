@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -62,199 +61,6 @@ func writeSettings(t *testing.T, home string, content string) {
 	}
 }
 
-func TestParseEnvAndFileFromEnv(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	setEnvModel(t, "gpt-env")
-
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
-	}
-	if EnvAndFileConf.OpenaiApiKey != "sk-env-key" {
-		t.Errorf("api key 应从环境读取，实际 %q", EnvAndFileConf.OpenaiApiKey)
-	}
-	if EnvAndFileConf.OpenaiBaseUrl != "https://env.example.com/v1" ||
-		EnvAndFileConf.OpenaiModel != "gpt-env" {
-		t.Errorf("base url/model 应从环境读取，实际 %+v", EnvAndFileConf)
-	}
-	if EnvAndFileConf.OpenaiContextWindow != DefaultContextWindow ||
-		EnvAndFileConf.OpenaiMaxOutputTokens != DefaultMaxOutputTokens {
-		t.Errorf("context budget defaults not applied: %+v", EnvAndFileConf)
-	}
-	if EnvAndFileConf.LlmRouterAddr != DefaultLLMRouterAddr {
-		t.Errorf("llm router default addr = %q", EnvAndFileConf.LlmRouterAddr)
-	}
-	if EnvAndFileConf.Model != "env_provider:env_model" {
-		t.Errorf("环境模型引用=%q", EnvAndFileConf.Model)
-	}
-	resolved, err := ResolveModel("env_provider:env_model")
-	if err != nil || resolved.UpstreamModel != "gpt-env" {
-		t.Fatalf("环境模型解析=%+v, %v", resolved, err)
-	}
-}
-
-func TestParseProviderModelCatalog(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model": "openai:gpt-4.1",
-		"provider_list": [
-			{"provider_name":"openai","openai_api_key":"sk-o","openai_base_url":"https://o.example/v1","model_list":[{"model_name":"gpt-4o"},{"model_name":"gpt-4.1"}]},
-			{"provider_name":"deepseek","openai_api_key":"sk-d","openai_base_url":"https://d.example/v1","model_list":[{"model_name":"chat"}]}
-		]
-	}`)
-
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if EnvAndFileConf.OpenaiApiKey != "sk-o" || EnvAndFileConf.OpenaiModel != "gpt-4.1" {
-		t.Fatalf("当前模型派生配置错误：%+v", EnvAndFileConf)
-	}
-	if err := SetActiveModel("deepseek:chat"); err != nil {
-		t.Fatal(err)
-	}
-	if EnvAndFileConf.OpenaiBaseUrl != "https://d.example/v1" || EnvAndFileConf.OpenaiModel != "chat" {
-		t.Fatalf("切换后配置错误：%+v", EnvAndFileConf)
-	}
-	if _, err := ResolveModel("deepseek:gpt-4.1"); err == nil {
-		t.Fatal("不得跨 provider 组合模型")
-	}
-}
-
-func TestParseProviderModelCatalogRejectsDuplicateNames(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model":"p:m",
-		"provider_list":[
-			{"provider_name":"p","openai_api_key":"k","openai_base_url":"https://a","model_list":[{"model_name":"m"}]},
-			{"provider_name":"p","openai_api_key":"k","openai_base_url":"https://b","model_list":[{"model_name":"m"}]}
-		]
-	}`)
-	if err := ParseEnvAndFile(); err == nil {
-		t.Fatal("重复 PROVIDER_NAME 应报错")
-	}
-}
-
-func TestResolveModelBudgetPrefersModelLimit(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model": "p:limited",
-		"provider_list": [{
-			"provider_name": "p",
-			"openai_api_key": "sk-p",
-			"openai_base_url": "https://p.example/v1",
-			"model_list": [
-				{"model_name": "limited", "limit": {"context": 1048576, "output": 131072}},
-				{"model_name": "plain"}
-			]
-		}]
-	}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	limited, err := ResolveModel("p:limited")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if limited.ContextWindow != 1_048_576 || limited.MaxOutputTokens != 131_072 {
-		t.Fatalf("模型级 limit 未生效：%+v", limited)
-	}
-	plain, err := ResolveModel("p:plain")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plain.ContextWindow != DefaultContextWindow || plain.MaxOutputTokens != DefaultMaxOutputTokens {
-		t.Fatalf("未声明 limit 应回退全局窗口配置：%+v", plain)
-	}
-	if window, output := ActiveModelBudget(); window != 1_048_576 || output != 131_072 {
-		t.Fatalf("ActiveModelBudget 应取活跃模型的 limit：%d/%d", window, output)
-	}
-	// 切回未声明 limit 的模型应回退全局窗口，而非残留上一个模型的 limit。
-	if err := SetActiveModel("p:plain"); err != nil {
-		t.Fatal(err)
-	}
-	if window, output := ActiveModelBudget(); window != DefaultContextWindow || output != DefaultMaxOutputTokens {
-		t.Fatalf("切换后预算未回退全局窗口配置：%d/%d", window, output)
-	}
-}
-
-func TestMainAndCompactionModelsUseOwnLimits(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model":"p:main", "compaction_model":"p:summary",
-		"openai_context_window":200000, "openai_max_output_tokens":16000,
-		"compaction_openai_context_window":300000, "compaction_openai_max_output_tokens":20000,
-		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
-			"model_list":[
-				{"model_name":"main", "limit":{"context":100000,"output":8000}},
-				{"model_name":"summary", "limit":{"context":120000,"output":12000}}
-			]}]
-	}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if window, output := ActiveModelBudget(); window != 100000 || output != 8000 {
-		t.Fatalf("main budget = %d/%d", window, output)
-	}
-	if EnvAndFileConf.CompactionOpenaiContextWindow != 120000 || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 12000 {
-		t.Fatalf("compaction budget = %d/%d", EnvAndFileConf.CompactionOpenaiContextWindow, EnvAndFileConf.CompactionOpenaiMaxOutputTokens)
-	}
-}
-
-func TestAuxiliaryLimitsFallBackToGlobalDefaults(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model":"p:main", "compaction_model":"p:summary",
-		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
-			"model_list":[{"model_name":"main"},{"model_name":"summary"}]}]
-	}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if window, output := ActiveModelBudget(); window != DefaultContextWindow || output != DefaultMaxOutputTokens {
-		t.Fatalf("main budget = %d/%d", window, output)
-	}
-	if EnvAndFileConf.CompactionOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != DefaultMaxOutputTokens {
-		t.Fatalf("auxiliary budgets did not fall back to global defaults: %+v", EnvAndFileConf)
-	}
-}
-
-func TestParseProviderModelCatalogRejectsInvalidLimit(t *testing.T) {
-	for _, tc := range []struct{ name, limit string }{
-		{"zero context", `{"context": 0, "output": 100}`},
-		{"zero output", `{"context": 1000, "output": 0}`},
-		{"output not smaller than context", `{"context": 1000, "output": 1000}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			swapConfigGlobals(t)
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			writeSettings(t, home, fmt.Sprintf(`{
-				"model": "p:m",
-				"provider_list": [{
-					"provider_name": "p",
-					"openai_api_key": "k",
-					"openai_base_url": "https://a.example/v1",
-					"model_list": [{"model_name": "m", "limit": %s}]
-				}]
-			}`, tc.limit))
-			if err := ParseEnvAndFile(); err == nil {
-				t.Fatal("非法 limit 应报错")
-			}
-		})
-	}
-}
-
 func TestParseEnvAndFileLLMRouterAddrFromEnv(t *testing.T) {
 	swapConfigGlobals(t)
 	t.Setenv("HOME", t.TempDir())
@@ -269,35 +75,6 @@ func TestParseEnvAndFileLLMRouterAddrFromEnv(t *testing.T) {
 	}
 }
 
-func TestParseEnvAndFileEnvOverridesFile(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, modelSettings("file-provider", "file-model"))
-	setEnvModel(t, "gpt-env")
-
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
-	}
-	if EnvAndFileConf.OpenaiApiKey != "sk-env-key" || EnvAndFileConf.OpenaiModel != "gpt-env" {
-		t.Errorf("环境变量应覆盖文件配置，实际 %+v", EnvAndFileConf)
-	}
-	if EnvAndFileConf.Model != "env_provider:env_model" || len(EnvAndFileConf.ProviderList) != 2 {
-		t.Errorf("环境 provider 应追加并成为当前模型，实际 %+v", EnvAndFileConf)
-	}
-}
-
-func TestParseEnvAndFileRejectsPartialEnvProvider(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, modelSettings("file-provider", "file-model"))
-	t.Setenv("OPENAI_API_KEY", "sk-1")
-	if err := ParseEnvAndFile(); err == nil {
-		t.Fatal("部分 OPENAI_* 环境变量应报错")
-	}
-}
-
 func TestParseEnvAndFileCorruptFileReturnsError(t *testing.T) {
 	swapConfigGlobals(t)
 	home := t.TempDir()
@@ -309,53 +86,6 @@ func TestParseEnvAndFileCorruptFileReturnsError(t *testing.T) {
 	}
 }
 
-func TestParseEnvAndFileContextBudgetFromEnv(t *testing.T) {
-	swapConfigGlobals(t)
-	t.Setenv("HOME", t.TempDir())
-	setEnvModel(t, "gpt-env")
-	t.Setenv("OPENAI_CONTEXT_WINDOW", "1000000")
-	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "32768")
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
-	}
-	if EnvAndFileConf.OpenaiContextWindow != 1_000_000 || EnvAndFileConf.OpenaiMaxOutputTokens != 32_768 {
-		t.Fatalf("context budget env was not applied: %+v", EnvAndFileConf)
-	}
-}
-
-func TestParseEnvAndFileCompactionProviderOverridesAndFallbacks(t *testing.T) {
-	swapConfigGlobals(t)
-	t.Setenv("HOME", t.TempDir())
-	setEnvModel(t, "main-model")
-	t.Setenv("OPENAI_CONTEXT_WINDOW", "100000")
-	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "10000")
-	t.Setenv("OPENAI_COMPACTION_MODEL_NAME", "summary-model")
-	t.Setenv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "2000")
-
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if EnvAndFileConf.CompactionOpenaiApiKey != "sk-env-key" ||
-		EnvAndFileConf.CompactionOpenaiBaseUrl != "https://env.example.com/v1" ||
-		EnvAndFileConf.CompactionOpenaiModel != "summary-model" ||
-		EnvAndFileConf.CompactionOpenaiContextWindow != 100000 ||
-		EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 2000 {
-		t.Fatalf("unexpected compaction provider config: %+v", EnvAndFileConf)
-	}
-}
-
-func TestParseEnvAndFileRejectsInvalidContextBudget(t *testing.T) {
-	swapConfigGlobals(t)
-	t.Setenv("HOME", t.TempDir())
-	setEnvModel(t, "gpt-env")
-	t.Setenv("OPENAI_CONTEXT_WINDOW", "1000")
-	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "1000")
-	if err := ParseEnvAndFile(); err == nil {
-		t.Fatal("max output equal to context window must fail")
-	}
-}
-
-// swapCliGlobals 隔离 ParseCli 依赖的包级全局（flag 集合、os.Args、Cli viper）。
 func swapCliGlobals(t *testing.T, args ...string) {
 	t.Helper()
 	prevArgs := os.Args
@@ -377,11 +107,11 @@ func swapCliGlobals(t *testing.T, args ...string) {
 }
 
 func TestParseCli(t *testing.T) {
-	swapCliGlobals(t, "-addr=127.0.0.1:9000", "-plan", "-token-budget=1000")
+	swapCliGlobals(t, "-addr=127.0.0.1:9000", "-plan")
 	if err := ParseCli(); err != nil {
 		t.Fatal(err)
 	}
-	if CliConf.Addr != "127.0.0.1:9000" || !CliConf.Plan || CliConf.TokenBudget != 1000 {
+	if CliConf.Addr != "127.0.0.1:9000" || !CliConf.Plan {
 		t.Fatalf("config=%+v", CliConf)
 	}
 }
@@ -391,232 +121,19 @@ func TestParseCliDefaults(t *testing.T) {
 	if err := ParseCli(); err != nil {
 		t.Fatal(err)
 	}
-	if CliConf.Addr != DefaultSSEAddr || CliConf.Plan || CliConf.TokenBudget != 0 {
+	if CliConf.Addr != DefaultSSEAddr || CliConf.Plan {
 		t.Fatalf("config=%+v", CliConf)
 	}
 }
 
 func TestParseCliRejectsRemovedModesAndInvalidArguments(t *testing.T) {
-	for _, arg := range []string{"-sse", "-mode=code", "-mode=rag", "-code", "-rag", "-kb=x", "-session=x", "-token-budget=-1", "unexpected"} {
+	for _, arg := range []string{"-sse", "-mode=code", "-mode=rag", "-code", "-rag", "-kb=x", "-session=x", "-token-budget=1000", "unexpected"} {
 		t.Run(arg, func(t *testing.T) {
 			swapCliGlobals(t, arg)
 			if err := ParseCli(); err == nil {
 				t.Fatalf("accepted %q", arg)
 			}
 		})
-	}
-}
-
-func TestCompactionModelSources(t *testing.T) {
-	for _, scenario := range []string{"file", "reference env", "partial env", "full env", "invalid reference", "unset"} {
-		t.Run(scenario, func(t *testing.T) {
-			swapConfigGlobals(t)
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			ref := "aux:small"
-			if scenario == "invalid reference" || scenario == "full env" {
-				ref = "missing:model"
-			}
-			if scenario == "unset" {
-				ref = ""
-			}
-			writeSettings(t, home, fmt.Sprintf(`{
-					"model":"main:chat", %q:%q,
-					"provider_list":[
-						{"provider_name":"main","openai_api_key":"main-key","openai_base_url":"https://main.example/v1","model_list":[{"model_name":"chat"}]},
-						{"provider_name":"aux","openai_api_key":"aux-key","openai_base_url":"https://aux.example/v1","model_list":[{"model_name":"small"}]}
-					]
-				}`, "compaction_model", ref))
-			want := []string{"aux-key", "https://aux.example/v1", "small"}
-			if scenario == "reference env" {
-				t.Setenv("COMPACTION_MODEL", "main:chat")
-				want = []string{"main-key", "https://main.example/v1", "chat"}
-			}
-			if scenario == "partial env" || scenario == "full env" {
-				t.Setenv("OPENAI_COMPACTION_MODEL_NAME", "env-model")
-				want[2] = "env-model"
-			}
-			if scenario == "full env" {
-				t.Setenv("OPENAI_COMPACTION_API_KEY", "env-key")
-				t.Setenv("OPENAI_COMPACTION_BASE_URL", "https://env.example/v1")
-				want[0], want[1] = "env-key", "https://env.example/v1"
-			}
-			if scenario == "unset" {
-				want = []string{"main-key", "https://main.example/v1", "chat"}
-			}
-			err := ParseEnvAndFile()
-			if scenario == "invalid reference" {
-				if err == nil {
-					t.Fatal("expected invalid model reference error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := []string{EnvAndFileConf.CompactionOpenaiApiKey, EnvAndFileConf.CompactionOpenaiBaseUrl, EnvAndFileConf.CompactionOpenaiModel}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("got %v, want %v", got, want)
-			}
-			wantRef := "aux:small"
-			if scenario == "reference env" {
-				wantRef = "main:chat"
-			}
-			if scenario == "partial env" || scenario == "full env" {
-				wantRef = modelRef(envProviderName, envModelName)
-			}
-			if scenario == "unset" {
-				wantRef = "main:chat"
-			}
-			gotRef := EnvAndFileConf.CompactionModel
-			if gotRef != wantRef {
-				t.Fatalf("display ref = %q, want %q", gotRef, wantRef)
-			}
-		})
-	}
-}
-
-func TestEnvironmentBudgetsOverrideFileModelLimits(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model":"p:main", "compaction_model":"p:summary",
-		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
-			"model_list":[
-				{"model_name":"main", "limit":{"context":100000,"output":8000}},
-				{"model_name":"summary", "limit":{"context":120000,"output":12000}}
-			]}]
-	}`)
-	t.Setenv("OPENAI_CONTEXT_WINDOW", "300000")
-	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "30000")
-	t.Setenv("COMPACTION_OPENAI_CONTEXT_WINDOW", "400000")
-	t.Setenv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "40000")
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if window, output := ActiveModelBudget(); window != 300000 || output != 30000 {
-		t.Fatalf("main budget = %d/%d", window, output)
-	}
-	if EnvAndFileConf.CompactionOpenaiContextWindow != 400000 || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 40000 {
-		t.Fatalf("environment budget overrides were not applied: %+v", EnvAndFileConf)
-	}
-}
-
-func TestCompleteEnvironmentModelsShareDisplayAlias(t *testing.T) {
-	swapConfigGlobals(t)
-	t.Setenv("HOME", t.TempDir())
-	for _, tc := range []struct{ prefix, model string }{
-		{"OPENAI_", "chat"},
-		{"OPENAI_COMPACTION_", "summary"},
-	} {
-		t.Setenv(tc.prefix+"API_KEY", "key")
-		t.Setenv(tc.prefix+"BASE_URL", "https://example.com/v1")
-		t.Setenv(tc.prefix+"MODEL_NAME", tc.model)
-	}
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	alias := modelRef(envProviderName, envModelName)
-	if EnvAndFileConf.Model != alias || EnvAndFileConf.CompactionModel != alias {
-		t.Fatalf("environment display refs = %q, %q", EnvAndFileConf.Model, EnvAndFileConf.CompactionModel)
-	}
-	if EnvAndFileConf.OpenaiModel != "chat" || EnvAndFileConf.CompactionOpenaiModel != "summary" {
-		t.Fatalf("upstream model names were mixed: %+v", EnvAndFileConf)
-	}
-}
-
-func TestEnvironmentModelNameDoesNotReuseFileModelLimit(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{
-		"model":"p:main", "compaction_model":"p:summary",
-		"provider_list":[{"provider_name":"p", "openai_api_key":"key", "openai_base_url":"https://example.com/v1",
-			"model_list":[
-				{"model_name":"main"},
-				{"model_name":"summary", "limit":{"context":120000,"output":12000}}
-			]}]
-	}`)
-	t.Setenv("OPENAI_COMPACTION_MODEL_NAME", "env-summary")
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if EnvAndFileConf.CompactionOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != DefaultMaxOutputTokens {
-		t.Fatalf("overridden models reused file limits: %+v", EnvAndFileConf)
-	}
-}
-
-// TestParseEnvAndFileAllowsEmptyCatalog 验证 SSE 延迟配置：零配置（无文件、
-// 无环境变量）启动不报错，目录与活跃模型均为空，全局默认值仍生效。
-func TestParseEnvAndFileAllowsEmptyCatalog(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
-	}
-	if len(EnvAndFileConf.ProviderList) != 0 || EnvAndFileConf.Model != "" {
-		t.Fatalf("expected unconfigured state, got model=%q providers=%d", EnvAndFileConf.Model, len(EnvAndFileConf.ProviderList))
-	}
-	if EnvAndFileConf.OpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.OpenaiMaxOutputTokens != DefaultMaxOutputTokens {
-		t.Fatalf("global defaults should still apply: %+v", EnvAndFileConf)
-	}
-}
-
-// TestParseEnvAndFileDefaultsToFirstModel 目录非空但未选择模型时默认选中第一个
-// 条目，维持「目录非空 ⟹ 活跃模型可解析」的不变式。
-func TestParseEnvAndFileDefaultsToFirstModel(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{"provider_list":[{
-		"provider_name":"p",
-		"openai_api_key":"sk-file-key",
-		"openai_base_url":"https://file.example.com/v1",
-		"model_list":[{"model_name":"main"},{"model_name":"second"}]
-	}]}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
-	}
-	if EnvAndFileConf.Model != "p:main" || EnvAndFileConf.OpenaiModel != "main" {
-		t.Fatalf("default model=%q upstream=%q", EnvAndFileConf.Model, EnvAndFileConf.OpenaiModel)
-	}
-	if EnvAndFileConf.CompactionModel != "p:main" || EnvAndFileConf.CompactionOpenaiModel != "main" {
-		t.Fatalf("compaction should inherit the active model: %+v", EnvAndFileConf)
-	}
-}
-
-// TestSetActiveModelReDerivesInheritedCompaction 运行期切换主模型时，未显式
-// 配置的压缩模型随新主模型重推导；显式配置的压缩模型保持不变。
-func TestSetActiveModelReDerivesInheritedCompaction(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{"provider_list":[{
-		"provider_name":"p",
-		"openai_api_key":"sk-p",
-		"openai_base_url":"https://p.example.com/v1",
-		"model_list":[{"model_name":"main","limit":{"context":100000,"output":8000}}]
-	},{
-		"provider_name":"q",
-		"openai_api_key":"sk-q",
-		"openai_base_url":"https://q.example.com/v1",
-		"model_list":[{"model_name":"other"}]
-	}]}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetActiveModel("q:other"); err != nil {
-		t.Fatal(err)
-	}
-	if EnvAndFileConf.CompactionModel != "q:other" || EnvAndFileConf.CompactionOpenaiModel != "other" ||
-		EnvAndFileConf.CompactionOpenaiApiKey != "sk-q" {
-		t.Fatalf("compaction should follow the new main model: %+v", EnvAndFileConf)
-	}
-	// 新主模型无模型级 limit，压缩窗口回退全局默认。
-	if EnvAndFileConf.CompactionOpenaiContextWindow != DefaultContextWindow || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != DefaultMaxOutputTokens {
-		t.Fatalf("compaction budget should fall back to global defaults: %+v", EnvAndFileConf)
 	}
 }
 
@@ -778,5 +295,20 @@ func TestRetiredMemorySettingsDoNotBlockStartup(t *testing.T) {
 	t.Setenv("OPENAI_EMBEDDING_API_KEY", "unused")
 	if err := ParseEnvAndFile(); err != nil {
 		t.Fatalf("retired configuration blocked Web startup: %v", err)
+	}
+}
+
+func TestProviderListRemainsRawUntilModelInitialization(t *testing.T) {
+	swapConfigGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// The config reader accepts JSON without interpreting provider-specific fields.
+	raw := `[{ "provider_name": "CaseSensitive", "future_option": {"MixedCase": true}, "model_list": "invalid-for-ai-models" }]`
+	writeSettings(t, home, `{"model":"CaseSensitive:model","provider_list":`+raw+`}`)
+	if err := ParseEnvAndFile(); err != nil {
+		t.Fatal(err)
+	}
+	if string(EnvAndFileConf.ProviderList) != raw || EnvAndFileConf.Model != "CaseSensitive:model" {
+		t.Fatal("provider JSON or model reference was transformed")
 	}
 }

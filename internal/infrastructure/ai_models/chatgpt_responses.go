@@ -1,4 +1,4 @@
-package chatgpt
+package ai_models
 
 import (
 	"bytes"

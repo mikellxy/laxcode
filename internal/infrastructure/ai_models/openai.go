@@ -1,4 +1,4 @@
-package llmrouter
+package ai_models
 
 import (
 	"context"
@@ -7,37 +7,32 @@ import (
 	"fmt"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
 )
 
-// OpenAIStreamClient 使用服务端配置的凭据访问上游 Responses API。调用方请求
+// openAIStreamClient 使用服务端配置的凭据访问上游 Responses API。调用方请求
 // 中的 model 会被 configuredModel 覆盖，避免网关使用者绕过本地模型配置。
-type OpenAIStreamClient struct {
+type openAIStreamClient struct {
 	client          openai.Client
 	configuredModel string
 	reasoningEffort string
 }
 
-var _ domainrouter.StreamClient = (*OpenAIStreamClient)(nil)
+var _ domainrouter.StreamClient = (*openAIStreamClient)(nil)
 
-func NewOpenAIStreamClient(apiKey, baseURL, model string) *OpenAIStreamClient {
-	return newOpenAIStreamClient(apiKey, baseURL, model)
+func newChatGPTStreamClient(homeDir, credentialRef, model string) *openAIStreamClient {
+	return newOpenAIStreamClient("", BaseURL, model, option.WithHTTPClient(HTTPClient(homeDir, credentialRef)))
 }
 
-func NewChatGPTStreamClient(homeDir, credentialRef, model string) *OpenAIStreamClient {
-	return newOpenAIStreamClient("", chatgpt.BaseURL, model, option.WithHTTPClient(chatgpt.HTTPClient(homeDir, credentialRef)))
-}
-
-func (c *OpenAIStreamClient) WithReasoningEffort(effort string) *OpenAIStreamClient {
+func (c *openAIStreamClient) WithReasoningEffort(effort string) *openAIStreamClient {
 	c.reasoningEffort = effort
 	return c
 }
 
-func newOpenAIStreamClient(apiKey, baseURL, model string, extraOptions ...option.RequestOption) *OpenAIStreamClient {
+func newOpenAIStreamClient(apiKey, baseURL, model string, extraOptions ...option.RequestOption) *openAIStreamClient {
 	clientOptions := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
@@ -46,13 +41,13 @@ func newOpenAIStreamClient(apiKey, baseURL, model string, extraOptions ...option
 		option.WithMaxRetries(0),
 	}
 	clientOptions = append(clientOptions, extraOptions...)
-	return &OpenAIStreamClient{
+	return &openAIStreamClient{
 		client:          openai.NewClient(clientOptions...),
 		configuredModel: model,
 	}
 }
 
-func (c *OpenAIStreamClient) GenerateStream(ctx context.Context, requestJSON []byte) (domainrouter.Stream, error) {
+func (c *openAIStreamClient) GenerateStream(ctx context.Context, requestJSON []byte) (domainrouter.Stream, error) {
 	// 保留客户端 body 的原始字段结构，只覆盖 model。不能先反序列化成
 	// ResponseNewParams 再序列化：input/tool_choice 等 union 参数在这种
 	// round-trip 下可能被 SDK 丢弃，第三方自定义字段也无法保留。

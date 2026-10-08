@@ -1,4 +1,4 @@
-package config
+package ai_models
 
 import (
 	"encoding/json"
@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -15,11 +14,13 @@ const ChatGPTProvider = "openai-chatgpt"
 
 // SaveChatGPTModels imports the signed-in account catalog without storing any
 // token in settings.json. Caller holds the model switcher's write lock.
-func SaveChatGPTModels(homeDir string, models []chatgpt.Model) error {
+func (m *Manager) SaveChatGPTModels(models []Model) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if len(models) == 0 {
 		return errors.New("ChatGPT model catalog is empty")
 	}
-	provider := ProviderConfig{ProviderName: ChatGPTProvider, AuthType: "oauth", CredentialRef: chatgpt.CredentialRef, OpenaiBaseUrl: chatgpt.BaseURL}
+	provider := ProviderConfig{ProviderName: ChatGPTProvider, AuthType: "oauth", CredentialRef: CredentialRef, OpenaiBaseUrl: BaseURL}
 	seen := map[string]bool{}
 	for _, model := range models {
 		if !validCatalogName(model.Slug) || seen[model.Slug] {
@@ -27,7 +28,7 @@ func SaveChatGPTModels(homeDir string, models []chatgpt.Model) error {
 		}
 		seen[model.Slug] = true
 		effort := ""
-		if len(chatgpt.ReasoningEfforts(model.Slug)) > 0 {
+		if len(ReasoningEfforts(model.Slug)) > 0 {
 			effort = "medium"
 		}
 		provider.ModelList = append(provider.ModelList, ModelConfig{ModelName: model.Slug, DisplayName: model.DisplayName, ReasoningEffort: effort})
@@ -56,37 +57,36 @@ func SaveChatGPTModels(homeDir string, models []chatgpt.Model) error {
 		}
 		return append(result, provider), nil
 	}
-	candidate := EnvAndFileConf
+	candidate := m.state
 	var err error
-	candidate.ProviderList, err = replace(candidate.ProviderList)
+	candidate.providers, err = replace(candidate.providers)
 	if err != nil {
 		return err
 	}
-	if candidate.Model == "" {
-		candidate.Model = modelRef(ChatGPTProvider, models[0].Slug)
+	if candidate.active.Ref == "" {
+		candidate.active.Ref = modelRef(ChatGPTProvider, models[0].Slug)
 	}
-	if _, err := candidate.resolveModel(candidate.Model); err != nil {
-		candidate.Model = modelRef(ChatGPTProvider, models[0].Slug)
+	if _, err := candidate.resolveModel(candidate.active.Ref); err != nil {
+		candidate.active.Ref = modelRef(ChatGPTProvider, models[0].Slug)
 	}
-	if strings.HasPrefix(candidate.CompactionModel, ChatGPTProvider+":") && candidate.compactionConfigured {
-		if _, err := candidate.resolveModel(candidate.CompactionModel); err != nil {
+	if strings.HasPrefix(candidate.options.CompactionModel, ChatGPTProvider+":") {
+		if _, err := candidate.resolveModel(candidate.options.CompactionModel); err != nil {
 			return fmt.Errorf("configured compaction model is absent from the new catalog: %w", err)
 		}
 	}
-	if err := candidate.validateModelCatalog(); err != nil {
+	if err := candidate.initializeSelection(); err != nil {
 		return err
 	}
-	document := map[string]json.RawMessage{}
-	data, err := os.ReadFile(layout.UserSettings(homeDir))
-	if err == nil {
-		if err := json.Unmarshal(data, &document); err != nil {
+	// Importing another provider must not reset the selected API-key model's
+	// runtime effort, because its router client is retained by the caller.
+	if candidate.active.Ref == m.state.active.Ref && !strings.HasPrefix(candidate.active.Ref, ChatGPTProvider+":") {
+		if err := candidate.setActiveModel(candidate.active.Ref, m.state.active.ReasoningEffort); err != nil {
 			return err
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
-	if document == nil {
-		return errors.New("settings must be a JSON object")
+	document, err := readSettings(layout.UserSettings(m.homeDir))
+	if err != nil {
+		return err
 	}
 	var providers []ProviderConfig
 	if raw, ok := document["provider_list"]; ok {
@@ -103,19 +103,19 @@ func SaveChatGPTModels(homeDir string, models []chatgpt.Model) error {
 		return err
 	}
 	// A persisted env_provider is intentionally not created by this import.
-	if strings.HasPrefix(candidate.Model, ChatGPTProvider+":") {
-		document["model"], _ = json.Marshal(candidate.Model)
+	if strings.HasPrefix(candidate.active.Ref, ChatGPTProvider+":") {
+		document["model"], _ = json.Marshal(candidate.active.Ref)
 	}
-	data, err = json.MarshalIndent(document, "", "  ")
+	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(layout.Root(homeDir), 0700); err != nil {
+	if err := os.MkdirAll(layout.Root(m.homeDir), 0700); err != nil {
 		return err
 	}
-	if err := writeSettingsAtomic(layout.UserSettings(homeDir), append(data, '\n')); err != nil {
+	if err := writeSettingsAtomic(layout.UserSettings(m.homeDir), append(data, '\n')); err != nil {
 		return err
 	}
-	EnvAndFileConf.ProviderList = candidate.ProviderList
-	return EnvAndFileConf.setActiveModel(candidate.Model)
+	m.state = candidate
+	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,7 +36,7 @@ func TestHandleSessionContext(t *testing.T) {
 	config.EnvAndFileConf.OpenaiContextWindow = 128000
 	config.EnvAndFileConf.Model = ""
 	config.EnvAndFileConf.ProviderList = nil
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.contextRepo = contextReaderStub{state: session.RequestContext{WindowToken: sharedkernel.TokenStatistics{TokenInput: 12000, TokenOutput: 932}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
@@ -133,7 +134,7 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 		},
 		HasMore: true,
 	}, projects: []session.Project{{ID: "project-1", UserID: userID, Name: "Project", WorkDir: t.TempDir()}}}
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = catalog
 	s.projects = catalog
 	mux := http.NewServeMux()
@@ -173,7 +174,7 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 func TestHandleCreateAndListProjects(t *testing.T) {
 	userID := "11111111-1111-4111-8111-111111111111"
 	catalog := &fakeSessionCatalog{}
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.projects = catalog
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
@@ -216,7 +217,7 @@ func TestHandleCreateAndListProjects(t *testing.T) {
 }
 
 func TestSessionEndpointsRejectInvalidUserID(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = &fakeSessionCatalog{}
 
 	create := httptest.NewRecorder()
@@ -244,26 +245,24 @@ func setupSwitchModelCatalog(t *testing.T) {
 	t.Helper()
 	previous := config.EnvAndFileConf
 	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{
+	setTestProviders(t, []ai_models.ProviderConfig{
 		{
 			ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1",
-			ModelList: []config.ModelConfig{{ModelName: "model-1"}},
+			ModelList: []ai_models.ModelConfig{{ModelName: "model-1"}},
 		},
 		{
 			ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1",
-			ModelList: []config.ModelConfig{{ModelName: "model-2", UpstreamModel: "upstream-2"}},
+			ModelList: []ai_models.ModelConfig{{ModelName: "model-2", UpstreamModel: "upstream-2"}},
 		},
-	}
-	if err := config.SetActiveModel("first:model-1"); err != nil {
-		t.Fatal(err)
-	}
+	})
+	config.EnvAndFileConf.Model = "first:model-1"
 }
 
 func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 	setupSwitchModelCatalog(t)
 	router := &recordingModelRouter{}
-	s := newServer(t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(router)
+	s := newTestServer(t, t.TempDir(), false)
+	s.switcher = agentasm.NewModelSwitcher(router, s.models)
 
 	rec := httptest.NewRecorder()
 	s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
@@ -283,9 +282,9 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 	if len(router.clients) != 1 {
 		t.Fatalf("router replacements=%d, want 1", len(router.clients))
 	}
-	if config.EnvAndFileConf.Model != "second:model-2" ||
-		config.EnvAndFileConf.OpenaiApiKey != "key-2" ||
-		config.EnvAndFileConf.OpenaiModel != "upstream-2" {
+	if s.models.Active().Ref != "second:model-2" ||
+		s.models.Active().OpenaiApiKey != "key-2" ||
+		s.models.Active().UpstreamModel != "upstream-2" {
 		t.Fatalf("runtime config not switched: %+v", config.EnvAndFileConf)
 	}
 }
@@ -293,8 +292,8 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 	setupSwitchModelCatalog(t)
 	router := &recordingModelRouter{}
-	s := newServer(t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(router)
+	s := newTestServer(t, t.TempDir(), false)
+	s.switcher = agentasm.NewModelSwitcher(router, s.models)
 
 	cases := []struct {
 		name   string
@@ -317,7 +316,7 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 		t.Fatalf("router replaced on failed switch: %d", len(router.clients))
 	}
 
-	noRouter := newServer(t.TempDir(), false)
+	noRouter := newTestServer(t, t.TempDir(), false)
 	rec := httptest.NewRecorder()
 	noRouter.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
 		strings.NewReader(`{"provider":"first","model":"model-1"}`)))
@@ -328,21 +327,21 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 
 func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 	originalProviders, originalModel := config.EnvAndFileConf.ProviderList, config.EnvAndFileConf.Model
-	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{{
+	setTestProviders(t, []ai_models.ProviderConfig{{
 		OpenaiApiKey:  "sk-secret",
 		OpenaiBaseUrl: "https://api.example.com",
 		ProviderName:  "example",
-		ModelList: []config.ModelConfig{
+		ModelList: []ai_models.ModelConfig{
 			{ModelName: "model-a"},
 			{ModelName: "model-b", UpstreamModel: "upstream-b"},
 		},
-	}}
+	}})
 	config.EnvAndFileConf.Model = "example:model-a"
 	defer func() {
 		config.EnvAndFileConf.ProviderList, config.EnvAndFileConf.Model = originalProviders, originalModel
 	}()
 
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	rec := httptest.NewRecorder()
 	s.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
 	if rec.Code != http.StatusOK {
@@ -371,10 +370,10 @@ func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 func TestHandleAddModelPersistsWithoutReturningAPIKey(t *testing.T) {
 	previous := config.EnvAndFileConf
 	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.ProviderList = []config.ProviderConfig{{
+	setTestProviders(t, []ai_models.ProviderConfig{{
 		ProviderName: "existing", OpenaiApiKey: "old-secret", OpenaiBaseUrl: "https://existing.example/v1",
-		ModelList: []config.ModelConfig{{ModelName: "main"}},
-	}}
+		ModelList: []ai_models.ModelConfig{{ModelName: "main"}},
+	}})
 	config.EnvAndFileConf.Model = "existing:main"
 	home := t.TempDir()
 	settingsDir := filepath.Join(home, ".laxcode")
@@ -386,7 +385,7 @@ func TestHandleAddModelPersistsWithoutReturningAPIKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := newServer(home, false)
+	s := newTestServer(t, home, false)
 	body := `{"provider":"new-provider","model":"new-model","api_key":"new-secret","base_url":"https://new.example/v1","context_window":128000,"max_output_tokens":8192}`
 	rec := httptest.NewRecorder()
 	s.handleAddModel(rec, httptest.NewRequest(http.MethodPost, "/api/models", strings.NewReader(body)))
@@ -396,7 +395,7 @@ func TestHandleAddModelPersistsWithoutReturningAPIKey(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "new-secret") || strings.Contains(rec.Body.String(), "base_url") {
 		t.Fatalf("response leaked sensitive configuration: %s", rec.Body.String())
 	}
-	if _, err := config.ResolveModel("new-provider:new-model"); err != nil {
+	if _, err := s.models.Resolve("new-provider:new-model"); err != nil {
 		t.Fatalf("runtime catalog was not updated: %v", err)
 	}
 	persisted, err := os.ReadFile(filepath.Join(settingsDir, "settings.json"))
@@ -428,7 +427,7 @@ func TestHandleHistoryReturnsPagedDTO(t *testing.T) {
 		},
 		HasMore: true,
 	}}
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.history = repo
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
@@ -455,7 +454,7 @@ func TestHandleHistoryReturnsPagedDTO(t *testing.T) {
 }
 
 func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.history = &fakeHistoryRepo{found: false}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
@@ -474,7 +473,7 @@ func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
 
 // TestHandleChatInvalidJSON 验证非法请求体在进入 SSE 流之前返回 400 + JSON。
 func TestHandleChatInvalidJSON(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader("{invalid"))
 	rec := httptest.NewRecorder()
 	s.handleChat(rec, req)
@@ -489,7 +488,7 @@ func TestHandleChatInvalidJSON(t *testing.T) {
 
 // TestHandleChatEmptyTask 验证 task 为空（含纯空白）返回 400。
 func TestHandleChatEmptyTask(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"   "}`))
 	rec := httptest.NewRecorder()
 	s.handleChat(rec, req)
@@ -502,7 +501,7 @@ func TestHandleChatEmptyTask(t *testing.T) {
 // TestHandleChatSessionBusy 验证同一 session_id 已被占用时返回 409（不排队等待），
 // 避免同会话并发导致 history/meta 分叉，也避免客户端无感挂起。
 func TestHandleChatSessionBusy(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	unlock, ok := s.locks.TryLock("sess-1") // 预占，模拟同会话并发
 	if !ok {
 		t.Fatal("预占 session 锁失败")
@@ -540,13 +539,14 @@ func stubActiveModel(t *testing.T) {
 	previous := config.EnvAndFileConf
 	t.Cleanup(func() { config.EnvAndFileConf = previous })
 	config.EnvAndFileConf.Model = "test:model"
+	setTestProviders(t, []ai_models.ProviderConfig{{ProviderName: "test", OpenaiApiKey: "test-key", OpenaiBaseUrl: "https://test.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "model"}}}})
 }
 
 // TestHandleChatNoFlusher 验证 ResponseWriter 不支持 Flusher 时返回 500（仍在进入流之前）。
 func TestHandleChatNoFlusher(t *testing.T) {
 	stubActiveModel(t)
 	workDir := t.TempDir()
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`))
 	w := newNonFlusherWriter()
@@ -562,7 +562,7 @@ func TestHandleChatNoFlusher(t *testing.T) {
 func TestHandleChatAssembleError(t *testing.T) {
 	stubActiveModel(t)
 	workDir := t.TempDir()
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
 	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
 		return nil, errors.New("boom")
@@ -592,7 +592,7 @@ func TestHandleChatAssembleError(t *testing.T) {
 func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
 	stubActiveModel(t)
 	workDir := t.TempDir()
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
 	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
 		return nil, errors.New("boom")
@@ -620,7 +620,7 @@ func TestHandleChatWithoutModel(t *testing.T) {
 	config.EnvAndFileConf.ProviderList = nil
 
 	workDir := t.TempDir()
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = catalogWithSession("s1", workDir)
 
 	chat := httptest.NewRecorder()
@@ -640,7 +640,7 @@ func TestHandleChatWithoutModel(t *testing.T) {
 
 func TestChatAndResumeRejectDifferentSessionMode(t *testing.T) {
 	workDir := t.TempDir()
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{
 		ID: "rag-session", Mode: "rag", WorkDir: workDir,
 	}}}}
@@ -679,4 +679,33 @@ func TestSessionLocksSerializesSameID(t *testing.T) {
 	if _, ok := locks.TryLock("a"); !ok {
 		t.Fatal("a 释放后应可再次获取")
 	}
+}
+
+// newTestServer isolates model state while retaining settings-based fixtures.
+func newTestServer(t *testing.T, home string, plan bool) *server {
+	t.Helper()
+	opts := ai_models.DefaultOptions()
+	c := config.EnvAndFileConf
+	opts.Model, opts.CompactionModel = c.Model, c.CompactionModel
+	if c.OpenaiContextWindow != 0 {
+		opts.ContextWindow = c.OpenaiContextWindow
+	}
+	if c.OpenaiMaxOutputTokens != 0 {
+		opts.MaxOutputTokens = c.OpenaiMaxOutputTokens
+	}
+	opts.CompactionContextWindow, opts.CompactionMaxOutputTokens = c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens
+	models, err := ai_models.New(home, c.ProviderList, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newServer(home, plan, models)
+}
+
+func setTestProviders(t *testing.T, providers []ai_models.ProviderConfig) {
+	t.Helper()
+	raw, err := json.Marshal(providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.EnvAndFileConf.ProviderList = raw
 }

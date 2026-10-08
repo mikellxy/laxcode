@@ -36,13 +36,6 @@ type ReActService struct {
 	// workDir 是 bash 危险命令检查的基准目录：输出重定向只放行该目录、
 	// /tmp 与 /dev/null 内的目标。经 SetWorkDir 由组合根注入。
 	workDir string
-	// 预算在会话恢复后设置基线；SSE code 模式可在后续请求恢复检查点。
-	tokenBudget         int
-	tokenBudgetBaseline int
-	nextBudgetThreshold int
-	nextBudgetHalfStep  bool
-	nextBudgetHalfUnits int
-	tokenBudgetDeclined bool
 }
 
 var (
@@ -53,7 +46,6 @@ var (
 	// resume，避免在没有待完成输入时让模型重复生成。
 	ErrNothingToResume          = errors.New("reactservice: no interrupted chat to resume")
 	ErrRepeatedToolCall         = errors.New("连续 3 次相同工具调用，已中断本轮推理")
-	ErrTokenBudgetDeclined      = errors.New("用户选择停止：已达到 token 预算")
 	ErrDangerousCommandDeclined = errors.New("用户拒绝危险 Bash 命令，已终止本轮推理")
 	ErrSensitiveToolDeclined    = errors.New("用户拒绝敏感工具操作，已终止本轮推理")
 )
@@ -63,7 +55,6 @@ const (
 	ReActEventTypeToolCall       = "tool_call"
 	ReActEventTypeRecovery       = "recovery"
 	ReActEventTypeHumanInTheLoop = "human_in_the_loop"
-	HumanConfirmKindTokenBudget  = "token_budget"
 	HumanConfirmKindBashCommand  = "bash_command"
 	HumanConfirmKindSkillWrite   = "skill_write"
 	contextTriggerPercent        = 80
@@ -116,7 +107,7 @@ type ReactEvent struct {
 	Content          string                    // 工具执行提示或人工确认说明
 	ChunkEvent       *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
 	HumanConfirmChan chan<- string             // 人工确认回复通道，仅 human_in_the_loop 事件携带
-	HumanConfirmKind string                    // 人工确认类别，供前端区分预算和危险命令
+	HumanConfirmKind string                    // 人工确认类别，供前端区分危险命令和敏感工具操作
 	ContextUsage     *ContextUsage             // 上下文占用快照，仅 tool_call 事件携带
 	Approval         *ApprovalDetail           // 结构化审批载荷，仅 human_in_the_loop 事件携带
 }
@@ -129,16 +120,6 @@ func (r *ReActService) contextUsageSnapshot() *ContextUsage {
 		WindowToken:   r.Session.WindowToken,
 		ContextWindow: r.LLMClient.ContextBudget().ContextWindow,
 	}
-}
-
-// TokenBudgetState 是跨 SSE 请求续接同一 session 的预算检查点。
-type TokenBudgetState struct {
-	Budget        int
-	Baseline      int
-	NextThreshold int
-	NextHalfStep  bool
-	NextHalfUnits int
-	Declined      bool
 }
 
 func NewReActService(sess *session.Session,
@@ -175,69 +156,6 @@ func NewReActService(sess *session.Session,
 // /tmp 与 /dev/null 内的目标）。应仅在服务对外可见前由组合根调用，不应在
 // 并发 Chat 期间修改。
 func (r *ReActService) SetWorkDir(workDir string) { r.workDir = workDir }
-
-// SetTokenBudget 在 InitSession 之后、首次 Chat 之前调用。预算按主会话的
-// 实测输入与输出 token 总和计算，排除初始化时恢复出的历史用量。
-func (r *ReActService) SetTokenBudget(budget int) {
-	r.tokenBudget = budget
-	r.tokenBudgetBaseline = r.Session.TokenUsed.Total()
-	r.nextBudgetThreshold = budget
-	r.nextBudgetHalfStep = true
-	r.nextBudgetHalfUnits = 2
-	r.tokenBudgetDeclined = false
-}
-
-func (r *ReActService) TokenBudgetState() TokenBudgetState {
-	return TokenBudgetState{
-		Budget: r.tokenBudget, Baseline: r.tokenBudgetBaseline,
-		NextThreshold: r.nextBudgetThreshold, NextHalfStep: r.nextBudgetHalfStep,
-		NextHalfUnits: r.nextBudgetHalfUnits, Declined: r.tokenBudgetDeclined,
-	}
-}
-
-func (r *ReActService) RestoreTokenBudget(state TokenBudgetState) {
-	r.tokenBudget = state.Budget
-	r.tokenBudgetBaseline = state.Baseline
-	r.nextBudgetThreshold = state.NextThreshold
-	r.nextBudgetHalfStep = state.NextHalfStep
-	r.nextBudgetHalfUnits = state.NextHalfUnits
-	r.tokenBudgetDeclined = state.Declined
-}
-
-// confirmTokenBudget 在继续执行工具或发起模型请求前检查最近跨过的阈值。
-// 一次模型调用可能跨过多个阈值，此时只询问一次，并跳过已跨过的阈值。
-func (r *ReActService) confirmTokenBudget(ctx context.Context) error {
-	if r.tokenBudgetDeclined {
-		return ErrTokenBudgetDeclined
-	}
-	if r.tokenBudget <= 0 || !r.humanConfirmationEnabled {
-		return nil
-	}
-	used := r.Session.TokenUsed.Total() - r.tokenBudgetBaseline
-	if used < r.nextBudgetThreshold {
-		return nil
-	}
-	answer, err := r.requestHumanConfirmationKind(ctx, HumanConfirmKindTokenBudget, fmt.Sprintf(
-		"本次运行已使用 %d token，达到预算 %d token 的 %.1f 倍。输入 yes 继续；其他输入停止。",
-		used, r.tokenBudget, float64(r.nextBudgetHalfUnits)/2))
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(strings.TrimSpace(answer), "yes") {
-		r.tokenBudgetDeclined = true
-		return ErrTokenBudgetDeclined
-	}
-	for r.nextBudgetThreshold <= used {
-		increment := r.tokenBudget / 2
-		if r.nextBudgetHalfStep {
-			increment += r.tokenBudget % 2
-		}
-		r.nextBudgetHalfStep = !r.nextBudgetHalfStep
-		r.nextBudgetThreshold += increment
-		r.nextBudgetHalfUnits++
-	}
-	return nil
-}
 
 // requestHumanConfirmation 向交互前端发出一次人工确认请求，并等待回复或取消。
 // channel 由 ReActService 创建并持有；前端只获得发送端，不应关闭。容量为 1，
@@ -305,12 +223,6 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 ) {
 	ctx, span := r.startReact(ctx)
 	defer func() { r.closeReact(span, msg, err) }()
-	if r.tokenBudgetDeclined {
-		return nil, ErrTokenBudgetDeclined
-	}
-	if err = r.confirmTokenBudget(ctx); err != nil {
-		return nil, err
-	}
 
 	if err = r.recoverBeforeChat(ctx); err != nil {
 		return nil, fmt.Errorf("recover previous chat: %w", err)
@@ -332,12 +244,6 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 func (r *ReActService) Resume(ctx context.Context) (msg *sharedkernel.Message, err error) {
 	ctx, span := r.startReact(ctx)
 	defer func() { r.closeReact(span, msg, err) }()
-	if r.tokenBudgetDeclined {
-		return nil, ErrTokenBudgetDeclined
-	}
-	if err := r.confirmTokenBudget(ctx); err != nil {
-		return nil, err
-	}
 	if !needsRecovery(r.Session.Messages) {
 		return nil, ErrNothingToResume
 	}
@@ -454,9 +360,6 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		if prepareErr != nil {
 			return nil, prepareErr
 		}
-		if err := r.confirmTokenBudget(ctx); err != nil {
-			return nil, err
-		}
 
 		llmStart := time.Now()
 		llmCtx, llmSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanLLMGenerate,
@@ -492,9 +395,6 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		// 无工具调用，推理循环完成
 		if len(msg.ToolCalls) == 0 {
 			return msg, nil
-		}
-		if err := r.confirmTokenBudget(ctx); err != nil {
-			return nil, err
 		}
 		toolCtx := telemetry.ContextWithTurnSeq(ctx, turnCnt)
 

@@ -83,9 +83,7 @@ export function App() {
         <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedID || workspace.history.isLoading} locked={modelLocked} onLockedClick={() => setGearBounce((value) => value + 1)} onSend={workspace.send} onCancel={workspace.cancel} />
       </>}
       {workspace.stream.approval && <div className="approval-backdrop"><div className="approval-dialog" role="dialog" aria-modal="true" aria-label="需要确认">
-        <h2>{workspace.stream.approval.kind === "token_budget"
-          ? "Token 预算已达到阈值"
-          : workspace.stream.approval.kind === "skill_write"
+        <h2>{workspace.stream.approval.kind === "skill_write"
             ? "确认修改全局 Skill"
             : workspace.stream.approval.kind === "file_path"
               ? "确认访问工作目录之外的文件"

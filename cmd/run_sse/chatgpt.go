@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 )
 
 // Browser mutations must originate from this backend or the configured Vite
@@ -59,10 +59,10 @@ func (s *server) handleChatGPTStatus(w http.ResponseWriter, r *http.Request) {
 		defer s.oauthInstallMu.Unlock()
 		if s.oauthInstalledID != status.ID {
 			s.switcher.Lock()
-			err := config.SaveChatGPTModels(s.homeDir, status.Models)
+			err := s.models.SaveChatGPTModels(status.Models)
 			if err == nil {
-				ref := config.EnvAndFileConf.Model
-				if strings.HasPrefix(ref, config.ChatGPTProvider+":") {
+				ref := s.models.Active().Ref
+				if strings.HasPrefix(ref, ai_models.ChatGPTProvider+":") {
 					err = s.switcher.SwitchModelLocked(ref)
 				}
 			}

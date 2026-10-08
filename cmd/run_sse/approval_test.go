@@ -86,7 +86,7 @@ func TestChatStreamWaitsForHTTPApproval(t *testing.T) {
 			sessionHome := t.TempDir()
 			dbPath := filepath.Join(workDir, "sessions.db")
 			historyRoot := filepath.Join(workDir, "history")
-			s := newServer(sessionHome, false)
+			s := newTestServer(t, sessionHome, false)
 			s.catalog = catalogWithSession("flow", workDir)
 			s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 				repo, err := sessionrepo.NewSqliteSessionRepo(dbPath, historyRoot)
@@ -172,7 +172,7 @@ func TestChatStreamWaitsForHTTPApproval(t *testing.T) {
 }
 
 func TestApprovalEventAndHTTPReplyResumeSameStream(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	rf := newRecordFlusher()
 	sessionID := "session-1"
 	consumer := s.eventConsumer(newSSEWriter(rf, rf), &sessionID, "request-1")
@@ -218,26 +218,5 @@ func TestApprovalIsRemovedWhenStreamEnds(t *testing.T) {
 	broker.clearRequest("request-1")
 	if broker.resolve("session-1", id, true) {
 		t.Fatal("approval from a closed stream must not be accepted")
-	}
-}
-
-func TestBudgetStateContinuesAcrossSSERequests(t *testing.T) {
-	s := newServer(t.TempDir(), false)
-	s.tokenBudget = 100
-	firstSession := session.NewSession("budget-session")
-	firstSession.TokenUsed = sharedkernel.TokenStatistics{TokenInput: 200}
-	firstService := reactservice.NewReActService(firstSession, nil, nil, nil, nil, nil, nil)
-	first := &agentasm.Assembled{Service: firstService, Session: firstSession}
-	s.configureBudget(first)
-	firstSession.TokenUsed.TokenInput = 260
-	s.saveBudget(first)
-
-	nextSession := session.NewSession(firstSession.ID)
-	nextSession.TokenUsed.TokenInput = 260
-	nextService := reactservice.NewReActService(nextSession, nil, nil, nil, nil, nil, nil)
-	s.configureBudget(&agentasm.Assembled{Service: nextService, Session: nextSession})
-	state := nextService.TokenBudgetState()
-	if state.Baseline != 200 || state.NextThreshold != 100 || state.Budget != 100 {
-		t.Fatalf("restored budget state = %+v", state)
 	}
 }

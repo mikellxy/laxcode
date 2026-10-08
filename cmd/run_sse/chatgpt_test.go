@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
@@ -19,12 +19,12 @@ func TestOAuthModelListAndEffortSwitch(t *testing.T) {
 	config.EnvAndFileConf.ProviderList = nil
 	config.EnvAndFileConf.CompactionModel = ""
 	home := t.TempDir()
-	if err := config.SaveChatGPTModels(home, []chatgpt.Model{{Slug: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol"}}); err != nil {
+	s := newTestServer(t, home, false)
+	if err := s.models.SaveChatGPTModels([]ai_models.Model{{Slug: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol"}}); err != nil {
 		t.Fatal(err)
 	}
-	s := newServer(home, false)
 	router := &recordingModelRouter{}
-	s.switcher = agentasm.NewModelSwitcher(router, home)
+	s.switcher = agentasm.NewModelSwitcher(router, s.models)
 	list := httptest.NewRecorder()
 	s.handleListModels(list, httptest.NewRequest("GET", "/api/models", nil))
 	var catalog providerListModelDTO
@@ -43,19 +43,19 @@ func TestOAuthModelListAndEffortSwitch(t *testing.T) {
 		response := httptest.NewRecorder()
 		s.handleSwitchModel(response, httptest.NewRequest("POST", "/api/model", strings.NewReader(`{"provider":"openai-chatgpt","model":"gpt-6.1-sol","reasoning_effort":"`+effort+`"}`)))
 		if effort == "ultra" {
-			if response.Code != 400 || config.EnvAndFileConf.ReasoningEffort != "high" {
+			if response.Code != 400 || s.models.Active().ReasoningEffort != "high" {
 				t.Fatal("invalid effort changed active config")
 			}
 			continue
 		}
-		if response.Code != 200 || config.EnvAndFileConf.ReasoningEffort != effort || config.EnvAndFileConf.CompactionReasoningEffort != effort {
+		if response.Code != 200 || s.models.Active().ReasoningEffort != effort || s.models.Compaction().ReasoningEffort != effort {
 			t.Fatalf("effort %q status=%d body=%s", effort, response.Code, response.Body)
 		}
 	}
 }
 
 func TestOAuthRejectsCrossSiteLogin(t *testing.T) {
-	s := newServer(t.TempDir(), false)
+	s := newTestServer(t, t.TempDir(), false)
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8090/api/auth/chatgpt", nil)
 	request.Header.Set("Origin", "https://evil.example")
 	response := httptest.NewRecorder()

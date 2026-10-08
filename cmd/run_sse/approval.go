@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/mikellxy/laxcode/internal/application/reactservice"
 )
 
 // approvalBroker connects a still-open SSE request to a separate HTTP reply.
@@ -90,28 +89,4 @@ func (s *server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// budgetStates holds one checkpoint per code session for this SSE server run.
-// A request restores it after loading the session and writes it back on exit.
-type budgetStates struct {
-	mu     sync.Mutex
-	states map[string]reactservice.TokenBudgetState
-}
-
-func newBudgetStates() *budgetStates {
-	return &budgetStates{states: make(map[string]reactservice.TokenBudgetState)}
-}
-
-func (b *budgetStates) get(sessionID string) (reactservice.TokenBudgetState, bool) {
-	b.mu.Lock()
-	state, ok := b.states[sessionID]
-	b.mu.Unlock()
-	return state, ok
-}
-
-func (b *budgetStates) put(sessionID string, state reactservice.TokenBudgetState) {
-	b.mu.Lock()
-	b.states[sessionID] = state
-	b.mu.Unlock()
 }

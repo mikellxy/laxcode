@@ -13,7 +13,7 @@ import (
 
 	domainllm "github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
@@ -73,7 +73,7 @@ func (p *OpenApiProvider) WithReasoningEffort(effort string) *OpenApiProvider {
 
 func (p *OpenApiProvider) WithChatGPT(homeDir, credentialRef string) *OpenApiProvider {
 	p.oauth = true
-	p.client = openai.NewClient(option.WithAPIKey(""), option.WithBaseURL(chatgpt.BaseURL), option.WithHTTPClient(chatgpt.HTTPClient(homeDir, credentialRef)), option.WithMaxRetries(0))
+	p.client = openai.NewClient(option.WithAPIKey(""), option.WithBaseURL(ai_models.BaseURL), option.WithHTTPClient(ai_models.HTTPClient(homeDir, credentialRef)), option.WithMaxRetries(0))
 	return p
 }
 

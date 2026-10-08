@@ -10,8 +10,8 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
-	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
@@ -31,10 +31,16 @@ type coreAssembly struct {
 }
 
 func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
-	consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer) (*coreAssembly, error) {
+	consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager) (*coreAssembly, error) {
 	homeDir, err := resolveHomeDir(explicitHome)
 	if err != nil {
 		return nil, err
+	}
+	if models == nil {
+		models, err = ai_models.New(homeDir, nil, ai_models.DefaultOptions())
+		if err != nil {
+			return nil, err
+		}
 	}
 	repoStart := time.Now()
 	repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
@@ -58,15 +64,15 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 		artifacts = artifactstore.New(layout.SessionRoot(homeDir))
 	}
 
-	c := config.EnvAndFileConf
-	summaryProvider := llmprovider.NewOpenApiProvider(c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel, c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens).WithReasoningEffort(c.CompactionReasoningEffort)
-	if c.CompactionAuthType == "oauth" {
-		summaryProvider.WithChatGPT(homeDir, c.CompactionCredentialRef)
+	c := models.Compaction()
+	summaryProvider := llmprovider.NewOpenApiProvider(c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, c.ContextWindow, c.MaxOutputTokens).WithReasoningEffort(c.ReasoningEffort)
+	if c.AuthType == "oauth" {
+		summaryProvider.WithChatGPT(homeDir, c.CredentialRef)
 	}
 	service := reactservice.NewReActService(
 		sess,
 		repo,
-		newMainProvider(homeDir),
+		newMainProvider(homeDir, models),
 		summaryProvider,
 		registry,
 		consumer,

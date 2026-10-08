@@ -1,42 +1,17 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
-	"unicode"
 
-	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/spf13/viper"
 )
-
-// ModelLimit 是 model_list 条目里的模型级 token 预算（limit.context /
-// limit.output）：声明后作为该模型 LLM client 的 bucket，覆盖全局窗口配置。
-type ModelLimit struct {
-	Context int `mapstructure:"context" json:"context"`
-	Output  int `mapstructure:"output" json:"output"`
-}
-
-type ModelConfig struct {
-	DisplayName     string      `mapstructure:"display_name" json:"display_name,omitempty"`
-	ReasoningEffort string      `mapstructure:"reasoning_effort" json:"reasoning_effort,omitempty"`
-	ModelName       string      `mapstructure:"model_name" json:"model_name"`
-	UpstreamModel   string      `mapstructure:"-" json:"upstream_model,omitempty"`
-	Limit           *ModelLimit `mapstructure:"limit" json:"limit,omitempty"`
-}
-
-type ProviderConfig struct {
-	AuthType      string        `mapstructure:"auth_type" json:"auth_type,omitempty"`
-	CredentialRef string        `mapstructure:"credential_ref" json:"credential_ref,omitempty"`
-	OpenaiApiKey  string        `mapstructure:"openai_api_key" json:"openai_api_key"`
-	OpenaiBaseUrl string        `mapstructure:"openai_base_url" json:"openai_base_url"`
-	ProviderName  string        `mapstructure:"provider_name" json:"provider_name"`
-	ModelList     []ModelConfig `mapstructure:"model_list" json:"model_list"`
-}
 
 // MCPServerConf 声明一个外部 MCP server。stdio 使用 command + args + env；
 // Streamable HTTP 使用 url + headers。enabled 缺省为 true（写配置即启用），
@@ -56,210 +31,34 @@ type MCPServerConf struct {
 // IsEnabled 报告该 server 是否应被接入；未声明 enabled 视为启用。
 func (c MCPServerConf) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
-type ResolvedModel struct {
-	AuthType        string
-	CredentialRef   string
-	ReasoningEffort string
-	Ref             string
-	ProviderName    string
-	ModelName       string
-	UpstreamModel   string
-	OpenaiApiKey    string
-	OpenaiBaseUrl   string
-	// ContextWindow / MaxOutputTokens 是该模型的生效 token 预算：模型级
-	// limit 优先，未声明时回退全局 openai_context_window /
-	// openai_max_output_tokens。
-	ContextWindow   int
-	MaxOutputTokens int
-	hasLimit        bool
-}
-
-// envAndFileConf 的 mapstructure tag 与 settings.json 的键一致（小写
-// snake_case）；mapstructure 按大小写不敏感匹配，旧版大写键的配置文件仍可
-// 解析。Openai* 派生字段不从文件读取（mapstructure:"-"），由 setActiveModel
-// 按活跃模型维护。
+// envAndFileConf contains settings inputs, never resolved model connections.
 type envAndFileConf struct {
-
-	// 辅助模型使用 OPENAI_* 环境变量覆盖时，该引用是展示别名，
-	// 不作为可切换的模型目录条目。
-	CompactionModel string           `mapstructure:"compaction_model"`
-	Model           string           `mapstructure:"model"`
-	ProviderList    []ProviderConfig `mapstructure:"provider_list"`
-
-	// MCPServers 声明外部 MCP（Model Context Protocol）server，code 模式
-	// 装配时接入其工具（见 cmd/agentasm 与 internal/infrastructure/mcp）。
-	// 键为 server 名，进入工具名命名空间（mcp__<server>__<tool>）。
-	MCPServers map[string]MCPServerConf `mapstructure:"mcp_servers"`
-
-	// Openai* 是由 Model 解析出的当前运行时有效配置，不直接从配置文件反序列化。
-	OpenaiApiKey              string `mapstructure:"-"`
-	OpenaiBaseUrl             string `mapstructure:"-"`
-	OpenaiModel               string `mapstructure:"-"`
-	AuthType                  string `mapstructure:"-"`
-	CredentialRef             string `mapstructure:"-"`
-	ReasoningEffort           string `mapstructure:"-"`
-	CompactionAuthType        string `mapstructure:"-"`
-	CompactionCredentialRef   string `mapstructure:"-"`
-	CompactionReasoningEffort string `mapstructure:"-"`
-
-	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
-	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
-	CompactionOpenaiApiKey          string `mapstructure:"-"`
-	CompactionOpenaiBaseUrl         string `mapstructure:"-"`
-	CompactionOpenaiModel           string `mapstructure:"-"`
-	CompactionOpenaiContextWindow   int    `mapstructure:"compaction_openai_context_window"`
-	CompactionOpenaiMaxOutputTokens int    `mapstructure:"compaction_openai_max_output_tokens"`
-	LlmRouterAddr                   string `mapstructure:"llm_router_addr"`
-	// LlmRouterURL 是进程启动后写入的实际本地端点，不从环境或配置文件读取。
-	LlmRouterURL string `mapstructure:"-"`
-
-	// compactionConfigured 记录压缩模型是否被显式配置（compaction_model 引用
-	// 或 OPENAI_COMPACTION_* 环境变量）。未显式配置时压缩模型继承主模型，
-	// setActiveModel 切换主模型后需同步重推导。
-	compactionConfigured bool
-	// rawCompactionContextWindow / rawCompactionMaxOutputTokens 是压缩窗口的
-	// 原始配置值（文件/环境），在派生值覆盖前快照，供运行期重推导复用。
-	rawCompactionContextWindow   int
-	rawCompactionMaxOutputTokens int
+	Model                           string                   `mapstructure:"model"`
+	CompactionModel                 string                   `mapstructure:"compaction_model"`
+	ProviderList                    json.RawMessage          `mapstructure:"-"`
+	MCPServers                      map[string]MCPServerConf `mapstructure:"mcp_servers"`
+	OpenaiContextWindow             int                      `mapstructure:"openai_context_window"`
+	OpenaiMaxOutputTokens           int                      `mapstructure:"openai_max_output_tokens"`
+	CompactionOpenaiContextWindow   int                      `mapstructure:"compaction_openai_context_window"`
+	CompactionOpenaiMaxOutputTokens int                      `mapstructure:"compaction_openai_max_output_tokens"`
+	LlmRouterAddr                   string                   `mapstructure:"llm_router_addr"`
+	LlmRouterURL                    string                   `mapstructure:"-"`
 }
 
-const (
-	// 兼容端点的 /models 响应不会标准化暴露 context window，
-	// 因此给出保守默认值，并允许按实际部署显式配置。
-	DefaultContextWindow   = 200_000
-	DefaultMaxOutputTokens = 16_384
-	// 端口 0 让操作系统分配空闲端口，避免多个 laxcode 进程互相冲突；如需稳定
-	// 地址供外部客户端访问，可通过 LLM_ROUTER_ADDR 显式覆盖。
-	DefaultLLMRouterAddr = "127.0.0.1:0"
-)
+const DefaultLLMRouterAddr = "127.0.0.1:0"
 
 var EnvAndFileConf envAndFileConf
-
 var EnvOrFile = viper.New()
 
-const (
-	envProviderName = "env_provider"
-	envModelName    = "env_model"
-)
-
-func modelRef(providerName, modelName string) string {
-	return providerName + ":" + modelName
+type cliConf struct {
+	Addr string `mapstructure:"addr"`
+	Plan bool   `mapstructure:"plan"`
 }
 
-func validCatalogName(name string) bool {
-	return name != "" && !strings.ContainsRune(name, ':') &&
-		strings.IndexFunc(name, unicode.IsSpace) < 0
-}
+const DefaultSSEAddr = "127.0.0.1:8090"
 
-func (c *envAndFileConf) resolveModel(ref string) (ResolvedModel, error) {
-	providerName, modelName, ok := strings.Cut(ref, ":")
-	if !ok || !validCatalogName(providerName) || !validCatalogName(modelName) {
-		return ResolvedModel{}, fmt.Errorf("invalid model reference %q; expected provider:model", ref)
-	}
-	for _, provider := range c.ProviderList {
-		if provider.ProviderName != providerName {
-			continue
-		}
-		for _, model := range provider.ModelList {
-			if model.ModelName != modelName {
-				continue
-			}
-			upstreamModel := model.UpstreamModel
-			if upstreamModel == "" {
-				upstreamModel = model.ModelName
-			}
-			resolved := ResolvedModel{
-				AuthType: provider.AuthType, CredentialRef: provider.CredentialRef, ReasoningEffort: model.ReasoningEffort,
-				Ref:             ref,
-				ProviderName:    providerName,
-				ModelName:       modelName,
-				UpstreamModel:   upstreamModel,
-				OpenaiApiKey:    provider.OpenaiApiKey,
-				OpenaiBaseUrl:   provider.OpenaiBaseUrl,
-				ContextWindow:   c.OpenaiContextWindow,
-				MaxOutputTokens: c.OpenaiMaxOutputTokens,
-			}
-			// 模型级 limit 覆盖全局窗口；validateModelCatalog 保证 limit
-			// 一旦声明则两项均合法，未声明（nil）时保持全局回退值。
-			if model.Limit != nil {
-				resolved.ContextWindow = model.Limit.Context
-				resolved.MaxOutputTokens = model.Limit.Output
-				resolved.hasLimit = true
-			}
-			// 显式环境变量优先于配置文件的模型级 limit。
-			if strings.TrimSpace(os.Getenv("OPENAI_CONTEXT_WINDOW")) != "" {
-				resolved.ContextWindow = c.OpenaiContextWindow
-			}
-			if strings.TrimSpace(os.Getenv("OPENAI_MAX_OUTPUT_TOKENS")) != "" {
-				resolved.MaxOutputTokens = c.OpenaiMaxOutputTokens
-			}
-			return resolved, nil
-		}
-		return ResolvedModel{}, fmt.Errorf("model %q is not configured for provider %q", modelName, providerName)
-	}
-	return ResolvedModel{}, fmt.Errorf("provider %q is not configured", providerName)
-}
-
-func (c *envAndFileConf) validateModelCatalog() error {
-	providers := make(map[string]struct{}, len(c.ProviderList))
-	for _, provider := range c.ProviderList {
-		if !validCatalogName(provider.ProviderName) {
-			return fmt.Errorf("invalid provider_name %q", provider.ProviderName)
-		}
-		if provider.ProviderName == envProviderName &&
-			(len(provider.ModelList) != 1 || provider.ModelList[0].ModelName != envModelName ||
-				provider.ModelList[0].UpstreamModel == "") {
-			return fmt.Errorf("provider_name %q is reserved for environment configuration", envProviderName)
-		}
-		if _, exists := providers[provider.ProviderName]; exists {
-			return fmt.Errorf("duplicate provider_name %q", provider.ProviderName)
-		}
-		providers[provider.ProviderName] = struct{}{}
-		switch provider.AuthType {
-		case "", "api_key":
-			if strings.TrimSpace(provider.OpenaiApiKey) == "" || strings.TrimSpace(provider.OpenaiBaseUrl) == "" {
-				return fmt.Errorf("provider %q requires openai_api_key and openai_base_url", provider.ProviderName)
-			}
-		case "oauth":
-			if provider.CredentialRef != chatgpt.CredentialRef || strings.TrimRight(provider.OpenaiBaseUrl, "/") != strings.TrimRight(chatgpt.BaseURL, "/") || provider.OpenaiApiKey != "" {
-				return fmt.Errorf("provider %q requires a ChatGPT credential reference and the official endpoint", provider.ProviderName)
-			}
-		default:
-			return fmt.Errorf("unsupported auth_type %q", provider.AuthType)
-		}
-		if len(provider.ModelList) == 0 {
-			return fmt.Errorf("provider %q requires at least one model", provider.ProviderName)
-		}
-		models := make(map[string]struct{}, len(provider.ModelList))
-		for _, model := range provider.ModelList {
-			if err := chatgpt.ValidateEffort(model.ModelName, model.ReasoningEffort); err != nil {
-				return err
-			}
-			if !validCatalogName(model.ModelName) {
-				return fmt.Errorf("invalid model_name %q for provider %q", model.ModelName, provider.ProviderName)
-			}
-			if model.Limit != nil &&
-				(model.Limit.Context <= 0 || model.Limit.Output <= 0 || model.Limit.Output >= model.Limit.Context) {
-				return fmt.Errorf("invalid limit for model %q of provider %q: context and output must be positive and output must be smaller than context",
-					model.ModelName, provider.ProviderName)
-			}
-			if _, exists := models[model.ModelName]; exists {
-				return fmt.Errorf("duplicate model_name %q for provider %q", model.ModelName, provider.ProviderName)
-			}
-			models[model.ModelName] = struct{}{}
-		}
-	}
-	if len(c.ProviderList) == 0 {
-		if c.Model != "" {
-			return fmt.Errorf("model %q is set but provider_list is empty", c.Model)
-		}
-		// 空目录且未选择模型是合法的「未配置」状态：SSE 模式允许先启动进入
-		// 页面，再经 POST /api/models 添加；是否要求必须配置由调用方按模式决定。
-		return nil
-	}
-	_, err := c.resolveModel(c.Model)
-	return err
-}
+var CliConf cliConf
+var Cli = viper.New()
 
 // validateMCPServers 校验 mcp_servers 段的结构不变式：键非空且不含空白
 // （键会进入工具名命名空间），已启用的条目必须声明且仅声明一种传输形态
@@ -318,142 +117,6 @@ func validHTTPHeaderName(name string) bool {
 	return true
 }
 
-func (c *envAndFileConf) setActiveModel(ref string) error {
-	resolved, err := c.resolveModel(ref)
-	if err != nil {
-		return err
-	}
-	c.Model = resolved.Ref
-	c.OpenaiApiKey = resolved.OpenaiApiKey
-	c.OpenaiBaseUrl = resolved.OpenaiBaseUrl
-	c.OpenaiModel = resolved.UpstreamModel
-	c.AuthType, c.CredentialRef, c.ReasoningEffort = resolved.AuthType, resolved.CredentialRef, resolved.ReasoningEffort
-	// 压缩模型未显式配置时继承主模型；主模型切换（含延迟配置后的首次激
-	// 活）后同步重推导，保证运行期装配读到与新主模型一致的压缩配置。
-	if !c.compactionConfigured {
-		c.CompactionModel = resolved.Ref
-		c.CompactionOpenaiApiKey = resolved.OpenaiApiKey
-		c.CompactionOpenaiBaseUrl = resolved.OpenaiBaseUrl
-		c.CompactionOpenaiModel = resolved.UpstreamModel
-		c.CompactionAuthType, c.CompactionCredentialRef, c.CompactionReasoningEffort = resolved.AuthType, resolved.CredentialRef, resolved.ReasoningEffort
-		c.CompactionOpenaiContextWindow = effectiveAuxiliaryBudget(
-			resolved.ContextWindow, c.rawCompactionContextWindow, resolved.hasLimit, "COMPACTION_OPENAI_CONTEXT_WINDOW")
-		c.CompactionOpenaiMaxOutputTokens = effectiveAuxiliaryBudget(
-			resolved.MaxOutputTokens, c.rawCompactionMaxOutputTokens, resolved.hasLimit, "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
-	}
-	return nil
-}
-
-type modelEnvironment struct {
-	apiKey, baseURL, model string
-}
-
-func readModelEnvironment(prefix string) modelEnvironment {
-	return modelEnvironment{
-		apiKey:  strings.TrimSpace(os.Getenv(prefix + "API_KEY")),
-		baseURL: strings.TrimSpace(os.Getenv(prefix + "BASE_URL")),
-		model:   strings.TrimSpace(os.Getenv(prefix + "MODEL_NAME")),
-	}
-}
-
-func (e modelEnvironment) count() int {
-	count := 0
-	for _, value := range []string{e.apiKey, e.baseURL, e.model} {
-		if value != "" {
-			count++
-		}
-	}
-	return count
-}
-
-func (e modelEnvironment) apply(resolved *ResolvedModel) {
-	if e.count() == 0 {
-		return
-	}
-	resolved.Ref = modelRef(envProviderName, envModelName)
-	// An explicit environment credential switches billing to API-key auth.
-	if e.apiKey != "" || e.baseURL != "" {
-		resolved.AuthType, resolved.CredentialRef = "", ""
-	}
-	if e.apiKey != "" {
-		resolved.OpenaiApiKey = e.apiKey
-	}
-	if e.baseURL != "" {
-		resolved.OpenaiBaseUrl = e.baseURL
-	}
-	if e.model != "" {
-		resolved.UpstreamModel = e.model
-	}
-}
-
-func effectiveAuxiliaryBudget(modelValue, configuredValue int, hasModelLimit bool, envKey string) int {
-	if strings.TrimSpace(os.Getenv(envKey)) != "" {
-		return configuredValue
-	}
-	if hasModelLimit {
-		return modelValue
-	}
-	if configuredValue != 0 {
-		return configuredValue
-	}
-	return modelValue
-}
-
-// resolveAuxiliaryModel 从模型目录解析文件引用，再逐项应用非空环境变量。
-// 完整的环境配置无需依赖文件引用；未配置压缩模型时继承主模型。
-func (c *envAndFileConf) resolveAuxiliaryModel(key, ref string, env modelEnvironment, fallback ResolvedModel) (ResolvedModel, error) {
-	resolved := fallback
-	if env.count() == 3 {
-		resolved = ResolvedModel{
-			ContextWindow: c.OpenaiContextWindow, MaxOutputTokens: c.OpenaiMaxOutputTokens,
-		}
-	} else if ref != "" {
-		var err error
-		resolved, err = c.resolveModel(ref)
-		if err != nil {
-			return ResolvedModel{}, fmt.Errorf("%s: %w", key, err)
-		}
-	}
-	if env.model != "" && env.model != resolved.UpstreamModel {
-		// 模型名被环境变量替换后，原模型的 limit 不再适用。
-		resolved.ContextWindow = c.OpenaiContextWindow
-		resolved.MaxOutputTokens = c.OpenaiMaxOutputTokens
-		resolved.hasLimit = false
-	}
-	env.apply(&resolved)
-	return resolved, nil
-}
-
-// ResolveModel 将 provider:model 引用解析为创建 provider/client 所需的运行时配置。
-func ResolveModel(ref string) (ResolvedModel, error) { return EnvAndFileConf.resolveModel(ref) }
-
-// SetActiveModel 更新当前进程使用的模型引用及其派生连接参数，不写回配置文件。
-func SetActiveModel(ref string) error { return EnvAndFileConf.setActiveModel(ref) }
-
-// ActiveModelBudget 返回当前活跃主模型的 token 预算：模型级 limit 优先，未声明
-// 时回退全局 openai_context_window / openai_max_output_tokens。目录在启动时已
-// 校验，解析失败（仅可能出现在测试等手工构造的配置上）退回全局窗口配置。
-func ActiveModelBudget() (contextWindow, maxOutputTokens int) {
-	if resolved, err := EnvAndFileConf.resolveModel(EnvAndFileConf.Model); err == nil {
-		return resolved.ContextWindow, resolved.MaxOutputTokens
-	}
-	return EnvAndFileConf.OpenaiContextWindow, EnvAndFileConf.OpenaiMaxOutputTokens
-}
-
-type cliConf struct {
-	Addr        string `mapstructure:"addr"`
-	Plan        bool   `mapstructure:"plan"`
-	TokenBudget int    `mapstructure:"token-budget"`
-}
-
-// DefaultSSEAddr 是 sse server 模式的缺省监听地址：仅绑定本地回环，因为
-// Agent 具备 bash / 写文件能力，默认不对外暴露；需要对外时以 -addr 覆盖。
-const DefaultSSEAddr = "127.0.0.1:8090"
-
-var CliConf cliConf
-
-var Cli = viper.New()
-
 func ParseEnvAndFile() error {
 	// env.conf 是进程环境基线，先于其余配置注入：settings.json 与 OPENAI_*
 	// 环境绑定读到的是注入后的环境，bash 工具与 MCP server 派生的子进程也
@@ -488,8 +151,8 @@ func ParseEnvAndFile() error {
 		EnvOrFile.RegisterAlias("mcp_servers", "mcpServers")
 	}
 
-	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", DefaultContextWindow)
-	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", DefaultMaxOutputTokens)
+	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", 200_000)
+	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", 16_384)
 	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
 	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
 	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
@@ -499,100 +162,34 @@ func ParseEnvAndFile() error {
 	EnvOrFile.BindEnv("COMPACTION_MODEL", "COMPACTION_MODEL")
 	EnvOrFile.SetEnvKeyReplacer(strings.NewReplacer("_", "_"))
 
+	EnvAndFileConf = envAndFileConf{}
 	if err = EnvOrFile.Unmarshal(&EnvAndFileConf); err != nil {
 		return err
 	}
 
-	// 完整的 OPENAI_* 三元组作为一个保留别名的临时 provider 追加到目录，并
-	// 覆盖当前选择。部分设置不与文件配置拼接，避免凭据、端点和模型错配。
-	mainEnv := readModelEnvironment("OPENAI_")
-	envValues := mainEnv.count()
-	if envValues != 0 && envValues != 3 {
-		return errors.New("OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL_NAME must be set together")
-	}
-	if envValues == 3 {
-		for _, provider := range EnvAndFileConf.ProviderList {
-			if provider.ProviderName == envProviderName {
-				return fmt.Errorf("PROVIDER_NAME %q is reserved for environment configuration", envProviderName)
+	// Preserve provider_list directly from the source JSON, before Viper converts
+	// nested objects into maps. Concrete provider parsing belongs to ai_models.
+	EnvAndFileConf.ProviderList = nil
+	if filePath != "" {
+		data, readErr := os.ReadFile(filePath)
+		if readErr == nil {
+			var document map[string]json.RawMessage
+			if err := json.Unmarshal(data, &document); err != nil {
+				return err
 			}
-		}
-		EnvAndFileConf.ProviderList = append(EnvAndFileConf.ProviderList, ProviderConfig{
-			ProviderName:  envProviderName,
-			OpenaiApiKey:  mainEnv.apiKey,
-			OpenaiBaseUrl: mainEnv.baseURL,
-			ModelList: []ModelConfig{{
-				ModelName:     envModelName,
-				UpstreamModel: mainEnv.model,
-			}},
-		})
-		EnvAndFileConf.Model = modelRef(envProviderName, envModelName)
-	}
-	// 在派生值覆盖前快照压缩模型的显式配置：compactionConfigured 决定
-	// setActiveModel 是否随主模型重推导压缩模型；raw* 是压缩窗口的原始
-	// 配置值，供重推导时复用（文件/环境里未配置时为零值）。
-	EnvAndFileConf.compactionConfigured = strings.TrimSpace(EnvAndFileConf.CompactionModel) != "" ||
-		readModelEnvironment("OPENAI_COMPACTION_").count() > 0
-	EnvAndFileConf.rawCompactionContextWindow = EnvAndFileConf.CompactionOpenaiContextWindow
-	EnvAndFileConf.rawCompactionMaxOutputTokens = EnvAndFileConf.CompactionOpenaiMaxOutputTokens
-	// 目录非空但未选择模型时默认选中第一个条目：维持「目录非空 ⟹ 活跃模型
-	// 可解析」的不变式，也让延迟配置（SSE 模式先添加模型）在重启后无需再
-	// 手动选择。
-	if len(EnvAndFileConf.ProviderList) > 0 && strings.TrimSpace(EnvAndFileConf.Model) == "" {
-		first := EnvAndFileConf.ProviderList[0]
-		EnvAndFileConf.Model = modelRef(first.ProviderName, first.ModelList[0].ModelName)
-	}
-	if err := EnvAndFileConf.validateModelCatalog(); err != nil {
-		return err
-	}
-	if err := EnvAndFileConf.validateMCPServers(); err != nil {
-		return err
-	}
-	// 目录可为空（SSE 模式的延迟配置状态）：无活跃模型时跳过激活，压缩模型
-	// 的派生与校验一并推迟到添加并激活首个模型之后。
-	if EnvAndFileConf.Model != "" {
-		if err := EnvAndFileConf.setActiveModel(EnvAndFileConf.Model); err != nil {
-			return err
+			if document == nil {
+				return errors.New("settings must be a JSON object")
+			}
+			for key, value := range document {
+				if strings.EqualFold(key, "provider_list") {
+					EnvAndFileConf.ProviderList = value
+				}
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
 		}
 	}
-	mainModel, _ := EnvAndFileConf.resolveModel(EnvAndFileConf.Model)
-	compaction, err := EnvAndFileConf.resolveAuxiliaryModel(
-		"COMPACTION_MODEL", EnvAndFileConf.CompactionModel,
-		readModelEnvironment("OPENAI_COMPACTION_"), mainModel)
-	if err != nil {
-		return err
-	}
-	EnvAndFileConf.CompactionModel = compaction.Ref
-	EnvAndFileConf.CompactionOpenaiApiKey = compaction.OpenaiApiKey
-	EnvAndFileConf.CompactionOpenaiBaseUrl = compaction.OpenaiBaseUrl
-	EnvAndFileConf.CompactionOpenaiModel = compaction.UpstreamModel
-	EnvAndFileConf.CompactionAuthType, EnvAndFileConf.CompactionCredentialRef, EnvAndFileConf.CompactionReasoningEffort = compaction.AuthType, compaction.CredentialRef, compaction.ReasoningEffort
-	EnvAndFileConf.CompactionOpenaiContextWindow = effectiveAuxiliaryBudget(
-		compaction.ContextWindow, EnvAndFileConf.CompactionOpenaiContextWindow,
-		compaction.hasLimit, "COMPACTION_OPENAI_CONTEXT_WINDOW")
-	EnvAndFileConf.CompactionOpenaiMaxOutputTokens = effectiveAuxiliaryBudget(
-		compaction.MaxOutputTokens, EnvAndFileConf.CompactionOpenaiMaxOutputTokens,
-		compaction.hasLimit, "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
-	if EnvAndFileConf.OpenaiContextWindow <= 0 {
-		return errors.New("openai_context_window must be positive")
-	}
-	if EnvAndFileConf.OpenaiMaxOutputTokens <= 0 ||
-		EnvAndFileConf.OpenaiMaxOutputTokens >= EnvAndFileConf.OpenaiContextWindow {
-		return errors.New("openai_max_output_tokens must be positive and smaller than openai_context_window")
-	}
-	if EnvAndFileConf.Model != "" {
-		if EnvAndFileConf.CompactionOpenaiContextWindow <= 0 {
-			return errors.New("compaction_openai_context_window must be positive")
-		}
-		if EnvAndFileConf.CompactionOpenaiMaxOutputTokens <= 0 ||
-			EnvAndFileConf.CompactionOpenaiMaxOutputTokens >= EnvAndFileConf.CompactionOpenaiContextWindow {
-			return errors.New("compaction_openai_max_output_tokens must be positive and smaller than compaction_openai_context_window")
-		}
-	}
-	if window, output := ActiveModelBudget(); window <= 0 || output <= 0 || output >= window {
-		return errors.New("active model limit must have positive context and output smaller than context")
-	}
-
-	return nil
+	return EnvAndFileConf.validateMCPServers()
 }
 
 // ParseCli 解析命令行参数到 CliConf：用标准库 flag 定义与 cliConf 字段
@@ -607,7 +204,6 @@ func ParseEnvAndFile() error {
 func ParseCli() error {
 	addr := flag.String("addr", DefaultSSEAddr, "Web backend listen address")
 	plan := flag.Bool("plan", false, "enable plan mode")
-	tokenBudget := flag.Int("token-budget", 0, "token budget per session; 0 disables confirmation")
 	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -616,12 +212,8 @@ func ParseCli() error {
 	}
 	Cli.Set("addr", *addr)
 	Cli.Set("plan", *plan)
-	Cli.Set("token-budget", *tokenBudget)
 	if err := Cli.Unmarshal(&CliConf); err != nil {
 		return err
-	}
-	if CliConf.TokenBudget < 0 {
-		return fmt.Errorf("-token-budget must be non-negative")
 	}
 	return nil
 }

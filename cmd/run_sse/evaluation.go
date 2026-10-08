@@ -207,7 +207,7 @@ func (s *server) runEvaluation(ctx context.Context, job evaluation.Job) error {
 
 	s.switcher.RLock()
 	assembled, err := s.assembleEvaluation(ctx, agentasm.Input{
-		Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
+		Models: s.models, Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
 		ReadRoots: []string{snapshotDir}, SessionID: job.ID,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(job.SnapshotHistory),
 	})

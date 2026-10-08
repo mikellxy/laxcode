@@ -9,6 +9,7 @@ import (
 	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
 	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
+	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
@@ -26,6 +27,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
+	}
+	models, err := agentasm.NewModels(homeDir)
+	if err != nil {
+		panic(err)
 	}
 	codeInstance, err := run_sse.AcquireCodeInstanceGuard(homeDir)
 	if err != nil {
@@ -49,8 +54,15 @@ func main() {
 		_ = logFile.Close()
 		os.Exit(1)
 	}
-	c := config.EnvAndFileConf
-	routerServer := applicationrouter.NewHTTPServer(agentasm.NewRouterClient(homeDir, config.ResolvedModel{OpenaiApiKey: c.OpenaiApiKey, OpenaiBaseUrl: c.OpenaiBaseUrl, UpstreamModel: c.OpenaiModel, AuthType: c.AuthType, CredentialRef: c.CredentialRef, ReasoningEffort: c.ReasoningEffort}), routerLogger)
+	var client domainrouter.StreamClient
+	if ref := models.Active().Ref; ref != "" {
+		client, err = models.StreamClient(ref)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+	}
+	routerServer := applicationrouter.NewHTTPServer(client, routerLogger)
 	runningRouter, err := routerServer.Start(config.EnvAndFileConf.LlmRouterAddr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -69,5 +81,5 @@ func main() {
 	}
 	defer shutdownRouter()
 
-	run_sse.Run(routerServer, codeInstance)
+	run_sse.Run(routerServer, codeInstance, models)
 }

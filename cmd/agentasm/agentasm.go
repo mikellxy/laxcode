@@ -14,6 +14,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
@@ -29,6 +30,8 @@ import (
 
 // Input 是装配 ReActService 所需、且因前端而异的输入。
 type Input struct {
+	// Models is owned by the composition root; its resolved limits are copied into LLM clients.
+	Models *ai_models.Manager
 	// Tracer 由入口注入时，其生命周期归入口所有；nil 保留独立装配的默认追踪。
 	Tracer telemetry.Tracer
 	// MCPPool 由后端服务持有；非 nil 时仅注册工具，Cleanup 不关闭共享连接。
@@ -79,28 +82,21 @@ type Assembled struct {
 	Cleanup func()
 }
 
-// newMainProvider 按当前活跃模型构建主 provider：凭据取运行时配置（由
-// config.SetActiveModel 维护），token 预算经 config.ActiveModelBudget 解析，
-// 模型级 limit（limit.context / limit.output）优先，未声明时回退全局窗口
-// 配置。
-func newMainProvider(homes ...string) *llmprovider.OpenApiProvider {
-	c := config.EnvAndFileConf
-	contextWindow, maxOutput := config.ActiveModelBudget()
+// newMainProvider copies the selected model and its effective limits into a
+// request-scoped provider. ReActService reads them via LLMClient.ContextBudget.
+func newMainProvider(homeDir string, models *ai_models.Manager) *llmprovider.OpenApiProvider {
+	c := models.Active()
 	provider := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.OpenaiModel, c.LlmRouterURL,
-		contextWindow, maxOutput).WithReasoningEffort(c.ReasoningEffort)
+		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, config.EnvAndFileConf.LlmRouterURL,
+		c.ContextWindow, c.MaxOutputTokens).WithReasoningEffort(c.ReasoningEffort)
 	if c.AuthType == "oauth" {
-		home, _ := os.UserHomeDir()
-		if len(homes) > 0 {
-			home = homes[0]
-		}
-		provider.WithChatGPT(home, c.CredentialRef)
+		provider.WithChatGPT(homeDir, c.CredentialRef)
 	}
 	return provider
 }
 
 // Assemble 装配一个可直接运行的 ReActService：会话（含系统提示词）、tracer、
-// 工具集（含子 Agent）、LLM provider。OpenAI 凭据取自 config.EnvAndFileConf，
+// 工具集（含子 Agent）、LLM provider。模型连接和容量由 Models 提供，
 // 调用前须已由调用方校验（本函数不重复校验，缺失会在 Run 时才暴露）。
 // SystemPrompt 为空时生成默认 coding-agent prompt，非空时原样采用调用方的专用
 // prompt。返回的 error 仅来自会话初始化 / 系统提示词写入。
@@ -111,7 +107,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	if in.PlanMode && in.Mode != ModeCode {
 		return nil, fmt.Errorf("plan mode requires code mode")
 	}
-	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode, in.Tracer)
+	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode, in.Tracer, in.Models)
 	if err != nil {
 		return nil, err
 	}

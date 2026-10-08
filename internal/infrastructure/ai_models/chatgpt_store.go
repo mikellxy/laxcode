@@ -1,5 +1,5 @@
 // Package chatgpt implements the public-client Sign in with ChatGPT flow.
-package chatgpt
+package ai_models
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 const (
 	BaseURL       = "https://api.openai.com/v1/"
 	Issuer        = "https://auth.openai.com"
-	DirectScope   = "chatgpt.tokens.use.direct"
+	DirectScope   = "tokens.use.direct"
 	CredentialRef = "chatgpt-main"
 )
 

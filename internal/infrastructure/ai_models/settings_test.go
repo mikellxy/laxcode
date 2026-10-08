@@ -1,4 +1,4 @@
-package config
+package ai_models
 
 import (
 	"encoding/json"
@@ -22,10 +22,10 @@ func TestAddModelToSettingsPersistsAndUpdatesRuntimeCatalog(t *testing.T) {
 			"model_list":[{"model_name":"main"}]
 		}]
 	}`)
-	if err := ParseEnvAndFile(); err != nil {
+	if err := parseTestSettings(); err != nil {
 		t.Fatal(err)
 	}
-	added, err := AddModelToSettings(home, AddModelInput{
+	added, err := testManager.AddModelToSettings(AddModelInput{
 		Provider: "p", Model: "new-model", APIKey: "secret", BaseURL: "https://example.com/v1/",
 		ContextWindow: 200_000, MaxOutputTokens: 16_000,
 	})
@@ -35,12 +35,12 @@ func TestAddModelToSettingsPersistsAndUpdatesRuntimeCatalog(t *testing.T) {
 	if added.ModelName != "new-model" || added.Limit == nil || added.Limit.Context != 200_000 || added.Limit.Output != 16_000 {
 		t.Fatalf("added model=%+v", added)
 	}
-	resolved, err := ResolveModel("p:new-model")
+	resolved, err := testManager.Resolve("p:new-model")
 	if err != nil || resolved.ContextWindow != 200_000 || resolved.MaxOutputTokens != 16_000 {
 		t.Fatalf("resolved=%+v err=%v", resolved, err)
 	}
-	if EnvAndFileConf.Model != "p:main" {
-		t.Fatalf("adding a model changed current model to %q", EnvAndFileConf.Model)
+	if testManager.state.active.Ref != "p:main" {
+		t.Fatalf("adding a model changed current model to %q", testManager.state.active.Ref)
 	}
 
 	settingsPath := filepath.Join(home, ".laxcode", "settings.json")
@@ -72,20 +72,20 @@ func TestAddModelToSettingsRejectsDuplicateAndCredentialConflict(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeSettings(t, home, modelSettings("p", "main"))
-	if err := ParseEnvAndFile(); err != nil {
+	if err := parseTestSettings(); err != nil {
 		t.Fatal(err)
 	}
 
 	base := AddModelInput{Provider: "p", APIKey: "sk-file-key", BaseURL: "https://file.example.com/v1", ContextWindow: 100, MaxOutputTokens: 10}
 	duplicate := base
 	duplicate.Model = "main"
-	if _, err := AddModelToSettings(home, duplicate); !errors.Is(err, ErrModelAlreadyExists) {
+	if _, err := testManager.AddModelToSettings(duplicate); !errors.Is(err, ErrModelAlreadyExists) {
 		t.Fatalf("duplicate error=%v", err)
 	}
 	conflict := base
 	conflict.Model = "another"
 	conflict.APIKey = "different"
-	if _, err := AddModelToSettings(home, conflict); !errors.Is(err, ErrProviderCredentialsConflict) {
+	if _, err := testManager.AddModelToSettings(conflict); !errors.Is(err, ErrProviderCredentialsConflict) {
 		t.Fatalf("credential conflict error=%v", err)
 	}
 }
@@ -95,17 +95,17 @@ func TestAddModelToSettingsCreatesProvider(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeSettings(t, home, modelSettings("p", "main"))
-	if err := ParseEnvAndFile(); err != nil {
+	if err := parseTestSettings(); err != nil {
 		t.Fatal(err)
 	}
-	_, err := AddModelToSettings(home, AddModelInput{
+	_, err := testManager.AddModelToSettings(AddModelInput{
 		Provider: "second", Model: "chat", APIKey: "secret-2", BaseURL: "https://second.example/v1",
 		ContextWindow: 128_000, MaxOutputTokens: 8_000,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ResolveModel("second:chat")
+	resolved, err := testManager.Resolve("second:chat")
 	if err != nil || resolved.OpenaiBaseUrl != "https://second.example/v1" {
 		t.Fatalf("resolved=%+v err=%v", resolved, err)
 	}
@@ -118,10 +118,10 @@ func TestAddModelToSettingsFirstModelCreatesSettingsAndActivates(t *testing.T) {
 	swapConfigGlobals(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := ParseEnvAndFile(); err != nil {
+	if err := parseTestSettings(); err != nil {
 		t.Fatal(err)
 	}
-	added, err := AddModelToSettings(home, AddModelInput{
+	added, err := testManager.AddModelToSettings(AddModelInput{
 		Provider: "openai", Model: "gpt-test", APIKey: "sk-new", BaseURL: "https://api.example.com/v1",
 		ContextWindow: 200_000, MaxOutputTokens: 16_000,
 	})
@@ -131,13 +131,13 @@ func TestAddModelToSettingsFirstModelCreatesSettingsAndActivates(t *testing.T) {
 	if added.ModelName != "gpt-test" {
 		t.Fatalf("added model=%+v", added)
 	}
-	if EnvAndFileConf.Model != "openai:gpt-test" || EnvAndFileConf.OpenaiApiKey != "sk-new" ||
-		EnvAndFileConf.OpenaiBaseUrl != "https://api.example.com/v1" || EnvAndFileConf.OpenaiModel != "gpt-test" {
-		t.Fatalf("first added model should be activated: %+v", EnvAndFileConf)
+	if testManager.state.active.Ref != "openai:gpt-test" || testManager.state.active.OpenaiApiKey != "sk-new" ||
+		testManager.state.active.OpenaiBaseUrl != "https://api.example.com/v1" || testManager.state.active.UpstreamModel != "gpt-test" {
+		t.Fatalf("first added model should be activated: %+v", testManager.state)
 	}
-	if EnvAndFileConf.CompactionModel != "openai:gpt-test" || EnvAndFileConf.CompactionOpenaiApiKey != "sk-new" ||
-		EnvAndFileConf.CompactionOpenaiContextWindow != 200_000 || EnvAndFileConf.CompactionOpenaiMaxOutputTokens != 16_000 {
-		t.Fatalf("compaction should derive from the first model: %+v", EnvAndFileConf)
+	if testManager.state.compaction.Ref != "openai:gpt-test" || testManager.state.compaction.OpenaiApiKey != "sk-new" ||
+		testManager.state.compaction.ContextWindow != 200_000 || testManager.state.compaction.MaxOutputTokens != 16_000 {
+		t.Fatalf("compaction should derive from the first model: %+v", testManager.state)
 	}
 
 	settingsPath := filepath.Join(home, ".laxcode", "settings.json")
