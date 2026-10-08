@@ -535,14 +535,18 @@ func (r *SqliteSessionRepo) CommitUpdateMessage(ctx context.Context, id string, 
 	if err := snapshot.Validate(); err != nil {
 		return 0, err
 	}
-	if !snapshotContains(snapshot.Messages, memory) {
+	matches, err := snapshotContains(snapshot.Messages, memory)
+	if err != nil {
+		return 0, err
+	}
+	if !matches {
 		return 0, fmt.Errorf("%w: updated memory is absent from snapshot", ErrStaleSequence)
 	}
 	if snapshot.Revision == ^uint64(0) {
 		return 0, fmt.Errorf("%w: revision exhausted", ErrContextConflict)
 	}
 	newRevision := snapshot.Revision + 1
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		current, exists, err := loadCurrentContext(tx, id)
 		if err != nil {
 			return err
@@ -649,10 +653,21 @@ func validateCreatedMessage(snapshot session.RequestContext, original, memory sh
 		len(original.OriginalSeq) != 1 || original.OriginalSeq[0] != original.Seq {
 		return fmt.Errorf("%w: invalid original identity", ErrStaleSequence)
 	}
-	if !equalMessage(original, memory) {
+	matches, err := equalMessage(original, memory)
+	if err != nil {
+		return err
+	}
+	if !matches {
 		return fmt.Errorf("%w: original and initial memory differ", ErrStaleSequence)
 	}
-	if len(snapshot.Messages) == 0 || !equalMessage(snapshot.Messages[len(snapshot.Messages)-1], memory) {
+	if len(snapshot.Messages) == 0 {
+		return fmt.Errorf("%w: memory does not match snapshot tail", ErrStaleSequence)
+	}
+	matches, err = equalMessage(snapshot.Messages[len(snapshot.Messages)-1], memory)
+	if err != nil {
+		return err
+	}
+	if !matches {
 		return fmt.Errorf("%w: memory does not match snapshot tail", ErrStaleSequence)
 	}
 	return nil
@@ -802,19 +817,25 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 	return msg, nil
 }
 
-func snapshotContains(messages []sharedkernel.Message, target sharedkernel.Message) bool {
+func snapshotContains(messages []sharedkernel.Message, target sharedkernel.Message) (bool, error) {
 	for _, msg := range messages {
 		if msg.Seq == target.Seq {
 			return equalMessage(msg, target)
 		}
 	}
-	return false
+	return false, nil
 }
 
-func equalMessage(a, b sharedkernel.Message) bool {
-	aJSON, errA := json.Marshal(a)
-	bJSON, errB := json.Marshal(b)
-	return errA == nil && errB == nil && string(aJSON) == string(bJSON) && a.DisplayContent == b.DisplayContent
+func equalMessage(a, b sharedkernel.Message) (bool, error) {
+	aJSON, err := json.Marshal(a)
+	if err != nil {
+		return false, fmt.Errorf("encode message %d for comparison: %w", a.Seq, err)
+	}
+	bJSON, err := json.Marshal(b)
+	if err != nil {
+		return false, fmt.Errorf("encode message %d for comparison: %w", b.Seq, err)
+	}
+	return string(aJSON) == string(bJSON) && a.DisplayContent == b.DisplayContent, nil
 }
 
 var _ session.SessionRepository = (*SqliteSessionRepo)(nil)

@@ -468,6 +468,46 @@ func TestCreateRejectsStaleRevisionAndSequence(t *testing.T) {
 	}
 }
 
+func TestMalformedToolArgumentsPreserveEncodingError(t *testing.T) {
+	for _, operation := range []string{"create", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			repo, _ := newTestRepo(t)
+			s := createSystem(t, repo, "invalid-args", "system")
+			msg := sharedkernel.Message{Role: sharedkernel.RoleAssistant, ToolCalls: []sharedkernel.ToolCall{{
+				ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.go"}`),
+			}}}
+			if operation == "update" {
+				appendMessage(t, repo, s, &msg)
+			}
+			before := s.Snapshot()
+			msg.ToolCalls[0].Arguments = json.RawMessage(`{"path":`)
+			var err error
+			if operation == "create" {
+				candidate, appendErr := s.WithAppendedMessage(&msg)
+				if appendErr != nil {
+					t.Fatal(appendErr)
+				}
+				_, err = repo.CommitCreateMessage(context.Background(), s.ID, candidate.Snapshot(), msg, msg)
+			} else {
+				candidate := s.Clone()
+				candidate.Messages[len(candidate.Messages)-1] = msg.Clone()
+				_, err = repo.CommitUpdateMessage(context.Background(), s.ID, candidate.Snapshot(), msg)
+			}
+			var encodingErr *json.MarshalerError
+			if !errors.As(err, &encodingErr) || errors.Is(err, ErrStaleSequence) {
+				t.Fatalf("expected encoding error rather than stale sequence, got %v", err)
+			}
+			after, err := repo.GetRequestContext(context.Background(), s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("rejected write changed stored context")
+			}
+		})
+	}
+}
+
 func TestUpdateChangesOnlyCurrentMemory(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	s := createSystem(t, repo, "update", "old")
