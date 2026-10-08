@@ -83,12 +83,20 @@ type Assembled struct {
 // config.SetActiveModel 维护），token 预算经 config.ActiveModelBudget 解析，
 // 模型级 limit（limit.context / limit.output）优先，未声明时回退全局窗口
 // 配置。
-func newMainProvider() *llmprovider.OpenApiProvider {
+func newMainProvider(homes ...string) *llmprovider.OpenApiProvider {
 	c := config.EnvAndFileConf
 	contextWindow, maxOutput := config.ActiveModelBudget()
-	return llmprovider.NewOpenApiProviderWithStreamGateway(
+	provider := llmprovider.NewOpenApiProviderWithStreamGateway(
 		c.OpenaiApiKey, c.OpenaiBaseUrl, c.OpenaiModel, c.LlmRouterURL,
-		contextWindow, maxOutput)
+		contextWindow, maxOutput).WithReasoningEffort(c.ReasoningEffort)
+	if c.AuthType == "oauth" {
+		home, _ := os.UserHomeDir()
+		if len(homes) > 0 {
+			home = homes[0]
+		}
+		provider.WithChatGPT(home, c.CredentialRef)
+	}
+	return provider
 }
 
 // Assemble 装配一个可直接运行的 ReActService：会话（含系统提示词）、tracer、

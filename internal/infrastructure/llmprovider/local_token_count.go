@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	tiktoken "github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
 )
@@ -47,6 +48,12 @@ func (p *OpenApiProvider) countInputTokensLocal(msgs []sharedkernel.Message, too
 	data, err := json.Marshal(params)
 	if err != nil {
 		return 0, fmt.Errorf("marshal params for local token count: %w", err)
+	}
+	if p.oauth {
+		data, err = chatgpt.NormalizeRequest(data)
+		if err != nil {
+			return 0, err
+		}
 	}
 	return len(encoding.Encode(string(data), nil, nil)), nil
 }

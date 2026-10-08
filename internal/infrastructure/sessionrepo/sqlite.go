@@ -65,27 +65,28 @@ func (projectModel) TableName() string { return "projects" }
 // messageModel 同时承载不可变 original 与各代工作集消息。复合主键使 original
 // 和每一代 memory 在同一 session/seq 下各有且只有一条，无需额外关联表。
 type messageModel struct {
-	SessionID        string    `gorm:"column:session_id;type:varchar(128);primaryKey;priority:1"`
-	MessageType      string    `gorm:"column:message_type;type:varchar(32);primaryKey;priority:2"`
-	MemoryGeneration uint64    `gorm:"column:memory_generation;primaryKey;priority:3"`
-	Seq              uint64    `gorm:"column:seq;primaryKey;priority:4"`
-	OriginalSeqJSON  []byte    `gorm:"column:original_seq_json;type:json;not null"`
-	Role             string    `gorm:"column:role;type:varchar(32);not null"`
-	ToolCallID       string    `gorm:"column:tool_call_id;type:varchar(128);not null"`
-	Content          string    `gorm:"column:content;type:text;not null"`
-	ChatID           string    `gorm:"column:chat_id;type:varchar(64);not null;default:''"`
-	DisplayContent   string    `gorm:"column:display_content;type:text;not null;default:''"`
-	CompactContent   string    `gorm:"column:compact_content;type:text;not null;default:''"`
-	ReasoningID      string    `gorm:"column:reasoning_id;type:varchar(255);not null"`
-	ReasoningContent string    `gorm:"column:reasoning_content;type:text;not null"`
-	ToolCallsJSON    []byte    `gorm:"column:tool_calls_json;type:json"`
-	FinishReason     string    `gorm:"column:finish_reason;type:varchar(32);not null;default:''"`
-	ArtifactID       *string   `gorm:"column:artifact_id;type:varchar(64)"`
-	ArtifactByteSize *int64    `gorm:"column:artifact_byte_size"`
-	TokenInput       int64     `gorm:"column:token_input;not null"`
-	TokenOutput      int64     `gorm:"column:token_output;not null"`
-	CreatedAt        time.Time `gorm:"column:created_at;not null"`
-	UpdatedAt        time.Time `gorm:"column:updated_at;not null"`
+	SessionID                 string    `gorm:"column:session_id;type:varchar(128);primaryKey;priority:1"`
+	MessageType               string    `gorm:"column:message_type;type:varchar(32);primaryKey;priority:2"`
+	MemoryGeneration          uint64    `gorm:"column:memory_generation;primaryKey;priority:3"`
+	Seq                       uint64    `gorm:"column:seq;primaryKey;priority:4"`
+	OriginalSeqJSON           []byte    `gorm:"column:original_seq_json;type:json;not null"`
+	Role                      string    `gorm:"column:role;type:varchar(32);not null"`
+	ToolCallID                string    `gorm:"column:tool_call_id;type:varchar(128);not null"`
+	Content                   string    `gorm:"column:content;type:text;not null"`
+	ChatID                    string    `gorm:"column:chat_id;type:varchar(64);not null;default:''"`
+	DisplayContent            string    `gorm:"column:display_content;type:text;not null;default:''"`
+	CompactContent            string    `gorm:"column:compact_content;type:text;not null;default:''"`
+	ReasoningID               string    `gorm:"column:reasoning_id;type:varchar(255);not null"`
+	ReasoningContent          string    `gorm:"column:reasoning_content;type:text;not null"`
+	ReasoningEncryptedContent string    `gorm:"column:reasoning_encrypted_content;type:text;not null;default:''"`
+	ToolCallsJSON             []byte    `gorm:"column:tool_calls_json;type:json"`
+	FinishReason              string    `gorm:"column:finish_reason;type:varchar(32);not null;default:''"`
+	ArtifactID                *string   `gorm:"column:artifact_id;type:varchar(64)"`
+	ArtifactByteSize          *int64    `gorm:"column:artifact_byte_size"`
+	TokenInput                int64     `gorm:"column:token_input;not null"`
+	TokenOutput               int64     `gorm:"column:token_output;not null"`
+	CreatedAt                 time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt                 time.Time `gorm:"column:updated_at;not null"`
 }
 
 func (messageModel) TableName() string { return "messages" }
@@ -166,6 +167,7 @@ func (r *SqliteSessionRepo) migrate() error {
 					compact_content TEXT NOT NULL DEFAULT '',
 					reasoning_id VARCHAR(255) NOT NULL DEFAULT '',
 					reasoning_content TEXT NOT NULL DEFAULT '',
+					reasoning_encrypted_content TEXT NOT NULL DEFAULT '',
 					tool_calls_json JSON,
 					finish_reason VARCHAR(32) NOT NULL DEFAULT '',
 					artifact_id VARCHAR(64),
@@ -185,6 +187,11 @@ func (r *SqliteSessionRepo) migrate() error {
 		for _, statement := range statements {
 			if err := tx.Exec(statement).Error; err != nil {
 				return fmt.Errorf("create session schema: %w", err)
+			}
+		}
+		if !tx.Migrator().HasColumn(&messageModel{}, "reasoning_encrypted_content") {
+			if err := tx.Exec("ALTER TABLE messages ADD COLUMN reasoning_encrypted_content TEXT NOT NULL DEFAULT ''").Error; err != nil {
+				return fmt.Errorf("add encrypted reasoning column: %w", err)
 			}
 		}
 		if !tx.Migrator().HasColumn(&messageModel{}, "compact_content") {
@@ -766,8 +773,9 @@ func messageToModel(id, messageType string, generation uint64, msg sharedkernel.
 		ToolCallID: msg.ToolCallID, Content: msg.Content, ChatID: msg.ChatID, DisplayContent: msg.DisplayContent, ReasoningID: msg.ReasoningID,
 		CompactContent:   msg.CompactContent,
 		ReasoningContent: msg.ReasoningContent, ToolCallsJSON: toolCalls,
-		FinishReason: msg.FinishReason,
-		TokenInput:   int64(msg.TokenUsed.TokenInput), TokenOutput: int64(msg.TokenUsed.TokenOutput),
+		ReasoningEncryptedContent: msg.ReasoningEncryptedContent,
+		FinishReason:              msg.FinishReason,
+		TokenInput:                int64(msg.TokenUsed.TokenInput), TokenOutput: int64(msg.TokenUsed.TokenOutput),
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if msg.Artifact != nil {
@@ -784,8 +792,9 @@ func messagePayload(row messageModel) map[string]any {
 		"content": row.Content, "chat_id": row.ChatID, "display_content": row.DisplayContent, "reasoning_id": row.ReasoningID,
 		"compact_content":   row.CompactContent,
 		"reasoning_content": row.ReasoningContent, "tool_calls_json": row.ToolCallsJSON,
-		"finish_reason": row.FinishReason,
-		"artifact_id":   row.ArtifactID, "artifact_byte_size": row.ArtifactByteSize,
+		"reasoning_encrypted_content": row.ReasoningEncryptedContent,
+		"finish_reason":               row.FinishReason,
+		"artifact_id":                 row.ArtifactID, "artifact_byte_size": row.ArtifactByteSize,
 		"token_input": row.TokenInput, "token_output": row.TokenOutput, "updated_at": row.UpdatedAt,
 	}
 }
@@ -805,7 +814,8 @@ func modelToMessage(row messageModel) (sharedkernel.Message, error) {
 		Seq: row.Seq, OriginalSeq: originalSeq, Role: row.Role, Content: row.Content, ChatID: row.ChatID, DisplayContent: row.DisplayContent,
 		CompactContent: row.CompactContent,
 		ReasoningID:    row.ReasoningID, ReasoningContent: row.ReasoningContent,
-		ToolCalls: calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,
+		ReasoningEncryptedContent: row.ReasoningEncryptedContent,
+		ToolCalls:                 calls, ToolCallID: row.ToolCallID, FinishReason: row.FinishReason,
 		TokenUsed: sharedkernel.TokenStatistics{TokenInput: int(row.TokenInput), TokenOutput: int(row.TokenOutput)},
 	}
 	if row.ArtifactID != nil {

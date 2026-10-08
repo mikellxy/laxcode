@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
 	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
-	infrastructurerouter "github.com/mikellxy/laxcode/internal/infrastructure/llmrouter"
 )
 
 const llmRouterShutdownTimeout = 5 * time.Second
@@ -49,11 +49,8 @@ func main() {
 		_ = logFile.Close()
 		os.Exit(1)
 	}
-	routerServer := applicationrouter.NewHTTPServer(infrastructurerouter.NewOpenAIStreamClient(
-		config.EnvAndFileConf.OpenaiApiKey,
-		config.EnvAndFileConf.OpenaiBaseUrl,
-		config.EnvAndFileConf.OpenaiModel,
-	), routerLogger)
+	c := config.EnvAndFileConf
+	routerServer := applicationrouter.NewHTTPServer(agentasm.NewRouterClient(homeDir, config.ResolvedModel{OpenaiApiKey: c.OpenaiApiKey, OpenaiBaseUrl: c.OpenaiBaseUrl, UpstreamModel: c.OpenaiModel, AuthType: c.AuthType, CredentialRef: c.CredentialRef, ReasoningEffort: c.ReasoningEffort}), routerLogger)
 	runningRouter, err := routerServer.Start(config.EnvAndFileConf.LlmRouterAddr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

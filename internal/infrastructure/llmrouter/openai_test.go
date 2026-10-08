@@ -3,10 +3,12 @@ package llmrouter
 import (
 	"context"
 	"encoding/json"
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go/v3/option"
 )
@@ -83,6 +85,48 @@ func TestOpenAIStreamClientRejectsInvalidRequest(t *testing.T) {
 	client := NewOpenAIStreamClient("key", "http://127.0.0.1:1", "model")
 	if _, err := client.GenerateStream(context.Background(), []byte(`{"input":`)); err == nil {
 		t.Fatal("invalid request must fail before calling upstream")
+	}
+}
+
+func TestChatGPTRouterRefreshesAndUsesConfiguredModelAndEffort(t *testing.T) {
+	home := t.TempDir()
+	if err := chatgpt.NewStore(home).Save(context.Background(), chatgpt.CredentialRef, chatgpt.Credential{ClientID: "issued", Subject: "user", AccessToken: "expired", RefreshToken: "refresh", ExpiresAt: time.Now(), Scopes: []string{chatgpt.DirectScope}}); err != nil {
+		t.Fatal(err)
+	}
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	refreshes, calls := 0, 0
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "auth.openai.com" {
+			refreshes++
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"scope":"chatgpt.tokens.use.direct","token_type":"Bearer"}`)), Request: r}, nil
+		}
+		calls++
+		if r.URL.String() != chatgpt.BaseURL+"responses" || r.Header.Get("Authorization") != "Bearer fresh" {
+			t.Fatal("OAuth router used stale credentials or wrong endpoint")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "gpt-6.1-sol" || body["reasoning"].(map[string]any)["effort"] != "high" || body["max_output_tokens"] != nil || body["store"] != false {
+			t.Fatalf("OAuth request=%+v", body)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")), Request: r}, nil
+	})
+	client := NewChatGPTStreamClient(home, chatgpt.CredentialRef, "gpt-6.1-sol").WithReasoningEffort("high")
+	for range 2 {
+		stream, err := client.GenerateStream(context.Background(), []byte(`{"model":"caller-model","reasoning":{"effort":"low"},"input":[],"max_output_tokens":100}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stream.Next() || stream.Current().Type != "response.output_text.delta" {
+			t.Fatalf("stream=%v", stream.Err())
+		}
+		stream.Close()
+	}
+	if refreshes != 1 || calls != 2 {
+		t.Fatalf("refreshes=%d calls=%d", refreshes, calls)
 	}
 }
 

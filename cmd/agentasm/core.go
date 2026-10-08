@@ -59,13 +59,15 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	}
 
 	c := config.EnvAndFileConf
+	summaryProvider := llmprovider.NewOpenApiProvider(c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel, c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens).WithReasoningEffort(c.CompactionReasoningEffort)
+	if c.CompactionAuthType == "oauth" {
+		summaryProvider.WithChatGPT(homeDir, c.CompactionCredentialRef)
+	}
 	service := reactservice.NewReActService(
 		sess,
 		repo,
-		newMainProvider(),
-		llmprovider.NewOpenApiProvider(
-			c.CompactionOpenaiApiKey, c.CompactionOpenaiBaseUrl, c.CompactionOpenaiModel,
-			c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens),
+		newMainProvider(homeDir),
+		summaryProvider,
 		registry,
 		consumer,
 		tracer,

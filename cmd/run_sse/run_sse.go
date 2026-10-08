@@ -46,6 +46,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 		return err
 	}
 	s := newServer(homeDir, config.CliConf.Plan)
+	defer s.oauth.Close()
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
 		traceHandle, err := tracing.NewOTLP(context.Background())
 		if err != nil {
@@ -59,7 +60,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 		}()
 	}
 	s.tokenBudget = config.CliConf.TokenBudget
-	s.switcher = agentasm.NewModelSwitcher(router)
+	s.switcher = agentasm.NewModelSwitcher(router, homeDir)
 	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
 		layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
 	if err != nil {
@@ -92,6 +93,9 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard) 
 	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("POST /api/models", s.handleAddModel)
+	mux.HandleFunc("POST /api/auth/chatgpt", s.handleChatGPTLogin)
+	mux.HandleFunc("GET /api/auth/chatgpt/{login_id}", s.handleChatGPTStatus)
+	mux.HandleFunc("DELETE /api/auth/chatgpt/{login_id}", s.handleChatGPTCancel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。

@@ -35,6 +35,52 @@ cp docs/settings.json ~/.laxcode/settings.json
 
 `provider_name` 和同一 provider 内的 `model_name` 必须分别唯一。`model` 必须指向配置中的现有条目。
 
+## 使用 ChatGPT 订阅
+
+在 Web 页面点击模型旁的齿轮，将认证方式切换为「ChatGPT 订阅」，再点击
+**Continue with ChatGPT**。在浏览器中完成登录和订阅使用授权后，后端会导入
+此账户可用的模型，前端通过原有模型列表和切换接口进行选择。API Key 模型
+仍可同时保留并切换。当前保存一个 ChatGPT 账户连接；再次登录用于续授权。
+
+授权回调监听本机 `127.0.0.1` 的随机空闲端口，不占用 Codex 的固定登录端口。
+登录有效期为 10 分钟；关闭添加窗口会取消待完成的登录。浏览器和后端应在
+同一台电脑运行，因为授权回调使用本机地址。
+
+登录自动生成的 provider 配置形如：
+
+```json
+{
+  "provider_name": "openai-chatgpt",
+  "auth_type": "oauth",
+  "credential_ref": "chatgpt-main",
+  "openai_base_url": "https://api.openai.com/v1/",
+  "model_list": [
+    { "model_name": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "reasoning_effort": "medium" }
+  ]
+}
+```
+
+模型清单以登录账户返回的目录为准。支持的模型会显示独立的「思考强度」
+选择器；目前 GPT-6.1 Sol 可选 `low`、`medium`、`high`、`xhigh`、`max`。
+其他模型保留上游默认强度。模型条目的 `reasoning_effort` 保存默认值，页面
+选择只影响当前进程；切换模型会采用目标模型的默认值，正在进行的对话结束
+后才生效。未指定压缩模型时，它同时继承主模型的认证方式和思考强度。
+
+OAuth 凭证单独保存在 `~/.laxcode/auth.json`，原子写入（Unix 权限 `0600`）。
+后端在请求前刷新即将过期的 access token，并串行保存轮换后的
+refresh token；凭证不通过模型列表返回，也不写进 `settings.json`。
+
+此路线使用公共 Responses API 的流式请求。`limit.output` 仍用于本地上下文
+预算，OAuth 请求不会发送不受支持的 `max_output_tokens`，因此它不是远端
+输出硬上限。Token 计数使用本地估算；上下文摘要也通过 OAuth 流式请求聚合。
+会话数据库会自动增加加密 reasoning 字段，以保存工具续轮需要的 opaque 状态。
+
+符合资格的 Plus 用户可授权使用订阅额度；可用性取决于账户、工作区和政策，
+Plus 的五小时额度在使用该订阅的应用间共享。额度或权限错误会直接返回，
+不会自动改用 API Key 计费。详见
+[官方接入文档](https://developers.openai.com/siwc/token-sharing-open-source) 和
+[订阅用量说明](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)。
+
 ---
 
 ## 模型 Token 预算

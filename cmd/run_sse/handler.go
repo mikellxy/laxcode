@@ -20,6 +20,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
@@ -59,7 +60,10 @@ type server struct {
 	evaluationCancel   context.CancelFunc
 	evaluationWG       sync.WaitGroup
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
-	switcher *agentasm.ModelSwitcher
+	switcher         *agentasm.ModelSwitcher
+	oauth            *chatgpt.LoginManager
+	oauthInstallMu   sync.Mutex
+	oauthInstalledID string
 }
 
 const (
@@ -360,21 +364,27 @@ type historyMessageDTO struct {
 // 的切换请求。CurrentModel 是运行时生效的引用，即当前（及后续每个请求）LLM
 // client 实际使用的模型。
 type modelConfigDTO struct {
-	ModelName     string `json:"model_name"`
-	UpstreamModel string `json:"upstream_model,omitempty"`
-	ModelRef      string `json:"model_ref"`
+	DisplayName      string   `json:"display_name,omitempty"`
+	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ModelName        string   `json:"model_name"`
+	UpstreamModel    string   `json:"upstream_model,omitempty"`
+	ModelRef         string   `json:"model_ref"`
 }
 
 type providerModelsDTO struct {
+	AuthType  string           `json:"auth_type,omitempty"`
 	ModelList []modelConfigDTO `json:"model_list"`
 }
 
 type providerListModelDTO struct {
-	CurrentModel string              `json:"current_model"`
-	Providers    []providerModelsDTO `json:"providers"`
+	CurrentReasoningEffort string              `json:"current_reasoning_effort,omitempty"`
+	CurrentModel           string              `json:"current_model"`
+	Providers              []providerModelsDTO `json:"providers"`
 }
 
 type addModelRequest struct {
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	APIKey          string `json:"api_key"`
@@ -390,19 +400,21 @@ func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 	s.switcher.RLock()
 	providers := config.EnvAndFileConf.ProviderList
 	response := providerListModelDTO{
-		CurrentModel: config.EnvAndFileConf.Model,
-		Providers:    make([]providerModelsDTO, len(providers)),
+		CurrentReasoningEffort: config.EnvAndFileConf.ReasoningEffort,
+		CurrentModel:           config.EnvAndFileConf.Model,
+		Providers:              make([]providerModelsDTO, len(providers)),
 	}
 	for i, provider := range providers {
 		models := make([]modelConfigDTO, len(provider.ModelList))
 		for j, model := range provider.ModelList {
 			models[j] = modelConfigDTO{
+				DisplayName: model.DisplayName, ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: chatgpt.ReasoningEfforts(model.ModelName),
 				ModelName:     model.ModelName,
 				UpstreamModel: model.UpstreamModel,
 				ModelRef:      provider.ProviderName + ":" + model.ModelName,
 			}
 		}
-		response.Providers[i] = providerModelsDTO{ModelList: models}
+		response.Providers[i] = providerModelsDTO{AuthType: provider.AuthType, ModelList: models}
 	}
 	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -425,7 +437,8 @@ func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
 	// 同步替换，保证紧随其后的 /chat 即可用。
 	hadActiveModel := strings.TrimSpace(config.EnvAndFileConf.Model) != ""
 	model, err := config.AddModelToSettings(s.homeDir, config.AddModelInput{
-		Provider: req.Provider, Model: req.Model, APIKey: req.APIKey, BaseURL: req.BaseURL,
+		ReasoningEffort: req.ReasoningEffort,
+		Provider:        req.Provider, Model: req.Model, APIKey: req.APIKey, BaseURL: req.BaseURL,
 		ContextWindow: req.ContextWindow, MaxOutputTokens: req.MaxOutputTokens,
 	})
 	if err == nil && !hadActiveModel {
@@ -458,8 +471,9 @@ func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
 // switchModelRequest 是 POST /api/model 的请求体：provider 与 model 拼成
 // provider:model 引用，二者均必填。
 type switchModelRequest struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	Provider        string  `json:"provider"`
+	Model           string  `json:"model"`
 }
 
 // handleSwitchModel 处理 POST /api/model：按 provider + model 组合引用后，经
@@ -480,7 +494,15 @@ func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "provider and model are required")
 		return
 	}
-	if err := s.switcher.SwitchModel(provider + ":" + model); err != nil {
+	var effort []string
+	if req.ReasoningEffort != nil {
+		effort = []string{strings.TrimSpace(*req.ReasoningEffort)}
+	}
+	s.switcher.Lock()
+	err := s.switcher.SwitchModelLocked(provider+":"+model, effort...)
+	currentEffort := config.EnvAndFileConf.ReasoningEffort
+	s.switcher.Unlock()
+	if err != nil {
 		if errors.Is(err, agentasm.ErrRouterUnavailable) {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -489,7 +511,7 @@ func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]string{"model_ref": provider + ":" + model})
+	_ = json.NewEncoder(w).Encode(map[string]string{"model_ref": provider + ":" + model, "reasoning_effort": currentEffort})
 }
 
 type historyPageDTO struct {
@@ -580,6 +602,7 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 func newServer(homeDir string, planMode bool) *server {
 	evaluationCtx, evaluationCancel := context.WithCancel(context.Background())
 	return &server{
+		oauth:         chatgpt.NewLoginManager(homeDir),
 		homeDir:       homeDir,
 		planMode:      planMode,
 		pickDirectory: pickNativeDirectory,
@@ -594,7 +617,7 @@ func newServer(homeDir string, planMode bool) *server {
 		evaluationCancel:   evaluationCancel,
 		approvals:          newApprovalBroker(),
 		budgets:            newBudgetStates(),
-		switcher:           agentasm.NewModelSwitcher(nil),
+		switcher:           agentasm.NewModelSwitcher(nil, homeDir),
 	}
 }
 

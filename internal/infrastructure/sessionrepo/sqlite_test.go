@@ -508,6 +508,37 @@ func TestMalformedToolArgumentsPreserveEncodingError(t *testing.T) {
 	}
 }
 
+func TestEncryptedReasoningMigrationAndPersistence(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	s := createSystem(t, repo, "encrypted-reasoning", "system")
+	// Simulate a database created before OAuth reasoning was added.
+	if err := repo.db.Exec("ALTER TABLE messages DROP COLUMN reasoning_encrypted_content").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.migrate(); err != nil {
+		t.Fatal("migration is not idempotent:", err)
+	}
+	message := sharedkernel.Message{Role: sharedkernel.RoleAssistant, Content: "answer", ReasoningID: "r", ReasoningEncryptedContent: "opaque-state"}
+	appendMessage(t, repo, s, &message)
+	saved, err := repo.GetRequestContext(context.Background(), s.ID)
+	if err != nil || saved.Messages[len(saved.Messages)-1].ReasoningEncryptedContent != "opaque-state" {
+		t.Fatalf("encrypted state was not persisted: %v", err)
+	}
+	message.ReasoningEncryptedContent = "updated-state"
+	candidate := s.Clone()
+	candidate.Messages[len(candidate.Messages)-1] = message.Clone()
+	if _, err := repo.CommitUpdateMessage(context.Background(), s.ID, candidate.Snapshot(), message); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = repo.GetRequestContext(context.Background(), s.ID)
+	if err != nil || saved.Messages[len(saved.Messages)-1].ReasoningEncryptedContent != "updated-state" {
+		t.Fatal("updated encrypted state was not persisted:", err)
+	}
+}
+
 func TestUpdateChangesOnlyCurrentMemory(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	s := createSystem(t, repo, "update", "old")

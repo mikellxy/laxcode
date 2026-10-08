@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -21,6 +22,7 @@ var (
 // AddModelInput 是 Web 管理接口新增模型所需的最小配置。API key 与 base URL
 // 属于 provider 级配置；同一 provider 下的所有模型共享二者。
 type AddModelInput struct {
+	ReasoningEffort string
 	Provider        string
 	Model           string
 	APIKey          string
@@ -34,6 +36,10 @@ func (in *AddModelInput) normalizeAndValidate() error {
 	in.Model = strings.TrimSpace(in.Model)
 	in.APIKey = strings.TrimSpace(in.APIKey)
 	in.BaseURL = strings.TrimSpace(in.BaseURL)
+	in.ReasoningEffort = strings.TrimSpace(in.ReasoningEffort)
+	if err := chatgpt.ValidateEffort(in.Model, in.ReasoningEffort); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
+	}
 	if !validCatalogName(in.Provider) || in.Provider == envProviderName {
 		return fmt.Errorf("%w: invalid or reserved provider name", ErrInvalidModelConfig)
 	}
@@ -60,8 +66,9 @@ func AddModelToSettings(homeDir string, input AddModelInput) (ModelConfig, error
 		return ModelConfig{}, err
 	}
 	model := ModelConfig{
-		ModelName: input.Model,
-		Limit:     &ModelLimit{Context: input.ContextWindow, Output: input.MaxOutputTokens},
+		ReasoningEffort: input.ReasoningEffort,
+		ModelName:       input.Model,
+		Limit:           &ModelLimit{Context: input.ContextWindow, Output: input.MaxOutputTokens},
 	}
 
 	runtimeProviders, err := appendModelToProviders(EnvAndFileConf.ProviderList, input, model)
@@ -156,7 +163,7 @@ func appendModelToProviders(providers []ProviderConfig, input AddModelInput, mod
 }
 
 func credentialsEqual(provider *ProviderConfig, input AddModelInput) bool {
-	return strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
+	return provider.AuthType != "oauth" && strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
 		strings.TrimRight(strings.TrimSpace(provider.OpenaiBaseUrl), "/") == strings.TrimRight(input.BaseURL, "/")
 }
 

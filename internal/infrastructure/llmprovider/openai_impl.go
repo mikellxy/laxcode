@@ -13,10 +13,12 @@ import (
 
 	domainllm "github.com/mikellxy/laxcode/internal/domain/llmprovider"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 type OpenApiProvider struct {
@@ -26,6 +28,8 @@ type OpenApiProvider struct {
 
 	streamGatewayURL string
 	httpClient       *http.Client
+	oauth            bool
+	reasoningEffort  string
 }
 
 // NewOpenApiProviderWithStreamGateway 构造一个仅将 GenerateStream 经本地网关
@@ -62,6 +66,17 @@ func (p *OpenApiProvider) ContextBudget() domainllm.ContextBudget {
 	return p.budget
 }
 
+func (p *OpenApiProvider) WithReasoningEffort(effort string) *OpenApiProvider {
+	p.reasoningEffort = effort
+	return p
+}
+
+func (p *OpenApiProvider) WithChatGPT(homeDir, credentialRef string) *OpenApiProvider {
+	p.oauth = true
+	p.client = openai.NewClient(option.WithAPIKey(""), option.WithBaseURL(chatgpt.BaseURL), option.WithHTTPClient(chatgpt.HTTPClient(homeDir, credentialRef)), option.WithMaxRetries(0))
+	return p
+}
+
 // CountInputTokens 调用 Responses 的 input-token counting 端点。这里先复用
 // buildResponseParams，再把其输入项与工具原样放入计数请求，保证计数
 // 与真正 Generate 的结构口径一致。
@@ -71,6 +86,9 @@ func (p *OpenApiProvider) ContextBudget() domainllm.ContextBudget {
 // 估算，避免因缺少计数端点而中断整个 ReAct 循环；仅当本地估算也失败时
 // 才向调用方暴露原始远端错误。
 func (p *OpenApiProvider) CountInputTokens(ctx context.Context, msgs []sharedkernel.Message, toolsDefs []sharedkernel.ToolDefinition) (int, error) {
+	if p.oauth {
+		return p.countInputTokensLocal(msgs, toolsDefs)
+	}
 	resp, err := p.client.Responses.InputTokens.Count(ctx, p.buildInputTokenCountParams(msgs, toolsDefs))
 	if err != nil {
 		if local, localErr := p.countInputTokensLocal(msgs, toolsDefs); localErr == nil {
@@ -93,6 +111,9 @@ func (p *OpenApiProvider) buildInputTokenCountParams(msgs []sharedkernel.Message
 }
 
 func (p *OpenApiProvider) Generate(ctx context.Context, msgs []sharedkernel.Message, toolsDefs []sharedkernel.ToolDefinition) (*sharedkernel.Message, error) {
+	if p.oauth {
+		return p.GenerateStream(ctx, msgs, toolsDefs, func(sharedkernel.StreamChunk) {})
+	}
 	reqParams := p.buildResponseParams(msgs, toolsDefs)
 
 	resp, err := p.client.Responses.New(ctx, reqParams)
@@ -113,6 +134,7 @@ func (p *OpenApiProvider) Generate(ctx context.Context, msgs []sharedkernel.Mess
 		case "reasoning":
 			r := output.AsReasoning()
 			msg.ReasoningID = r.ID
+			msg.ReasoningEncryptedContent = r.EncryptedContent
 			for _, c := range r.Content {
 				msg.ReasoningContent += c.Text
 			}
@@ -158,14 +180,13 @@ func (p *OpenApiProvider) buildResponseParams(msgs []sharedkernel.Message, tools
 		case sharedkernel.RoleAssistant:
 			// The reasoning item must precede the message and function_call
 			// items of the same turn: it is the thinking part of that output.
-			if msg.ReasoningContent != "" {
+			if msg.ReasoningContent != "" || msg.ReasoningEncryptedContent != "" {
+				reasoning := &responses.ResponseReasoningItemParam{ID: msg.ReasoningID, Content: []responses.ResponseReasoningItemContentParam{{Text: msg.ReasoningContent}}}
+				if msg.ReasoningEncryptedContent != "" {
+					reasoning.EncryptedContent = openai.String(msg.ReasoningEncryptedContent)
+				}
 				inputParams.OfInputItemList = append(inputParams.OfInputItemList, responses.ResponseInputItemUnionParam{
-					OfReasoning: &responses.ResponseReasoningItemParam{
-						ID: msg.ReasoningID,
-						Content: []responses.ResponseReasoningItemContentParam{
-							{Text: msg.ReasoningContent},
-						},
-					},
+					OfReasoning: reasoning,
 				})
 			}
 			if len(msg.Content) > 0 {
@@ -186,6 +207,9 @@ func (p *OpenApiProvider) buildResponseParams(msgs []sharedkernel.Message, tools
 	reqParams := responses.ResponseNewParams{
 		Model: p.model,
 		Input: inputParams,
+	}
+	if p.reasoningEffort != "" {
+		reqParams.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(p.reasoningEffort), Summary: shared.ReasoningSummaryAuto}
 	}
 	if p.budget.ReservedOutputTokens > 0 {
 		reqParams.MaxOutputTokens = openai.Int(int64(p.budget.ReservedOutputTokens))
@@ -274,6 +298,7 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 			case "reasoning":
 				r := item.AsReasoning()
 				msg.ReasoningID = r.ID
+				msg.ReasoningEncryptedContent = r.EncryptedContent
 				var completedReasoning strings.Builder
 				for _, c := range r.Content {
 					completedReasoning.WriteString(c.Text)
@@ -334,6 +359,7 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 	// 未携带 usage：显式降级为 usage_unavailable，消费方不会把零值 usage
 	// 误读成一次正常的免费生成。正常 stop 覆盖不了这里，因为该路径只在
 	// FinishReason 为空时进入。
+	terminalReceived := msg.FinishReason != ""
 	if msg.FinishReason == "" {
 		msg.FinishReason = sharedkernel.FinishReasonUsageUnavailable
 	}
@@ -342,6 +368,10 @@ func (p *OpenApiProvider) GenerateStream(ctx context.Context, msgs []sharedkerne
 		// cancelled 标记一起返回，调用方可区分“半句截断的失败”与成功。
 		msg.FinishReason = sharedkernel.FinishReasonCancelled
 		return msg, err
+	}
+	if p.oauth && !terminalReceived {
+		msg.FinishReason = sharedkernel.FinishReasonCancelled
+		return msg, errors.New("ChatGPT stream ended without a terminal response event")
 	}
 
 	return msg, nil

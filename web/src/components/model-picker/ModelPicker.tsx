@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ChevronUp, Clock, Loader2, Settings } from "lucide-react";
 import { addModelRequest, listModels, modelRefs, splitModelRef, switchModelRequest } from "../../api/models";
@@ -17,13 +17,13 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
   const root = useRef<HTMLDivElement>(null);
   const models = useQuery({ queryKey: ["models"], queryFn: listModels });
   const switchModel = useMutation({
-    mutationFn: async (ref: string) => {
+    mutationFn: async ({ ref, effort }: { ref: string; effort?: string }) => {
       const parts = splitModelRef(ref);
       if (!parts) throw new Error(`无效的模型引用：${ref}`);
-      return switchModelRequest(parts.provider, parts.model);
+      return switchModelRequest(parts.provider, parts.model, effort);
     },
-    onSuccess: ({ model_ref }) => {
-      client.setQueryData(["models"], (old: ProviderListModelDTO | undefined) => (old ? { ...old, current_model: model_ref } : old));
+    onSuccess: ({ model_ref, reasoning_effort }) => {
+      client.setQueryData(["models"], (old: ProviderListModelDTO | undefined) => (old ? { ...old, current_model: model_ref, current_reasoning_effort: reasoning_effort } : old));
       void client.invalidateQueries({ queryKey: ["context"] });
       setOpen(false);
     },
@@ -42,7 +42,7 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
     if (running || !queued) return;
     const ref = queued;
     setQueued(null);
-    switchModel.mutate(ref);
+    switchModel.mutate({ ref });
   }, [running, queued, switchModel]);
 
   // 父组件递增 bounceKey（用户点击了锁定中的输入框）时让齿轮跳动一次。
@@ -71,28 +71,31 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
   }, [open]);
 
   const current = models.data?.current_model;
+  const selected = models.data?.providers.flatMap((provider) => provider.model_list).find((model) => model.model_ref === current);
+  const connected = useCallback(() => { void client.invalidateQueries({ queryKey: ["models"] }); setAdding(false); }, [client]);
   const refs = models.data ? modelRefs(models.data) : [];
   const label = models.isError ? "模型列表不可用" : queued ?? (models.isPending ? "加载模型…" : current || "未配置模型");
   const pick = (ref: string) => {
     if (ref === current || switchModel.isPending) return;
     if (running) { setQueued(ref); setOpen(false); return; }
-    switchModel.mutate(ref);
+    switchModel.mutate({ ref });
   };
   return <div className="model-picker" ref={root}>
     <button className={`model-trigger ${queued ? "queued" : ""}`} onClick={() => setOpen((value) => !value)} disabled={models.isPending} aria-haspopup="listbox" aria-expanded={open}>
       {label}
       {switchModel.isPending ? <Loader2 size={13} className="spin" /> : queued ? <Clock size={13} /> : open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
     </button>
+    {!!selected?.reasoning_efforts?.length && <select className="reasoning-select" aria-label="思考强度" value={models.data?.current_reasoning_effort || selected.reasoning_effort || ""} disabled={running || switchModel.isPending} onChange={(event) => { if (current) switchModel.mutate({ ref: current, effort: event.target.value }); }}><option value="">模型默认</option>{selected.reasoning_efforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select>}
     <button type="button" className={`model-gear ${bouncing ? "bounce" : ""}`} onClick={() => { addModel.reset(); setOpen(false); setAdding(true); }} aria-label="添加模型" aria-haspopup="dialog" title="添加模型"><Settings size={14} /></button>
     {open && <ul className="model-menu" role="listbox">
       {models.isError && <li className="model-menu-state" onClick={() => models.refetch()}>加载失败，点击重试</li>}
       {!models.isError && refs.length === 0 && <li className="model-menu-state">还没有模型，点击齿轮按钮添加</li>}
       {!models.isError && refs.map((ref) => <li key={ref} role="option" aria-selected={ref === current} className={`model-item ${ref === current ? "active" : ""} ${ref === queued ? "queued" : ""}`} onClick={() => pick(ref)}>
-        <span>{ref}{ref === queued ? " · 待生效" : ""}</span>
+        <span>{models.data?.providers.flatMap((provider) => provider.model_list).find((model) => model.model_ref === ref)?.display_name || ref}{ref === queued ? " · 待生效" : ""}</span>
         {ref === current ? <Check size={14} /> : ref === queued ? <Clock size={14} /> : null}
       </li>)}
       {switchModel.isError && <li className="model-menu-state error">切换失败：{switchModel.error instanceof Error ? switchModel.error.message : "未知错误"}</li>}
     </ul>}
-    {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} />}
+    {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} onConnected={connected} />}
   </div>;
 }

@@ -63,3 +63,10 @@ button { color: inherit; }
 @media (max-width: 560px) { .evaluation-trigger span { display: none; }.evaluation-panel { position: fixed; top: 76px; right: 14px; left: 14px; width: auto; } }
 @media (max-width: 560px) { .model-dialog { padding: 20px; }.model-form-grid { grid-template-columns: 1fr; }.model-form-grid label.full { grid-column: auto; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; } }
+.auth-method { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; color: var(--muted); font-size: 12px; }
+.auth-method select, .reasoning-select { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: #fff; color: var(--ink); }
+.reasoning-select { max-width: 100px; font-size: 11px; }
+.chatgpt-login p { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.chatgpt-login button { border: 1px solid var(--ink); border-radius: 8px; padding: 10px 16px; background: var(--ink); color: #fff; cursor: pointer; }
+.chatgpt-login button:disabled { opacity: .6; cursor: default; }
+.chatgpt-login a { color: var(--ink); }

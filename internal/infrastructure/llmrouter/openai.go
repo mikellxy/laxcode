@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
@@ -18,12 +19,22 @@ import (
 type OpenAIStreamClient struct {
 	client          openai.Client
 	configuredModel string
+	reasoningEffort string
 }
 
 var _ domainrouter.StreamClient = (*OpenAIStreamClient)(nil)
 
 func NewOpenAIStreamClient(apiKey, baseURL, model string) *OpenAIStreamClient {
 	return newOpenAIStreamClient(apiKey, baseURL, model)
+}
+
+func NewChatGPTStreamClient(homeDir, credentialRef, model string) *OpenAIStreamClient {
+	return newOpenAIStreamClient("", chatgpt.BaseURL, model, option.WithHTTPClient(chatgpt.HTTPClient(homeDir, credentialRef)))
+}
+
+func (c *OpenAIStreamClient) WithReasoningEffort(effort string) *OpenAIStreamClient {
+	c.reasoningEffort = effort
+	return c
 }
 
 func newOpenAIStreamClient(apiKey, baseURL, model string, extraOptions ...option.RequestOption) *OpenAIStreamClient {
@@ -59,6 +70,19 @@ func (c *OpenAIStreamClient) GenerateStream(ctx context.Context, requestJSON []b
 	}
 	modelJSON, _ := json.Marshal(c.configuredModel)
 	body["model"] = modelJSON
+	if c.reasoningEffort != "" {
+		var reasoning map[string]json.RawMessage
+		if raw := body["reasoning"]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &reasoning); err != nil {
+				return nil, &domainrouter.InvalidRequestError{Err: errors.New("reasoning must be an object")}
+			}
+		}
+		if reasoning == nil {
+			reasoning = map[string]json.RawMessage{}
+		}
+		reasoning["effort"], _ = json.Marshal(c.reasoningEffort)
+		body["reasoning"], _ = json.Marshal(reasoning)
+	}
 	upstreamBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("encode OpenAI Responses request: %w", err)

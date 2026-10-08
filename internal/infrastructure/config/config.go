@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mikellxy/laxcode/internal/infrastructure/chatgpt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/spf13/viper"
 )
@@ -21,12 +22,16 @@ type ModelLimit struct {
 }
 
 type ModelConfig struct {
-	ModelName     string      `mapstructure:"model_name" json:"model_name"`
-	UpstreamModel string      `mapstructure:"-" json:"upstream_model,omitempty"`
-	Limit         *ModelLimit `mapstructure:"limit" json:"limit,omitempty"`
+	DisplayName     string      `mapstructure:"display_name" json:"display_name,omitempty"`
+	ReasoningEffort string      `mapstructure:"reasoning_effort" json:"reasoning_effort,omitempty"`
+	ModelName       string      `mapstructure:"model_name" json:"model_name"`
+	UpstreamModel   string      `mapstructure:"-" json:"upstream_model,omitempty"`
+	Limit           *ModelLimit `mapstructure:"limit" json:"limit,omitempty"`
 }
 
 type ProviderConfig struct {
+	AuthType      string        `mapstructure:"auth_type" json:"auth_type,omitempty"`
+	CredentialRef string        `mapstructure:"credential_ref" json:"credential_ref,omitempty"`
 	OpenaiApiKey  string        `mapstructure:"openai_api_key" json:"openai_api_key"`
 	OpenaiBaseUrl string        `mapstructure:"openai_base_url" json:"openai_base_url"`
 	ProviderName  string        `mapstructure:"provider_name" json:"provider_name"`
@@ -52,12 +57,15 @@ type MCPServerConf struct {
 func (c MCPServerConf) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 type ResolvedModel struct {
-	Ref           string
-	ProviderName  string
-	ModelName     string
-	UpstreamModel string
-	OpenaiApiKey  string
-	OpenaiBaseUrl string
+	AuthType        string
+	CredentialRef   string
+	ReasoningEffort string
+	Ref             string
+	ProviderName    string
+	ModelName       string
+	UpstreamModel   string
+	OpenaiApiKey    string
+	OpenaiBaseUrl   string
 	// ContextWindow / MaxOutputTokens 是该模型的生效 token 预算：模型级
 	// limit 优先，未声明时回退全局 openai_context_window /
 	// openai_max_output_tokens。
@@ -84,9 +92,15 @@ type envAndFileConf struct {
 	MCPServers map[string]MCPServerConf `mapstructure:"mcp_servers"`
 
 	// Openai* 是由 Model 解析出的当前运行时有效配置，不直接从配置文件反序列化。
-	OpenaiApiKey  string `mapstructure:"-"`
-	OpenaiBaseUrl string `mapstructure:"-"`
-	OpenaiModel   string `mapstructure:"-"`
+	OpenaiApiKey              string `mapstructure:"-"`
+	OpenaiBaseUrl             string `mapstructure:"-"`
+	OpenaiModel               string `mapstructure:"-"`
+	AuthType                  string `mapstructure:"-"`
+	CredentialRef             string `mapstructure:"-"`
+	ReasoningEffort           string `mapstructure:"-"`
+	CompactionAuthType        string `mapstructure:"-"`
+	CompactionCredentialRef   string `mapstructure:"-"`
+	CompactionReasoningEffort string `mapstructure:"-"`
 
 	OpenaiContextWindow             int    `mapstructure:"openai_context_window"`
 	OpenaiMaxOutputTokens           int    `mapstructure:"openai_max_output_tokens"`
@@ -155,6 +169,7 @@ func (c *envAndFileConf) resolveModel(ref string) (ResolvedModel, error) {
 				upstreamModel = model.ModelName
 			}
 			resolved := ResolvedModel{
+				AuthType: provider.AuthType, CredentialRef: provider.CredentialRef, ReasoningEffort: model.ReasoningEffort,
 				Ref:             ref,
 				ProviderName:    providerName,
 				ModelName:       modelName,
@@ -200,14 +215,26 @@ func (c *envAndFileConf) validateModelCatalog() error {
 			return fmt.Errorf("duplicate provider_name %q", provider.ProviderName)
 		}
 		providers[provider.ProviderName] = struct{}{}
-		if strings.TrimSpace(provider.OpenaiApiKey) == "" || strings.TrimSpace(provider.OpenaiBaseUrl) == "" {
-			return fmt.Errorf("provider %q requires openai_api_key and openai_base_url", provider.ProviderName)
+		switch provider.AuthType {
+		case "", "api_key":
+			if strings.TrimSpace(provider.OpenaiApiKey) == "" || strings.TrimSpace(provider.OpenaiBaseUrl) == "" {
+				return fmt.Errorf("provider %q requires openai_api_key and openai_base_url", provider.ProviderName)
+			}
+		case "oauth":
+			if provider.CredentialRef != chatgpt.CredentialRef || strings.TrimRight(provider.OpenaiBaseUrl, "/") != strings.TrimRight(chatgpt.BaseURL, "/") || provider.OpenaiApiKey != "" {
+				return fmt.Errorf("provider %q requires a ChatGPT credential reference and the official endpoint", provider.ProviderName)
+			}
+		default:
+			return fmt.Errorf("unsupported auth_type %q", provider.AuthType)
 		}
 		if len(provider.ModelList) == 0 {
 			return fmt.Errorf("provider %q requires at least one model", provider.ProviderName)
 		}
 		models := make(map[string]struct{}, len(provider.ModelList))
 		for _, model := range provider.ModelList {
+			if err := chatgpt.ValidateEffort(model.ModelName, model.ReasoningEffort); err != nil {
+				return err
+			}
 			if !validCatalogName(model.ModelName) {
 				return fmt.Errorf("invalid model_name %q for provider %q", model.ModelName, provider.ProviderName)
 			}
@@ -300,6 +327,7 @@ func (c *envAndFileConf) setActiveModel(ref string) error {
 	c.OpenaiApiKey = resolved.OpenaiApiKey
 	c.OpenaiBaseUrl = resolved.OpenaiBaseUrl
 	c.OpenaiModel = resolved.UpstreamModel
+	c.AuthType, c.CredentialRef, c.ReasoningEffort = resolved.AuthType, resolved.CredentialRef, resolved.ReasoningEffort
 	// 压缩模型未显式配置时继承主模型；主模型切换（含延迟配置后的首次激
 	// 活）后同步重推导，保证运行期装配读到与新主模型一致的压缩配置。
 	if !c.compactionConfigured {
@@ -307,6 +335,7 @@ func (c *envAndFileConf) setActiveModel(ref string) error {
 		c.CompactionOpenaiApiKey = resolved.OpenaiApiKey
 		c.CompactionOpenaiBaseUrl = resolved.OpenaiBaseUrl
 		c.CompactionOpenaiModel = resolved.UpstreamModel
+		c.CompactionAuthType, c.CompactionCredentialRef, c.CompactionReasoningEffort = resolved.AuthType, resolved.CredentialRef, resolved.ReasoningEffort
 		c.CompactionOpenaiContextWindow = effectiveAuxiliaryBudget(
 			resolved.ContextWindow, c.rawCompactionContextWindow, resolved.hasLimit, "COMPACTION_OPENAI_CONTEXT_WINDOW")
 		c.CompactionOpenaiMaxOutputTokens = effectiveAuxiliaryBudget(
@@ -342,6 +371,10 @@ func (e modelEnvironment) apply(resolved *ResolvedModel) {
 		return
 	}
 	resolved.Ref = modelRef(envProviderName, envModelName)
+	// An explicit environment credential switches billing to API-key auth.
+	if e.apiKey != "" || e.baseURL != "" {
+		resolved.AuthType, resolved.CredentialRef = "", ""
+	}
 	if e.apiKey != "" {
 		resolved.OpenaiApiKey = e.apiKey
 	}
@@ -532,6 +565,7 @@ func ParseEnvAndFile() error {
 	EnvAndFileConf.CompactionOpenaiApiKey = compaction.OpenaiApiKey
 	EnvAndFileConf.CompactionOpenaiBaseUrl = compaction.OpenaiBaseUrl
 	EnvAndFileConf.CompactionOpenaiModel = compaction.UpstreamModel
+	EnvAndFileConf.CompactionAuthType, EnvAndFileConf.CompactionCredentialRef, EnvAndFileConf.CompactionReasoningEffort = compaction.AuthType, compaction.CredentialRef, compaction.ReasoningEffort
 	EnvAndFileConf.CompactionOpenaiContextWindow = effectiveAuxiliaryBudget(
 		compaction.ContextWindow, EnvAndFileConf.CompactionOpenaiContextWindow,
 		compaction.hasLimit, "COMPACTION_OPENAI_CONTEXT_WINDOW")
