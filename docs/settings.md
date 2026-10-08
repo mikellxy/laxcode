@@ -46,6 +46,11 @@ cp docs/settings.json ~/.laxcode/settings.json
 登录有效期为 10 分钟；关闭添加窗口会取消待完成的登录。浏览器和后端应在
 同一台电脑运行，因为授权回调使用本机地址。
 
+后端的身份配置、公钥、凭证兑换与刷新、模型列表和模型请求统一使用进程中的
+`HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY`（也支持对应的小写变量）。可在
+`~/.laxcode/env.conf` 中设置，启动时会自动加载；这些 OpenAI HTTPS 请求使用
+`HTTPS_PROXY`。浏览器登录页面使用浏览器自己的代理设置。
+
 登录自动生成的 provider 配置形如：
 
 ```json

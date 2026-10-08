@@ -12,8 +12,10 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +32,69 @@ func jsonResponse(r *http.Request, value any) *http.Response {
 }
 func validCredential() Credential {
 	return Credential{ClientID: "issued-client", Subject: "user", AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{DirectScope}}
+}
+
+func TestOAuthRequestsUseEnvironmentProxy(t *testing.T) {
+	// Use a fresh process to simulate a dependency caching an empty proxy
+	// environment before ApplyEnvFile injects the user's configuration.
+	if os.Getenv("LAXCODE_CHATGPT_PROXY_TEST") != "1" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestOAuthRequestsUseEnvironmentProxy$")
+		cmd.Env = append(os.Environ(), "LAXCODE_CHATGPT_PROXY_TEST=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("proxy test: %v\n%s", err, output)
+		}
+		return
+	}
+	var authRequests, apiRequests atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			t.Errorf("expected HTTPS CONNECT, got %s", r.Method)
+		}
+		switch r.Host {
+		case "auth.openai.com:443":
+			authRequests.Add(1)
+		case "api.openai.com:443":
+			apiRequests.Add(1)
+		default:
+			t.Errorf("unexpected proxy destination: %s", r.Host)
+		}
+		// Stop at the proxy; this test never contacts OpenAI.
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
+		t.Setenv(key, "")
+	}
+	identityRequest, _ := http.NewRequest(http.MethodGet, Issuer, nil)
+	_, _ = http.ProxyFromEnvironment(identityRequest)
+	t.Setenv("https_proxy", proxy.URL)
+	home := t.TempDir()
+	store := NewStore(home)
+	ctx := context.Background()
+	if err := store.Save(ctx, CredentialRef, validCredential()); err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{Issuer + "/.well-known/openid-configuration", Issuer + "/jwks"} {
+		if err := store.getJSON(ctx, address, &map[string]any{}); err == nil {
+			t.Fatal("identity request bypassed the rejecting proxy")
+		}
+	}
+	for _, grant := range []string{"authorization_code", "refresh_token"} {
+		if _, err := store.requestToken(ctx, url.Values{"grant_type": {grant}}); err == nil {
+			t.Fatal("token request bypassed the rejecting proxy")
+		}
+	}
+	if _, err := store.Models(ctx, CredentialRef); err == nil {
+		t.Fatal("model catalog request bypassed the rejecting proxy")
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, BaseURL+"responses", strings.NewReader(`{"input":[]}`))
+	if resp, err := HTTPClient(home, CredentialRef).Do(req); err == nil {
+		resp.Body.Close()
+		t.Fatal("Responses request bypassed the rejecting proxy")
+	}
+	if authRequests.Load() != 4 || apiRequests.Load() != 2 {
+		t.Fatalf("proxy requests: auth=%d API=%d", authRequests.Load(), apiRequests.Load())
+	}
 }
 
 func TestRefreshIsSerializedAndPersistsRotatingToken(t *testing.T) {

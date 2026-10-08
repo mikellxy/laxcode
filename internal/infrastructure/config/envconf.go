@@ -74,7 +74,8 @@ func stripEnvQuotes(value string) string {
 //
 // 必须在进程首次出站 HTTP 请求之前调用：net/http 的 ProxyFromEnvironment
 // 经 sync.Once 在首次请求时缓存代理环境，之后注入 HTTP(S)_PROXY 不再生效。
-// 当前唯一调用点是 ParseEnvAndFile（main 最早期），该时序由此保证。
+// 当前唯一调用点是 ParseEnvAndFile（main 最早期）。第三方包的初始化可能
+// 更早缓存代理环境；ChatGPT 使用独立 transport 读取此处注入后的配置。
 func ApplyEnvFile(homeDir string) error {
 	data, err := os.ReadFile(layout.EnvConf(homeDir))
 	if err != nil {

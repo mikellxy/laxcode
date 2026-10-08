@@ -68,7 +68,8 @@ func ValidateEffort(model, effort string) error {
 }
 
 func HTTPClient(homeDir, ref string) *http.Client {
-	return &http.Client{Transport: &transport{store: NewStore(homeDir), ref: ref, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	store := NewStore(homeDir)
+	return &http.Client{Transport: &transport{store: store, ref: ref, base: store.http.Transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 type transport struct {

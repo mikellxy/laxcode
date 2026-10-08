@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
+	"golang.org/x/net/http/httpproxy"
 )
 
 const (
@@ -49,7 +50,16 @@ type Store struct {
 }
 
 func NewStore(homeDir string) *Store {
-	return &Store{path: layout.OAuthCredentials(homeDir), http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, tokenURL: Issuer + "/api/accounts/oauth/token"}
+	base := http.DefaultTransport
+	if standard, ok := base.(*http.Transport); ok {
+		outbound := standard.Clone()
+		// Read the environment injected by ApplyEnvFile, independently of the
+		// process-wide ProxyFromEnvironment cache initialized by other packages.
+		proxy := httpproxy.FromEnvironment().ProxyFunc()
+		outbound.Proxy = func(req *http.Request) (*url.URL, error) { return proxy(req.URL) }
+		base = outbound
+	}
+	return &Store{path: layout.OAuthCredentials(homeDir), http: &http.Client{Transport: base, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, tokenURL: Issuer + "/api/accounts/oauth/token"}
 }
 
 // withFile serializes read/refresh/write across clients and processes. Once a
