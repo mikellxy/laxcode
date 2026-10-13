@@ -34,6 +34,27 @@ cp docs/settings.json ~/.laxcode/settings.json
 ```
 
 `provider_name` 和同一 provider 内的 `model_name` 必须分别唯一。`model` 必须指向配置中的现有条目。
+未填写 `model` 时，默认选中目录中的第一个模型。`model_name` 是配置中的名称；
+可通过 `upstream_model` 指定实际请求的模型名，`display_name` 指定页面显示名称。
+
+## 命令行覆盖
+
+启动配置先应用默认值，再读取 `~/.laxcode/settings.json`，最后应用命令行参数。
+`-addr` 设置 Web 后端监听地址（默认 `127.0.0.1:8090`），`-plan` 启用计划模式。
+这两个选项仅支持命令行；`llm_router_url` 由运行中的本地路由器生成。
+
+临时使用其他 API Key 模型时，以下三个参数必须一起传入：
+
+```shell
+go run ./cmd/main -model=chat -openai_api_key=YOUR_API_KEY -openai_base_url=https://api.example.com/v1
+```
+
+此时保留文件中的模型目录，并新增临时 provider `env`，主模型选为 `env:chat`，
+使用默认模型 limit。它不会写入 `settings.json`；`env` 是保留名称，不能用于
+文件配置或 Web 新增 provider。文件中的 `compaction_model` 仍然有效。
+
+模型配置不再从 `OPENAI_*`、`COMPACTION_MODEL` 或 `LLM_ROUTER_ADDR` 环境变量覆盖。
+`env.conf` 继续向进程和子进程注入环境变量，供代理、Shell 工具和 MCP 使用。
 
 ## 使用 ChatGPT 订阅
 
@@ -116,6 +137,10 @@ Plus 的五小时额度在使用该订阅的应用间共享。额度或权限错
 ```
 
 `limit.context` 和 `limit.output` 都必须大于 0，且 `output` 必须小于 `context`。
+省略整个 `limit` 时，默认使用 `context: 200000`、`output: 16384`；显式填写时
+必须同时提供两个有效值。原有顶层 `openai_context_window`、`openai_max_output_tokens`、
+`compaction_openai_context_window`、`compaction_openai_max_output_tokens` 已移除，
+上下文窗口和输出预算统一使用所选模型的 `limit`。
 
 ---
 

@@ -18,7 +18,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
-	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	infrallm "github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
@@ -405,8 +404,8 @@ func TestChatAlignsMemorySessionWithSQLite(t *testing.T) {
 
 // compactionLLM 在指定调用序号（finalOnCalls）返回无工具调用的最终回答，
 // 其余调用一律返回两个 read_file tool calls，用于在一个 Chat 内叠出多个
-// tool-call 组。usage 经 EstimateTokenInt 估算并逐次记录。ContextBudget 与
-// 真实 OpenApiProvider 同源：直接取 config.EnvAndFileConf 的窗口配置。
+// tool-call 组。usage 经 EstimateTokenInt 估算并逐次记录。ContextBudget
+// 为压缩场景声明模型窗口与输出预留。
 type compactionLLM struct {
 	finalOnCalls map[int]bool
 	calls        int
@@ -472,8 +471,8 @@ func (c *compactionLLM) CountInputTokens(_ context.Context, msgs []sharedkernel.
 
 func (c *compactionLLM) ContextBudget() llmprovider.ContextBudget {
 	return llmprovider.ContextBudget{
-		ContextWindow:        config.EnvAndFileConf.OpenaiContextWindow,
-		ReservedOutputTokens: config.EnvAndFileConf.OpenaiMaxOutputTokens,
+		ContextWindow:        20000,
+		ReservedOutputTokens: 5000,
 	}
 }
 
@@ -524,10 +523,8 @@ func TestChatCompactionPersistsGenerationsInSQLite(t *testing.T) {
 	ctx := context.Background()
 	workDir := integrationWorkDir
 
-	// 窗口预算取自 config，与组合根构造 OpenApiProvider 的入参同源：
+	// 本测试模型声明窗口 20000、输出预留 5000：
 	// maxInput=15000，触发阈值 80%=12000，压缩目标 60%=9000。
-	config.EnvAndFileConf.OpenaiContextWindow = 20000
-	config.EnvAndFileConf.OpenaiMaxOutputTokens = 5000
 
 	if err := os.RemoveAll(filepath.Join(workDir, layout.RootDirName)); err != nil {
 		t.Fatalf("清理历史 sqlite: %v", err)

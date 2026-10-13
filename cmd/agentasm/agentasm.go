@@ -87,7 +87,7 @@ type Assembled struct {
 func newMainProvider(homeDir string, models *ai_models.Manager) *llmprovider.OpenApiProvider {
 	c := models.Active()
 	provider := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, config.EnvAndFileConf.LlmRouterURL,
+		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, config.Current.LlmRouterURL,
 		c.ContextWindow, c.MaxOutputTokens).WithReasoningEffort(c.ReasoningEffort)
 	if c.AuthType == "oauth" {
 		provider.WithChatGPT(homeDir, c.CredentialRef)
@@ -254,7 +254,7 @@ func ConnectMCPServers(ctx context.Context) *mcpserver.Pool {
 // mcpServersFromConf 把配置层的 MCPServerConf 过滤为已启用条目并转成
 // 传输层 ServerConfig；disabled 条目是用户意图，静默跳过。
 func mcpServersFromConf() map[string]mcpserver.ServerConfig {
-	conf := config.EnvAndFileConf.MCPServers
+	conf := config.Current.MCPServers
 	if len(conf) == 0 {
 		return nil
 	}

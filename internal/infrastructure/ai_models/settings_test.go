@@ -5,8 +5,49 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
+
+func TestSettingsWritesDoNotPersistCLIProvider(t *testing.T) {
+	home := t.TempDir()
+	writeSettings(t, home, modelSettings("p", "main"))
+	conf, err := config.Load(home, []string{"-model=cli-model", "-openai_api_key=cli-secret", "-openai_base_url=https://cli.example/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := New(home, conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := AddModelInput{Provider: "env", Model: "new", APIKey: "key", BaseURL: "https://example.com/v1", ContextWindow: 1000, MaxOutputTokens: 100}
+	if _, err := models.AddModelToSettings(input); !errors.Is(err, ErrInvalidModelConfig) {
+		t.Fatalf("CLI provider name accepted: %v", err)
+	}
+	input.Provider = "other"
+	if _, err := models.AddModelToSettings(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.SaveChatGPTModels([]Model{{Slug: "gpt-6.1-sol"}}); err != nil {
+		t.Fatal(err)
+	}
+	if models.Active().Ref != "env:cli-model" || models.Compaction().Ref != "env:cli-model" {
+		t.Fatal("settings write changed CLI model selection")
+	}
+	content, err := os.ReadFile(filepath.Join(home, ".laxcode", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "cli-secret") || strings.Contains(string(content), "cli-model") || strings.Contains(string(content), `"env"`) {
+		t.Fatalf("temporary CLI configuration persisted: %s", content)
+	}
+	reloaded, err := config.Load(home, nil)
+	if err != nil || reloaded.Model != "p:main" || len(reloaded.ProviderList) != 3 {
+		t.Fatalf("persisted configuration cannot be reloaded: %v", err)
+	}
+}
 
 func TestAddModelToSettingsPersistsAndUpdatesRuntimeCatalog(t *testing.T) {
 	swapConfigGlobals(t)
@@ -49,8 +90,8 @@ func TestAddModelToSettingsPersistsAndUpdatesRuntimeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	var document struct {
-		CustomSetting map[string]bool  `json:"custom_setting"`
-		ProviderList  []ProviderConfig `json:"provider_list"`
+		CustomSetting map[string]bool   `json:"custom_setting"`
+		ProviderList  []config.Provider `json:"provider_list"`
 	}
 	if err := json.Unmarshal(content, &document); err != nil {
 		t.Fatal(err)
@@ -146,7 +187,7 @@ func TestAddModelToSettingsFirstModelCreatesSettingsAndActivates(t *testing.T) {
 		t.Fatal(err)
 	}
 	var document struct {
-		ProviderList []ProviderConfig `json:"provider_list"`
+		ProviderList []config.Provider `json:"provider_list"`
 	}
 	if err := json.Unmarshal(content, &document); err != nil {
 		t.Fatal(err)

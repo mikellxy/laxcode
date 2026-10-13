@@ -2,12 +2,12 @@ package agentasm
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
 type recordingRouter struct{ clients []domainrouter.StreamClient }
@@ -18,15 +18,12 @@ func (r *recordingRouter) ReplaceClient(client domainrouter.StreamClient) {
 
 func switchTestModels(t *testing.T) *ai_models.Manager {
 	t.Helper()
-	raw, err := json.Marshal([]ai_models.ProviderConfig{
-		{ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "model-1"}}},
-		{ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "model-2", Limit: &ai_models.ModelLimit{Context: 1_048_576, Output: 131_072}}}},
-		{ProviderName: "summary", OpenaiApiKey: "summary-key", OpenaiBaseUrl: "https://summary.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "summary-model", Limit: &ai_models.ModelLimit{Context: 128_000, Output: 4096}}}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	providers := []config.Provider{
+		{ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1", ModelList: []config.Model{{ModelName: "model-1", Limit: &config.ModelLimit{Context: 128_000, Output: 16_384}}}},
+		{ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1", ModelList: []config.Model{{ModelName: "model-2", Limit: &config.ModelLimit{Context: 1_048_576, Output: 131_072}}}},
+		{ProviderName: "summary", OpenaiApiKey: "summary-key", OpenaiBaseUrl: "https://summary.example/v1", ModelList: []config.Model{{ModelName: "summary-model", Limit: &config.ModelLimit{Context: 128_000, Output: 4096}}}},
 	}
-	models, err := ai_models.New(t.TempDir(), raw, ai_models.Options{Model: "first:model-1", CompactionModel: "summary:summary-model", ContextWindow: 128_000, MaxOutputTokens: 16_384})
+	models, err := ai_models.New(t.TempDir(), config.Conf{ProviderList: providers, Model: "first:model-1", CompactionModel: "summary:summary-model"})
 	if err != nil {
 		t.Fatal(err)
 	}

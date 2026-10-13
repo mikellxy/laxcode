@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -16,10 +18,10 @@ import (
 const llmRouterShutdownTimeout = 5 * time.Second
 
 func main() {
-	if err := config.ParseEnvAndFile(); err != nil {
-		panic(err)
-	}
-	if err := config.ParseCli(); err != nil {
+	if err := config.Parse(); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		panic(err)
 	}
 	// One browser coding backend per user; publish its address after listening.
@@ -63,14 +65,14 @@ func main() {
 		}
 	}
 	routerServer := applicationrouter.NewHTTPServer(client, routerLogger)
-	runningRouter, err := routerServer.Start(config.EnvAndFileConf.LlmRouterAddr)
+	runningRouter, err := routerServer.Start(config.Current.LlmRouterAddr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		_ = routerLogFile.Close()
 		_ = logFile.Close()
 		os.Exit(1)
 	}
-	config.EnvAndFileConf.LlmRouterURL = runningRouter.Endpoint()
+	config.Current.LlmRouterURL = runningRouter.Endpoint()
 	shutdownRouter := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), llmRouterShutdownTimeout)
 		defer cancel()

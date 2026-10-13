@@ -1,139 +1,148 @@
 package config
 
 import (
-	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
-// swapConfigGlobals 隔离 ParseEnvAndFile 依赖的包级全局，测试结束恢复。
 func swapConfigGlobals(t *testing.T) {
 	t.Helper()
-	prevViper := EnvOrFile
-	prevConf := EnvAndFileConf
-	EnvOrFile = viper.New()
-	EnvAndFileConf = envAndFileConf{}
-	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME",
-		"OPENAI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_BASE_URL", "OPENAI_EMBEDDING_MODEL_NAME",
-		"EMBEDDING_MODEL", "COMPACTION_MODEL", "EMBEDDING_VEC_DIM",
-		"OPENAI_COMPACTION_API_KEY", "OPENAI_COMPACTION_BASE_URL", "OPENAI_COMPACTION_MODEL_NAME",
-		"OPENAI_CONTEXT_WINDOW", "OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "LLM_ROUTER_ADDR"} {
-		t.Setenv(key, "")
-	}
-	t.Cleanup(func() {
-		EnvOrFile = prevViper
-		EnvAndFileConf = prevConf
-	})
+	previous := Current
+	Current = Conf{}
+	t.Cleanup(func() { Current = previous })
 }
 
-func setEnvModel(t *testing.T, model string) {
-	t.Helper()
-	t.Setenv("OPENAI_API_KEY", "sk-env-key")
-	t.Setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
-	t.Setenv("OPENAI_MODEL_NAME", model)
-}
-
-func modelSettings(provider, model string) string {
-	return fmt.Sprintf(`{
-		"model": %q,
-		"provider_list": [{
-			"provider_name": %q,
-			"openai_api_key": "sk-file-key",
-			"openai_base_url": "https://file.example.com/v1",
-			"model_list": [{"model_name": %q}]
-		}]
-	}`, provider+":"+model, provider, model)
-}
-
-func writeSettings(t *testing.T, home string, content string) {
+func writeSettings(t *testing.T, home, content string) {
 	t.Helper()
 	dir := filepath.Join(home, ".laxcode")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir settings dir: %v", err)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
-}
-
-func TestParseEnvAndFileLLMRouterAddrFromEnv(t *testing.T) {
-	swapConfigGlobals(t)
-	t.Setenv("HOME", t.TempDir())
-	setEnvModel(t, "gpt-env")
-	t.Setenv("LLM_ROUTER_ADDR", "127.0.0.1:18080")
-
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
-	}
-	if EnvAndFileConf.LlmRouterAddr != "127.0.0.1:18080" {
-		t.Fatalf("llm router addr = %q", EnvAndFileConf.LlmRouterAddr)
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestParseEnvAndFileCorruptFileReturnsError(t *testing.T) {
-	swapConfigGlobals(t)
+func parseTestConfig() error {
+	conf, err := Load(os.Getenv("HOME"), nil)
+	if err == nil {
+		Current = conf
+	}
+	return err
+}
+
+func TestLoadMergesFileAndCLI(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{"openai_api_key": `) // 非法 JSON
-
-	if err := ParseEnvAndFile(); err == nil {
-		t.Fatal("settings.json 非法时应返回错误")
-	}
-}
-
-func swapCliGlobals(t *testing.T, args ...string) {
-	t.Helper()
-	prevArgs := os.Args
-	prevFlagCmd := flag.CommandLine
-	prevCli := Cli
-	prevConf := CliConf
-
-	flag.CommandLine = flag.NewFlagSet("config-test", flag.ContinueOnError)
-	os.Args = append([]string{"config.test"}, args...)
-	Cli = viper.New()
-	CliConf = cliConf{}
-
-	t.Cleanup(func() {
-		os.Args = prevArgs
-		flag.CommandLine = prevFlagCmd
-		Cli = prevCli
-		CliConf = prevConf
-	})
-}
-
-func TestParseCli(t *testing.T) {
-	swapCliGlobals(t, "-addr=127.0.0.1:9000", "-plan")
-	if err := ParseCli(); err != nil {
+	writeSettings(t, home, `{"model":"p:file","compaction_model":"p:summary","llm_router_addr":"127.0.0.1:18080","llm_router_url":"https://ignored.example","addr":"ignored","plan":true,"provider_list":[{"provider_name":"p","openai_api_key":"file-key","openai_base_url":"https://file.example/v1","model_list":[{"model_name":"file","limit":{"context":128000,"output":8192}},{"model_name":"summary"}]}]}`)
+	conf, err := Load(home, []string{"-addr=127.0.0.1:9000", "-plan", "-model=cli-model", "-openai_api_key=cli-key", "-openai_base_url=https://cli.example/v1"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if CliConf.Addr != "127.0.0.1:9000" || !CliConf.Plan {
-		t.Fatalf("config=%+v", CliConf)
+	if conf.Addr != "127.0.0.1:9000" || !conf.Plan || conf.Model != "env:cli-model" || conf.CompactionModel != "p:summary" || conf.LlmRouterAddr != "127.0.0.1:18080" || conf.LlmRouterURL != "" {
+		t.Fatalf("merged config: %+v", conf)
+	}
+	if len(conf.ProviderList) != 2 || conf.ProviderList[0].OpenaiApiKey != "file-key" || conf.ProviderList[0].ModelList[0].Limit.Context != 128000 {
+		t.Fatal("file provider was overwritten")
+	}
+	cli := conf.ProviderList[1]
+	if cli.ProviderName != CLIProviderName || cli.OpenaiApiKey != "cli-key" || cli.OpenaiBaseUrl != "https://cli.example/v1" || cli.ModelList[0].ModelName != "cli-model" || *cli.ModelList[0].Limit != DefaultModelLimit() {
+		t.Fatalf("CLI provider: %+v", cli)
+	}
+	data, _ := os.ReadFile(filepath.Join(home, ".laxcode", "settings.json"))
+	if strings.Contains(string(data), "cli-key") || strings.Contains(string(data), "cli-model") {
+		t.Fatal("CLI configuration was persisted")
+	}
+	fileOnly, err := Load(home, nil)
+	if err != nil || fileOnly.Model != "p:file" || fileOnly.Addr != DefaultSSEAddr || fileOnly.Plan {
+		t.Fatalf("default CLI overwrote file or startup defaults: %+v, %v", fileOnly, err)
+	}
+	if *fileOnly.ProviderList[0].ModelList[1].Limit != DefaultModelLimit() {
+		t.Fatal("missing model limit was not normalized")
 	}
 }
 
-func TestParseCliDefaults(t *testing.T) {
-	swapCliGlobals(t)
-	if err := ParseCli(); err != nil {
+func TestCLIRequiresCompleteModelCredentials(t *testing.T) {
+	for _, args := range [][]string{
+		{"-model=chat"}, {"-openai_api_key=key"}, {"-openai_base_url=https://example.com/v1"},
+		{"-model=chat", "-openai_api_key=key"}, {"-model=chat", "-openai_base_url=https://example.com/v1"},
+		{"-openai_api_key=key", "-openai_base_url=https://example.com/v1"},
+	} {
+		if _, err := Load(t.TempDir(), args); err == nil {
+			t.Fatalf("accepted incomplete credentials: %v", args)
+		}
+	}
+}
+
+func TestParseCLIRejectsRemovedFlagsAndPositionalArguments(t *testing.T) {
+	for _, arg := range []string{"-sse", "-mode=code", "-kb=x", "-session=x", "-token-budget=1000", "unexpected"} {
+		if _, err := Load(t.TempDir(), []string{arg}); err == nil {
+			t.Fatalf("accepted %q", arg)
+		}
+	}
+}
+
+func TestLoadIgnoresRetiredModelEnvironmentAndGlobalLimits(t *testing.T) {
+	home := t.TempDir()
+	writeSettings(t, home, `{"model":"p:chat","compaction_model":"p:summary","openai_context_window":1,"openai_max_output_tokens":999999,"compaction_openai_context_window":-1,"compaction_openai_max_output_tokens":999999,"provider_list":[{"provider_name":"p","openai_api_key":"file-key","openai_base_url":"https://file.example/v1","model_list":[{"model_name":"chat"},{"model_name":"summary","limit":{"context":128000,"output":8192}}]}]}`)
+	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME", "OPENAI_CONTEXT_WINDOW", "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_COMPACTION_API_KEY", "OPENAI_COMPACTION_BASE_URL", "OPENAI_COMPACTION_MODEL_NAME", "COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_MODEL", "LLM_ROUTER_ADDR"} {
+		t.Setenv(key, "ignored-invalid-value")
+	}
+	conf, err := Load(home, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if CliConf.Addr != DefaultSSEAddr || CliConf.Plan {
-		t.Fatalf("config=%+v", CliConf)
+	if conf.Model != "p:chat" || conf.CompactionModel != "p:summary" || conf.LlmRouterAddr != DefaultLLMRouterAddr || len(conf.ProviderList) != 1 || *conf.ProviderList[0].ModelList[0].Limit != DefaultModelLimit() || conf.ProviderList[0].ModelList[1].Limit.Context != 128000 {
+		t.Fatalf("retired settings were applied: %+v", conf)
 	}
 }
 
-func TestParseCliRejectsRemovedModesAndInvalidArguments(t *testing.T) {
-	for _, arg := range []string{"-sse", "-mode=code", "-mode=rag", "-code", "-rag", "-kb=x", "-session=x", "-token-budget=1000", "unexpected"} {
-		t.Run(arg, func(t *testing.T) {
-			swapCliGlobals(t, arg)
-			if err := ParseCli(); err == nil {
-				t.Fatalf("accepted %q", arg)
-			}
-		})
+func TestLoadRejectsInvalidModelsAndJSONStructure(t *testing.T) {
+	for _, content := range []string{
+		`null`, `[]`, `{"model":`,
+		`{"provider_list":[{"provider_name":"env","model_list":[]}]}`,
+		`{"provider_list":[{"provider_name":"p","model_list":"invalid"}]}`,
+		`{"provider_list":[{"provider_name":"p","model_list":[{"model_name":"m","limit":{}}]}]}`,
+		`{"provider_list":[{"provider_name":"p","model_list":[{"model_name":"m","limit":{"context":1000}}]}]}`,
+		`{"provider_list":[{"provider_name":"p","model_list":[{"model_name":"m","limit":{"context":1000,"output":1000}}]}]}`,
+	} {
+		home := t.TempDir()
+		writeSettings(t, home, content)
+		if _, err := Load(home, nil); err == nil {
+			t.Fatalf("accepted invalid settings: %s", content)
+		}
+	}
+}
+
+func TestLoadParsesTypedProvidersAndDefaultsIndependently(t *testing.T) {
+	home := t.TempDir()
+	writeSettings(t, home, `{"MODEL":"CaseSensitive:alias","PROVIDER_LIST":[{"provider_name":"CaseSensitive","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"alias","upstream_model":"actual","display_name":"Display Name","reasoning_effort":"","limit":{"context":100000,"output":8000}},{"model_name":"plain"},{"model_name":"other"}]}]}`)
+	conf, err := Load(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := conf.ProviderList[0].ModelList
+	if conf.Model != "CaseSensitive:alias" || models[0].UpstreamModel != "actual" || models[0].DisplayName != "Display Name" || models[0].Limit.Context != 100000 {
+		t.Fatalf("typed fields lost: %+v", conf)
+	}
+	models[1].Limit.Context = 1
+	if models[2].Limit.Context != DefaultContextWindow {
+		t.Fatal("default model limits share a pointer")
+	}
+}
+
+func TestLoadAppliesEnvFileWithoutModelOverrides(t *testing.T) {
+	t.Setenv("LAXCODE_ENVCONF_PROBE", "inherited")
+	t.Setenv("OPENAI_MODEL_NAME", "inherited-model")
+	home := writeEnvConf(t, "LAXCODE_ENVCONF_PROBE=from-file\nOPENAI_MODEL_NAME=ignored-model\n")
+	writeSettings(t, home, `{"model":"p:chat","provider_list":[{"provider_name":"p","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"chat"}]}]}`)
+	conf, err := Load(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("LAXCODE_ENVCONF_PROBE") != "from-file" || os.Getenv("OPENAI_MODEL_NAME") != "ignored-model" || conf.Model != "p:chat" || len(conf.ProviderList) != 1 {
+		t.Fatal("env.conf injection or file model selection changed")
 	}
 }
 
@@ -170,10 +179,10 @@ func TestParseMCPServers(t *testing.T) {
 			}
 		}
 	}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
+	if err := parseTestConfig(); err != nil {
+		t.Fatalf("Load settings: %v", err)
 	}
-	fs := EnvAndFileConf.MCPServers["filesystem"]
+	fs := Current.MCPServers["filesystem"]
 	if fs.Command != "npx" || len(fs.Args) != 3 || fs.Args[1] != "@modelcontextprotocol/server-filesystem" {
 		t.Errorf("filesystem conf = %+v", fs)
 	}
@@ -183,10 +192,10 @@ func TestParseMCPServers(t *testing.T) {
 	if !fs.IsEnabled() {
 		t.Error("unset enabled must default to enabled")
 	}
-	if paused := EnvAndFileConf.MCPServers["paused"]; paused.IsEnabled() {
+	if paused := Current.MCPServers["paused"]; paused.IsEnabled() {
 		t.Error("enabled=false must disable the server")
 	}
-	if remote := EnvAndFileConf.MCPServers["remote"]; remote.URL != "https://mcp.example.com/mcp" ||
+	if remote := Current.MCPServers["remote"]; remote.URL != "https://mcp.example.com/mcp" ||
 		headerValue(remote.Headers, "Authorization") != "Bearer test-token" {
 		t.Errorf("url entry must parse, got %+v", remote)
 	}
@@ -221,10 +230,10 @@ func TestParseMCPServersCamelCase(t *testing.T) {
 			}
 		}
 	}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatalf("ParseEnvAndFile: %v", err)
+	if err := parseTestConfig(); err != nil {
+		t.Fatalf("Load settings: %v", err)
 	}
-	remote := EnvAndFileConf.MCPServers["ov-mcp-server"]
+	remote := Current.MCPServers["ov-mcp-server"]
 	if remote.URL != "https://mcp.example.com/mcp" ||
 		headerValue(remote.Headers, "Authorization") != "Bearer test-token" {
 		t.Fatalf("camelCase mcpServers entry = %+v", remote)
@@ -272,7 +281,7 @@ func TestValidateMCPServers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &envAndFileConf{MCPServers: tc.servers}
+			c := &Conf{MCPServers: tc.servers}
 			err := c.validateMCPServers()
 			if tc.wantErr == "" {
 				if err != nil {
@@ -293,22 +302,7 @@ func TestRetiredMemorySettingsDoNotBlockStartup(t *testing.T) {
 	t.Setenv("HOME", home)
 	writeSettings(t, home, `{"embedding_model":"missing:model","embedding_vec_dim":-1,"user_memory_executable":"missing"}`)
 	t.Setenv("OPENAI_EMBEDDING_API_KEY", "unused")
-	if err := ParseEnvAndFile(); err != nil {
+	if err := parseTestConfig(); err != nil {
 		t.Fatalf("retired configuration blocked Web startup: %v", err)
-	}
-}
-
-func TestProviderListRemainsRawUntilModelInitialization(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	// The config reader accepts JSON without interpreting provider-specific fields.
-	raw := `[{ "provider_name": "CaseSensitive", "future_option": {"MixedCase": true}, "model_list": "invalid-for-ai-models" }]`
-	writeSettings(t, home, `{"model":"CaseSensitive:model","provider_list":`+raw+`}`)
-	if err := ParseEnvAndFile(); err != nil {
-		t.Fatal(err)
-	}
-	if string(EnvAndFileConf.ProviderList) != raw || EnvAndFileConf.Model != "CaseSensitive:model" {
-		t.Fatal("provider JSON or model reference was transformed")
 	}
 }

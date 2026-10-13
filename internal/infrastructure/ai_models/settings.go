@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -39,7 +40,7 @@ func (in *AddModelInput) normalizeAndValidate() error {
 	if err := ValidateEffort(in.Model, in.ReasoningEffort); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 	}
-	if !validCatalogName(in.Provider) || in.Provider == envProviderName {
+	if !validCatalogName(in.Provider) || in.Provider == config.CLIProviderName {
 		return fmt.Errorf("%w: invalid or reserved provider name", ErrInvalidModelConfig)
 	}
 	if !validCatalogName(in.Model) {
@@ -60,21 +61,21 @@ func (in *AddModelInput) normalizeAndValidate() error {
 
 // AddModelToSettings 将模型原子写入 ${home}/.laxcode/settings.json，并在写入
 // 成功后更新当前进程的模型目录。调用方必须与模型切换共用同一把写锁。
-func (m *Manager) AddModelToSettings(input AddModelInput) (ModelConfig, error) {
+func (m *Manager) AddModelToSettings(input AddModelInput) (config.Model, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := input.normalizeAndValidate(); err != nil {
-		return ModelConfig{}, err
+		return config.Model{}, err
 	}
-	model := ModelConfig{
+	model := config.Model{
 		ReasoningEffort: input.ReasoningEffort,
 		ModelName:       input.Model,
-		Limit:           &ModelLimit{Context: input.ContextWindow, Output: input.MaxOutputTokens},
+		Limit:           &config.ModelLimit{Context: input.ContextWindow, Output: input.MaxOutputTokens},
 	}
 
 	runtimeProviders, err := appendModelToProviders(m.state.providers, input, model)
 	if err != nil {
-		return ModelConfig{}, err
+		return config.Model{}, err
 	}
 	runtimeCandidate := m.state
 	runtimeCandidate.providers = runtimeProviders
@@ -85,46 +86,46 @@ func (m *Manager) AddModelToSettings(input AddModelInput) (ModelConfig, error) {
 		runtimeCandidate.active.Ref = modelRef(input.Provider, model.ModelName)
 	}
 	if err := runtimeCandidate.initializeSelection(); err != nil {
-		return ModelConfig{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
+		return config.Model{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 	}
 
 	if !activated {
 		if err := runtimeCandidate.setActiveModel(m.state.active.Ref, m.state.active.ReasoningEffort); err != nil {
-			return ModelConfig{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
+			return config.Model{}, fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 		}
 	}
 	settingsPath := layout.UserSettings(m.homeDir)
 	document, err := readSettings(settingsPath)
 	if err != nil {
-		return ModelConfig{}, err
+		return config.Model{}, err
 	}
-	var diskProviders []ProviderConfig
+	var diskProviders []config.Provider
 	if providerJSON, ok := document["provider_list"]; ok {
 		if err := json.Unmarshal(providerJSON, &diskProviders); err != nil {
-			return ModelConfig{}, fmt.Errorf("parse settings provider_list: %w", err)
+			return config.Model{}, fmt.Errorf("parse settings provider_list: %w", err)
 		}
 	} // 文件存在但缺 provider_list 键时按空目录处理
 	diskProviders, err = appendModelToProviders(diskProviders, input, model)
 	if err != nil {
-		return ModelConfig{}, err
+		return config.Model{}, err
 	}
 	document["provider_list"], err = json.Marshal(diskProviders)
 	if err != nil {
-		return ModelConfig{}, fmt.Errorf("encode provider list: %w", err)
+		return config.Model{}, fmt.Errorf("encode provider list: %w", err)
 	}
 	if activated {
 		document["model"], _ = json.Marshal(runtimeCandidate.active.Ref)
 	}
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
-		return ModelConfig{}, fmt.Errorf("encode settings: %w", err)
+		return config.Model{}, fmt.Errorf("encode settings: %w", err)
 	}
 	encoded = append(encoded, '\n')
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
-		return ModelConfig{}, fmt.Errorf("create settings dir: %w", err)
+		return config.Model{}, fmt.Errorf("create settings dir: %w", err)
 	}
 	if err := writeSettingsAtomic(settingsPath, encoded); err != nil {
-		return ModelConfig{}, err
+		return config.Model{}, err
 	}
 	m.state = runtimeCandidate
 	// The returned configuration must not expose a pointer into the live catalog.
@@ -133,8 +134,8 @@ func (m *Manager) AddModelToSettings(input AddModelInput) (ModelConfig, error) {
 	return model, nil
 }
 
-func appendModelToProviders(providers []ProviderConfig, input AddModelInput, model ModelConfig) ([]ProviderConfig, error) {
-	result := make([]ProviderConfig, len(providers))
+func appendModelToProviders(providers []config.Provider, input AddModelInput, model config.Model) ([]config.Provider, error) {
+	result := make([]config.Provider, len(providers))
 	copy(result, providers)
 	for i := range result {
 		provider := &result[i]
@@ -149,17 +150,17 @@ func appendModelToProviders(providers []ProviderConfig, input AddModelInput, mod
 				return nil, fmt.Errorf("%w: %s:%s", ErrModelAlreadyExists, input.Provider, input.Model)
 			}
 		}
-		provider.ModelList = append(append([]ModelConfig(nil), provider.ModelList...), model)
+		provider.ModelList = append(append([]config.Model(nil), provider.ModelList...), model)
 		return result, nil
 	}
-	result = append(result, ProviderConfig{
+	result = append(result, config.Provider{
 		ProviderName: input.Provider, OpenaiApiKey: input.APIKey, OpenaiBaseUrl: input.BaseURL,
-		ModelList: []ModelConfig{model},
+		ModelList: []config.Model{model},
 	})
 	return result, nil
 }
 
-func credentialsEqual(provider *ProviderConfig, input AddModelInput) bool {
+func credentialsEqual(provider *config.Provider, input AddModelInput) bool {
 	return provider.AuthType != "oauth" && strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
 		strings.TrimRight(strings.TrimSpace(provider.OpenaiBaseUrl), "/") == strings.TrimRight(input.BaseURL, "/")
 }

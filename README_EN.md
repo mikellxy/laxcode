@@ -73,7 +73,7 @@ To refresh the Windows artifacts, maintainers can install Go and `pnpm` on macOS
 
 When creating a session, the page supplies the working directory, which is persisted alongside the `session_id` and `mode`. When a tool operation requires approval, the page pauses the current stream and shows a confirmation dialog.
 
-The backend starts as a coding SSE service by default. Startup options are `-addr` and `-plan`; the former `-sse`, `-mode`, `-kb`, and `-session` flags have been removed. Create and resume sessions through the Web UI. Existing code sessions remain usable; old RAG sessions cannot be resumed as coding sessions. Retired memory tables in existing databases are left intact.
+The backend starts as a coding SSE service by default. Startup options are `-addr`, `-plan`, and the model override flags `-model`, `-openai_api_key`, and `-openai_base_url` (set all three together); the former `-sse`, `-mode`, `-kb`, and `-session` flags have been removed. Create and resume sessions through the Web UI. Existing code sessions remain usable; old RAG sessions cannot be resumed as coding sessions. Retired memory tables in existing databases are left intact.
 
 <a id="agent-session-evaluation"></a>
 
@@ -125,7 +125,7 @@ LaxCode/
 │       ├── ripgrep/                # File search and content retrieval adapter
 │       ├── skillrepo/              # Local Skill scanning and loading
 │       ├── skillstore/             # Restricted staging and atomic commits for global Skills
-│       ├── config/                 # Settings inputs, raw provider_list and MCP configuration
+│       ├── config/                 # Merged settings, typed model catalog and MCP configuration
 │       ├── layout/                 # User data and session disk layout
 │       └── tracing/                # OpenTelemetry, OTLP, and local tracing implementations
 ├── web/                            # React + TypeScript web client

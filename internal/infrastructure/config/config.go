@@ -1,10 +1,11 @@
 package config
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -31,41 +32,209 @@ type MCPServerConf struct {
 // IsEnabled 报告该 server 是否应被接入；未声明 enabled 视为启用。
 func (c MCPServerConf) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
-// envAndFileConf contains settings inputs, never resolved model connections.
-type envAndFileConf struct {
-	Model                           string                   `mapstructure:"model"`
-	CompactionModel                 string                   `mapstructure:"compaction_model"`
-	ProviderList                    json.RawMessage          `mapstructure:"-"`
-	MCPServers                      map[string]MCPServerConf `mapstructure:"mcp_servers"`
-	OpenaiContextWindow             int                      `mapstructure:"openai_context_window"`
-	OpenaiMaxOutputTokens           int                      `mapstructure:"openai_max_output_tokens"`
-	CompactionOpenaiContextWindow   int                      `mapstructure:"compaction_openai_context_window"`
-	CompactionOpenaiMaxOutputTokens int                      `mapstructure:"compaction_openai_max_output_tokens"`
-	LlmRouterAddr                   string                   `mapstructure:"llm_router_addr"`
-	LlmRouterURL                    string                   `mapstructure:"-"`
+// Conf is the merged startup configuration. Runtime model selections belong to ai_models.
+type Conf struct {
+	Model           string
+	CompactionModel string
+	ProviderList    []Provider
+	MCPServers      map[string]MCPServerConf
+	LlmRouterAddr   string
+	LlmRouterURL    string
+	Addr            string
+	Plan            bool
 }
 
-const DefaultLLMRouterAddr = "127.0.0.1:0"
+type Provider struct {
+	ProviderName  string  `json:"provider_name" mapstructure:"provider_name"`
+	AuthType      string  `json:"auth_type,omitempty" mapstructure:"auth_type"`
+	OpenaiApiKey  string  `json:"openai_api_key,omitempty" mapstructure:"openai_api_key"`
+	OpenaiBaseUrl string  `json:"openai_base_url" mapstructure:"openai_base_url"`
+	CredentialRef string  `json:"credential_ref,omitempty" mapstructure:"credential_ref"`
+	ModelList     []Model `json:"model_list" mapstructure:"model_list"`
+}
 
-var EnvAndFileConf envAndFileConf
-var EnvOrFile = viper.New()
+type Model struct {
+	ModelName       string      `json:"model_name" mapstructure:"model_name"`
+	UpstreamModel   string      `json:"upstream_model,omitempty" mapstructure:"upstream_model"`
+	DisplayName     string      `json:"display_name,omitempty" mapstructure:"display_name"`
+	ReasoningEffort string      `json:"reasoning_effort,omitempty" mapstructure:"reasoning_effort"`
+	Limit           *ModelLimit `json:"limit,omitempty" mapstructure:"limit"`
+}
+
+type ModelLimit struct {
+	Context int `json:"context" mapstructure:"context"`
+	Output  int `json:"output" mapstructure:"output"`
+}
+
+type fileConf struct {
+	Model           string                   `mapstructure:"model"`
+	CompactionModel string                   `mapstructure:"compaction_model"`
+	ProviderList    []Provider               `mapstructure:"provider_list"`
+	MCPServers      map[string]MCPServerConf `mapstructure:"mcp_servers"`
+	LlmRouterAddr   string                   `mapstructure:"llm_router_addr"`
+	LlmRouterURL    string                   `mapstructure:"-"`
+}
 
 type cliConf struct {
-	Addr string `mapstructure:"addr"`
-	Plan bool   `mapstructure:"plan"`
+	Addr          string `mapstructure:"addr"`
+	Plan          bool   `mapstructure:"plan"`
+	ModelName     string `mapstructure:"model"`
+	OpenaiApiKey  string `mapstructure:"openai_api_key"`
+	OpenaiBaseUrl string `mapstructure:"openai_base_url"`
 }
 
-const DefaultSSEAddr = "127.0.0.1:8090"
+const (
+	DefaultLLMRouterAddr   = "127.0.0.1:0"
+	DefaultSSEAddr         = "127.0.0.1:8090"
+	DefaultContextWindow   = 200_000
+	DefaultMaxOutputTokens = 16_384
+	CLIProviderName        = "env"
+)
 
-var CliConf cliConf
-var Cli = viper.New()
+var Current Conf
+
+func DefaultModelLimit() ModelLimit {
+	return ModelLimit{Context: DefaultContextWindow, Output: DefaultMaxOutputTokens}
+}
+
+// Parse loads settings and CLI arguments before any outbound requests.
+func Parse() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	conf, err := Load(homeDir, os.Args[1:])
+	if err != nil {
+		return err
+	}
+	Current = conf
+	return nil
+}
+
+func Load(homeDir string, args []string) (Conf, error) {
+	if err := ApplyEnvFile(homeDir); err != nil {
+		return Conf{}, err
+	}
+	file, err := parseFile(homeDir)
+	if err != nil {
+		return Conf{}, err
+	}
+	cli, err := parseCLI(args)
+	if err != nil {
+		return Conf{}, err
+	}
+	return merge(file, cli)
+}
+
+func parseFile(homeDir string) (fileConf, error) {
+	data, err := os.ReadFile(layout.UserSettings(homeDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return fileConf{}, nil
+	}
+	if err != nil {
+		return fileConf{}, err
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '{' {
+		return fileConf{}, errors.New("settings must be a JSON object")
+	}
+	reader := viper.New()
+	reader.SetConfigType("json")
+	if err := reader.ReadConfig(bytes.NewReader(data)); err != nil {
+		return fileConf{}, err
+	}
+	if !reader.InConfig("mcp_servers") && reader.InConfig("mcpServers") {
+		reader.RegisterAlias("mcp_servers", "mcpServers")
+	}
+	var file fileConf
+	if err := reader.Unmarshal(&file); err != nil {
+		return fileConf{}, err
+	}
+	return file, nil
+}
+
+func parseCLI(args []string) (cliConf, error) {
+	var cli cliConf
+	flags := flag.NewFlagSet("laxcode", flag.ContinueOnError)
+	// The caller reports parse errors; avoid printing the same diagnostic twice.
+	flags.SetOutput(io.Discard)
+	flags.Usage = func() {
+		flags.SetOutput(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Usage of laxcode:")
+		flags.PrintDefaults()
+		flags.SetOutput(io.Discard)
+	}
+	flags.StringVar(&cli.Addr, "addr", DefaultSSEAddr, "Web backend listen address")
+	flags.BoolVar(&cli.Plan, "plan", false, "enable plan mode")
+	flags.StringVar(&cli.ModelName, "model", "", "upstream model name (requires API key and base URL)")
+	flags.StringVar(&cli.OpenaiApiKey, "openai_api_key", "", "API key for the CLI model")
+	flags.StringVar(&cli.OpenaiBaseUrl, "openai_base_url", "", "base URL for the CLI model")
+	if err := flags.Parse(args); err != nil {
+		return cliConf{}, err
+	}
+	if flags.NArg() != 0 {
+		return cliConf{}, fmt.Errorf("unexpected positional arguments: %v", flags.Args())
+	}
+	return cli, nil
+}
+
+func merge(file fileConf, cli cliConf) (Conf, error) {
+	conf := Conf{LlmRouterAddr: DefaultLLMRouterAddr, Addr: DefaultSSEAddr}
+	conf.Model, conf.CompactionModel = file.Model, file.CompactionModel
+	conf.ProviderList, conf.MCPServers = file.ProviderList, file.MCPServers
+	if file.LlmRouterAddr != "" {
+		conf.LlmRouterAddr = file.LlmRouterAddr
+	}
+	conf.Addr, conf.Plan = cli.Addr, cli.Plan
+	for _, provider := range conf.ProviderList {
+		if provider.ProviderName == CLIProviderName {
+			return Conf{}, fmt.Errorf("provider_name %q is reserved for CLI configuration", CLIProviderName)
+		}
+	}
+	cli.ModelName = strings.TrimSpace(cli.ModelName)
+	cli.OpenaiApiKey = strings.TrimSpace(cli.OpenaiApiKey)
+	cli.OpenaiBaseUrl = strings.TrimSpace(cli.OpenaiBaseUrl)
+	supplied := 0
+	for _, value := range []string{cli.ModelName, cli.OpenaiApiKey, cli.OpenaiBaseUrl} {
+		if value != "" {
+			supplied++
+		}
+	}
+	if supplied != 0 && supplied != 3 {
+		return Conf{}, errors.New("-model, -openai_api_key and -openai_base_url must be set together")
+	}
+	if supplied == 3 {
+		limit := DefaultModelLimit()
+		conf.ProviderList = append(conf.ProviderList, Provider{ProviderName: CLIProviderName, AuthType: "api_key",
+			OpenaiApiKey: cli.OpenaiApiKey, OpenaiBaseUrl: cli.OpenaiBaseUrl,
+			ModelList: []Model{{ModelName: cli.ModelName, Limit: &limit}},
+		})
+		conf.Model = CLIProviderName + ":" + cli.ModelName
+	}
+	for i := range conf.ProviderList {
+		for j := range conf.ProviderList[i].ModelList {
+			model := &conf.ProviderList[i].ModelList[j]
+			if model.Limit == nil {
+				limit := DefaultModelLimit()
+				model.Limit = &limit
+			}
+			if model.Limit.Context <= 0 || model.Limit.Output <= 0 || model.Limit.Output >= model.Limit.Context {
+				return Conf{}, fmt.Errorf("invalid limit for %s:%s: context and output must be positive and output smaller than context", conf.ProviderList[i].ProviderName, model.ModelName)
+			}
+		}
+	}
+	if err := conf.validateMCPServers(); err != nil {
+		return Conf{}, err
+	}
+	return conf, nil
+}
 
 // validateMCPServers 校验 mcp_servers 段的结构不变式：键非空且不含空白
 // （键会进入工具名命名空间），已启用的条目必须声明且仅声明一种传输形态
 // ——stdio command 或 Streamable HTTP url。运行期故障（进程起不来、
 // 握手失败）不在此校验：装配时对单个 server fail-open，启动期硬失败会把
 // 第三方 server 的故障放大成整个服务不可用。
-func (c *envAndFileConf) validateMCPServers() error {
+func (c *Conf) validateMCPServers() error {
 	for name, server := range c.MCPServers {
 		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n") {
 			return fmt.Errorf("invalid mcp_servers key %q: must be non-empty without whitespace", name)
@@ -115,105 +284,4 @@ func validHTTPHeaderName(name string) bool {
 		return false
 	}
 	return true
-}
-
-func ParseEnvAndFile() error {
-	// env.conf 是进程环境基线，先于其余配置注入：settings.json 与 OPENAI_*
-	// 环境绑定读到的是注入后的环境，bash 工具与 MCP server 派生的子进程也
-	// 一并继承。必须早于任何出站 HTTP 请求——net/http 的代理环境经
-	// sync.Once 在首次请求时缓存，之后注入 HTTP(S)_PROXY 不再生效。
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		if err := ApplyEnvFile(homeDir); err != nil {
-			return err
-		}
-	}
-
-	var filePath string
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		// 用户级配置路径统一由布局包拼装（${home}/.laxcode/settings.json）
-		filePath = layout.UserSettings(homeDir)
-	}
-
-	if filePath != "" {
-		EnvOrFile.SetConfigFile(filePath)
-	}
-	err = EnvOrFile.ReadInConfig()
-	if err != nil {
-		if errors.As(err, &viper.ConfigFileNotFoundError{}) || errors.Is(err, os.ErrNotExist) {
-		} else {
-			return err
-		}
-	}
-	// 兼容 MCP 生态常见的 camelCase 顶层键 mcpServers；LaxCode 文档仍以
-	// snake_case mcp_servers 为规范。两者同时存在时规范键优先。
-	if EnvOrFile.InConfig("mcpServers") {
-		EnvOrFile.RegisterAlias("mcp_servers", "mcpServers")
-	}
-
-	EnvOrFile.SetDefault("OPENAI_CONTEXT_WINDOW", 200_000)
-	EnvOrFile.SetDefault("OPENAI_MAX_OUTPUT_TOKENS", 16_384)
-	EnvOrFile.SetDefault("LLM_ROUTER_ADDR", DefaultLLMRouterAddr)
-	EnvOrFile.BindEnv("OPENAI_CONTEXT_WINDOW", "OPENAI_CONTEXT_WINDOW")
-	EnvOrFile.BindEnv("OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_OUTPUT_TOKENS")
-	EnvOrFile.BindEnv("COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_CONTEXT_WINDOW")
-	EnvOrFile.BindEnv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")
-	EnvOrFile.BindEnv("LLM_ROUTER_ADDR", "LLM_ROUTER_ADDR")
-	EnvOrFile.BindEnv("COMPACTION_MODEL", "COMPACTION_MODEL")
-	EnvOrFile.SetEnvKeyReplacer(strings.NewReplacer("_", "_"))
-
-	EnvAndFileConf = envAndFileConf{}
-	if err = EnvOrFile.Unmarshal(&EnvAndFileConf); err != nil {
-		return err
-	}
-
-	// Preserve provider_list directly from the source JSON, before Viper converts
-	// nested objects into maps. Concrete provider parsing belongs to ai_models.
-	EnvAndFileConf.ProviderList = nil
-	if filePath != "" {
-		data, readErr := os.ReadFile(filePath)
-		if readErr == nil {
-			var document map[string]json.RawMessage
-			if err := json.Unmarshal(data, &document); err != nil {
-				return err
-			}
-			if document == nil {
-				return errors.New("settings must be a JSON object")
-			}
-			for key, value := range document {
-				if strings.EqualFold(key, "provider_list") {
-					EnvAndFileConf.ProviderList = value
-				}
-			}
-		} else if !errors.Is(readErr, os.ErrNotExist) {
-			return readErr
-		}
-	}
-	return EnvAndFileConf.validateMCPServers()
-}
-
-// ParseCli 解析命令行参数到 CliConf：用标准库 flag 定义与 cliConf 字段
-// 一一对应的参数（flag 名与 mapstructure tag 保持一致，Cli viper 方能按
-// key 匹配），flag.Parse 后把各值写入 Cli 实例再 Unmarshal 到 CliConf，
-// 与 ParseEnvAndFile 的 viper 装配风格对称。
-//
-// 与 ParseEnvAndFile 不同，本函数内含 flag.Parse 会消费 os.Args，须由 main
-// 在启动早期显式调用，不宜放入包 init——否则 go test 的测试二进制会在
-// testing 注册 -test.* 参数之前执行 flag.Parse，遇到 -test.v 等以“未定义
-// 参数”直接退出（老 internal/config 亦是由 main 显式调用 Parse）。
-func ParseCli() error {
-	addr := flag.String("addr", DefaultSSEAddr, "Web backend listen address")
-	plan := flag.Bool("plan", false, "enable plan mode")
-	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
-		return err
-	}
-	if flag.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
-	}
-	Cli.Set("addr", *addr)
-	Cli.Set("plan", *plan)
-	if err := Cli.Unmarshal(&CliConf); err != nil {
-		return err
-	}
-	return nil
 }

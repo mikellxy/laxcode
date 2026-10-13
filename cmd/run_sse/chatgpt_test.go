@@ -13,11 +13,11 @@ import (
 )
 
 func TestOAuthModelListAndEffortSwitch(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.Model = ""
-	config.EnvAndFileConf.ProviderList = nil
-	config.EnvAndFileConf.CompactionModel = ""
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	config.Current.Model = ""
+	config.Current.ProviderList = nil
+	config.Current.CompactionModel = ""
 	home := t.TempDir()
 	s := newTestServer(t, home, false)
 	if err := s.models.SaveChatGPTModels([]ai_models.Model{{Slug: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol"}}); err != nil {

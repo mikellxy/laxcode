@@ -3,13 +3,15 @@ package ai_models
 import (
 	"context"
 	"encoding/json"
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
 func TestManagerStreamClientKeepsItsModelAfterSelectionChanges(t *testing.T) {
@@ -28,11 +30,8 @@ func TestManagerStreamClientKeepsItsModelAfterSelectionChanges(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
 	}))
 	defer upstream.Close()
-	raw, err := json.Marshal([]ProviderConfig{{ProviderName: "p", OpenaiApiKey: "secret", OpenaiBaseUrl: upstream.URL + "/v1", ModelList: []ModelConfig{{ModelName: "first"}, {ModelName: "second"}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	models, err := New(t.TempDir(), raw, DefaultOptions())
+	providers := []config.Provider{{ProviderName: "p", OpenaiApiKey: "secret", OpenaiBaseUrl: upstream.URL + "/v1", ModelList: []config.Model{{ModelName: "first"}, {ModelName: "second"}}}}
+	models, err := New(t.TempDir(), providersConf(providers))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +67,12 @@ func TestManagerStreamClientKeepsItsModelAfterSelectionChanges(t *testing.T) {
 func TestManagersAndCatalogViewsAreIndependent(t *testing.T) {
 	swapConfigGlobals(t)
 	raw := json.RawMessage(`[{"provider_name":"p","openai_api_key":"secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"gpt-6.1-sol","reasoning_effort":"medium"},{"model_name":"other"}]}]`)
-	one, err := New(t.TempDir(), raw, DefaultOptions())
+	conf := fixtureConf(t, raw)
+	one, err := New(t.TempDir(), conf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := New(t.TempDir(), raw, DefaultOptions())
+	two, err := New(t.TempDir(), conf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +81,13 @@ func TestManagersAndCatalogViewsAreIndependent(t *testing.T) {
 	}
 	if two.Active().Ref != "p:gpt-6.1-sol" {
 		t.Fatal("selection leaked between managers")
+	}
+	conf.ProviderList[0].OpenaiApiKey = "changed"
+	conf.ProviderList[0].ModelList[0].ModelName = "changed"
+	conf.ProviderList[0].ModelList[0].Limit.Context = 1
+	resolved, err := two.Resolve("p:gpt-6.1-sol")
+	if err != nil || resolved.OpenaiApiKey != "secret" || resolved.ContextWindow != config.DefaultContextWindow {
+		t.Fatal("startup configuration mutated manager state")
 	}
 	view := two.List()
 	view[0].ModelList[0].ModelName = "changed"
@@ -103,7 +110,7 @@ func TestCatalogMutationPreservesEffortAndFailurePreservesState(t *testing.T) {
 	home := t.TempDir()
 	raw := json.RawMessage(`[{"provider_name":"p","openai_api_key":"secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"gpt-6.1-sol","reasoning_effort":"medium"}]}]`)
 	writeSettings(t, home, `{"provider_list":`+string(raw)+`}`)
-	models, err := New(home, raw, DefaultOptions())
+	models, err := New(home, fixtureConf(t, raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,13 +147,13 @@ func TestCatalogMutationPreservesEffortAndFailurePreservesState(t *testing.T) {
 	}
 }
 
-func TestEmptyProviderAndPersistedEnvironmentProviderAreRejected(t *testing.T) {
+func TestEmptyProviderAndInvalidLimitAreRejected(t *testing.T) {
 	swapConfigGlobals(t)
 	for _, raw := range []string{
 		`[{"provider_name":"p","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[]}]`,
-		`[{"provider_name":"env_provider","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"env_model","upstream_model":"hidden"}]}]`,
+		`[{"provider_name":"p","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"m","limit":{"context":1000,"output":1000}}]}]`,
 	} {
-		if _, err := New(t.TempDir(), json.RawMessage(raw), DefaultOptions()); err == nil {
+		if _, err := New(t.TempDir(), fixtureConf(t, []byte(raw))); err == nil {
 			t.Fatal("invalid directory accepted")
 		}
 	}
@@ -157,7 +164,7 @@ func TestOAuthImportKeepsSelectedAPIKeyModelEffort(t *testing.T) {
 	home := t.TempDir()
 	raw := json.RawMessage(`[{"provider_name":"p","openai_api_key":"secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"gpt-6.1-sol","reasoning_effort":"medium"}]}]`)
 	writeSettings(t, home, `{"PROVIDER_LIST":`+string(raw)+`,"MODEL":"p:gpt-6.1-sol","custom":true}`)
-	models, err := New(home, raw, DefaultOptions())
+	models, err := New(home, fixtureConf(t, raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,8 +182,8 @@ func TestOAuthImportKeepsSelectedAPIKeyModelEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
-		ProviderList []ProviderConfig `json:"provider_list"`
-		Custom       bool             `json:"custom"`
+		ProviderList []config.Provider `json:"provider_list"`
+		Custom       bool              `json:"custom"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)

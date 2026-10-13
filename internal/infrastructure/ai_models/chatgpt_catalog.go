@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -20,7 +21,7 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 	if len(models) == 0 {
 		return errors.New("ChatGPT model catalog is empty")
 	}
-	provider := ProviderConfig{ProviderName: ChatGPTProvider, AuthType: "oauth", CredentialRef: CredentialRef, OpenaiBaseUrl: BaseURL}
+	provider := config.Provider{ProviderName: ChatGPTProvider, AuthType: "oauth", CredentialRef: CredentialRef, OpenaiBaseUrl: BaseURL}
 	seen := map[string]bool{}
 	for _, model := range models {
 		if !validCatalogName(model.Slug) || seen[model.Slug] {
@@ -31,21 +32,24 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 		if len(ReasoningEfforts(model.Slug)) > 0 {
 			effort = "medium"
 		}
-		provider.ModelList = append(provider.ModelList, ModelConfig{ModelName: model.Slug, DisplayName: model.DisplayName, ReasoningEffort: effort})
+		limit := config.DefaultModelLimit()
+		provider.ModelList = append(provider.ModelList, config.Model{Limit: &limit, ModelName: model.Slug, DisplayName: model.DisplayName, ReasoningEffort: effort})
 	}
-	replace := func(providers []ProviderConfig) ([]ProviderConfig, error) {
-		result := append([]ProviderConfig(nil), providers...)
+	replace := func(providers []config.Provider) ([]config.Provider, error) {
+		result := append([]config.Provider(nil), providers...)
 		for i, p := range result {
 			if p.ProviderName == ChatGPTProvider {
 				if p.AuthType != "oauth" {
 					return nil, fmt.Errorf("provider %q is already used by API-key auth", ChatGPTProvider)
 				}
 				updated := provider
-				updated.ModelList = append([]ModelConfig(nil), provider.ModelList...)
+				updated.ModelList = append([]config.Model(nil), provider.ModelList...)
 				for j := range updated.ModelList {
 					for _, previous := range p.ModelList {
 						if previous.ModelName == updated.ModelList[j].ModelName {
-							updated.ModelList[j].Limit = previous.Limit
+							if previous.Limit != nil {
+								updated.ModelList[j].Limit = previous.Limit
+							}
 							updated.ModelList[j].ReasoningEffort = previous.ReasoningEffort
 							break
 						}
@@ -69,8 +73,8 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 	if _, err := candidate.resolveModel(candidate.active.Ref); err != nil {
 		candidate.active.Ref = modelRef(ChatGPTProvider, models[0].Slug)
 	}
-	if strings.HasPrefix(candidate.options.CompactionModel, ChatGPTProvider+":") {
-		if _, err := candidate.resolveModel(candidate.options.CompactionModel); err != nil {
+	if strings.HasPrefix(candidate.compactionRef, ChatGPTProvider+":") {
+		if _, err := candidate.resolveModel(candidate.compactionRef); err != nil {
 			return fmt.Errorf("configured compaction model is absent from the new catalog: %w", err)
 		}
 	}
@@ -88,7 +92,7 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 	if err != nil {
 		return err
 	}
-	var providers []ProviderConfig
+	var providers []config.Provider
 	if raw, ok := document["provider_list"]; ok {
 		if err := json.Unmarshal(raw, &providers); err != nil {
 			return err
@@ -102,7 +106,7 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 	if err != nil {
 		return err
 	}
-	// A persisted env_provider is intentionally not created by this import.
+	// A persisted CLI provider is intentionally not created by this import.
 	if strings.HasPrefix(candidate.active.Ref, ChatGPTProvider+":") {
 		document["model"], _ = json.Marshal(candidate.active.Ref)
 	}

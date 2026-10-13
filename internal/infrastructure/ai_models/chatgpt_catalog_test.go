@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -63,7 +64,7 @@ func TestChatGPTCatalogPersistsAndResolvesAfterRestart(t *testing.T) {
 	if err := testManager.SaveChatGPTModels(models); err != nil {
 		t.Fatal(err)
 	}
-	testManager.state.providers[0].ModelList[0].Limit = &ModelLimit{Context: 300000, Output: 12000}
+	testManager.state.providers[0].ModelList[0].Limit = &config.ModelLimit{Context: 300000, Output: 12000}
 	testManager.state.providers[0].ModelList[0].ReasoningEffort = "high"
 	if err := testManager.SaveChatGPTModels(models); err != nil {
 		t.Fatal(err)
@@ -80,7 +81,7 @@ func TestChatGPTCatalogPersistsAndResolvesAfterRestart(t *testing.T) {
 func TestOAuthCatalogRejectsUnsafeEndpointAndUnsupportedEffort(t *testing.T) {
 	for _, change := range []string{"endpoint", "credentials", "effort"} {
 		t.Run(change, func(t *testing.T) {
-			c := modelState{active: ResolvedModel{Ref: "p:gpt-6.1-sol"}, providers: []ProviderConfig{{ProviderName: "p", AuthType: "oauth", CredentialRef: CredentialRef, OpenaiBaseUrl: BaseURL, ModelList: []ModelConfig{{ModelName: "gpt-6.1-sol"}}}}}
+			c := modelState{active: ResolvedModel{Ref: "p:gpt-6.1-sol"}, providers: []config.Provider{{ProviderName: "p", AuthType: "oauth", CredentialRef: CredentialRef, OpenaiBaseUrl: BaseURL, ModelList: []config.Model{{ModelName: "gpt-6.1-sol"}}}}}
 			switch change {
 			case "endpoint":
 				c.providers[0].OpenaiBaseUrl = "https://evil.example/v1"

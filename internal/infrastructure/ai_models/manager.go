@@ -2,35 +2,13 @@
 package ai_models
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
-
-const (
-	DefaultContextWindow   = 200_000
-	DefaultMaxOutputTokens = 16_384
-)
-
-// Options contains startup selections and raw fallback limits, not derived values.
-type Options struct {
-	Model                     string
-	CompactionModel           string
-	ContextWindow             int
-	MaxOutputTokens           int
-	CompactionContextWindow   int
-	CompactionMaxOutputTokens int
-}
-
-func DefaultOptions() Options {
-	return Options{ContextWindow: DefaultContextWindow, MaxOutputTokens: DefaultMaxOutputTokens}
-}
 
 // Manager is shared by the composition root and model management endpoints.
 // ModelSwitcher coordinates publishing selections with replacing the router client.
@@ -42,64 +20,26 @@ type Manager struct {
 }
 
 type modelState struct {
-	options                   Options
-	providers                 []ProviderConfig
-	active                    ResolvedModel
-	compaction                ResolvedModel
-	compactionEnv             modelEnvironment
-	contextOverride           bool
-	outputOverride            bool
-	compactionContextOverride bool
-	compactionOutputOverride  bool
+	providers     []config.Provider
+	active        ResolvedModel
+	compaction    ResolvedModel
+	compactionRef string
 }
 
-// New parses provider_list once. An empty catalog is valid for Web onboarding.
-// Environment-backed models are runtime-only and never persisted in provider_list.
-func New(homeDir string, providerList json.RawMessage, opts Options) (*Manager, error) {
-	for key, value := range map[string]*int{
-		"OPENAI_CONTEXT_WINDOW":               &opts.ContextWindow,
-		"OPENAI_MAX_OUTPUT_TOKENS":            &opts.MaxOutputTokens,
-		"COMPACTION_OPENAI_CONTEXT_WINDOW":    &opts.CompactionContextWindow,
-		"COMPACTION_OPENAI_MAX_OUTPUT_TOKENS": &opts.CompactionMaxOutputTokens,
-	} {
-		if raw := strings.TrimSpace(os.Getenv(key)); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			if err != nil {
-				return nil, fmt.Errorf("%s must be an integer: %w", key, err)
+// New consumes merged configuration without reading its sources.
+func New(homeDir string, conf config.Conf) (*Manager, error) {
+	s := modelState{active: ResolvedModel{Ref: conf.Model}, compactionRef: conf.CompactionModel,
+		providers: make([]config.Provider, len(conf.ProviderList))}
+	// Keep runtime mutations isolated from the startup configuration and other managers.
+	for i, provider := range conf.ProviderList {
+		provider.ModelList = append([]config.Model(nil), provider.ModelList...)
+		for j := range provider.ModelList {
+			if limit := provider.ModelList[j].Limit; limit != nil {
+				copied := *limit
+				provider.ModelList[j].Limit = &copied
 			}
-			*value = parsed
 		}
-	}
-	if ref := os.Getenv("COMPACTION_MODEL"); ref != "" {
-		opts.CompactionModel = ref
-	}
-	s := modelState{options: opts, active: ResolvedModel{Ref: opts.Model},
-		compactionEnv:             readModelEnvironment("OPENAI_COMPACTION_"),
-		contextOverride:           strings.TrimSpace(os.Getenv("OPENAI_CONTEXT_WINDOW")) != "",
-		outputOverride:            strings.TrimSpace(os.Getenv("OPENAI_MAX_OUTPUT_TOKENS")) != "",
-		compactionContextOverride: strings.TrimSpace(os.Getenv("COMPACTION_OPENAI_CONTEXT_WINDOW")) != "",
-		compactionOutputOverride:  strings.TrimSpace(os.Getenv("COMPACTION_OPENAI_MAX_OUTPUT_TOKENS")) != "",
-	}
-	if len(providerList) > 0 {
-		if err := json.Unmarshal(providerList, &s.providers); err != nil {
-			return nil, fmt.Errorf("parse provider_list: %w", err)
-		}
-	}
-	for _, p := range s.providers {
-		if p.ProviderName == envProviderName {
-			return nil, fmt.Errorf("provider_name %q is reserved for environment configuration", envProviderName)
-		}
-	}
-	mainEnv := readModelEnvironment("OPENAI_")
-	if n := mainEnv.count(); n != 0 && n != 3 {
-		return nil, errors.New("OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL_NAME must be set together")
-	}
-	if mainEnv.count() == 3 {
-		s.providers = append(s.providers, ProviderConfig{
-			ProviderName: envProviderName, OpenaiApiKey: mainEnv.apiKey, OpenaiBaseUrl: mainEnv.baseURL,
-			ModelList: []ModelConfig{{ModelName: envModelName, UpstreamModel: mainEnv.model}},
-		})
-		s.active.Ref = modelRef(envProviderName, envModelName)
+		s.providers[i] = provider
 	}
 	if err := s.initializeSelection(); err != nil {
 		return nil, err
@@ -111,14 +51,11 @@ func (c *modelState) initializeSelection() error {
 	if err := c.validateModelCatalog(); err != nil {
 		return err
 	}
-	if c.options.ContextWindow <= 0 || c.options.MaxOutputTokens <= 0 || c.options.MaxOutputTokens >= c.options.ContextWindow {
-		return errors.New("openai context window must be positive and max output tokens smaller than context window")
-	}
 	if strings.TrimSpace(c.active.Ref) == "" && len(c.providers) > 0 {
 		c.active.Ref = modelRef(c.providers[0].ProviderName, c.providers[0].ModelList[0].ModelName)
 	}
 	if c.active.Ref == "" {
-		c.active = ResolvedModel{ContextWindow: c.options.ContextWindow, MaxOutputTokens: c.options.MaxOutputTokens}
+		c.active = ResolvedModel{}
 		c.compaction = c.active
 		return nil
 	}
@@ -154,13 +91,13 @@ func (c *modelState) setActiveModel(ref string, effort ...string) error {
 	if err != nil {
 		return err
 	}
-	compaction, err := c.resolveAuxiliaryModel("COMPACTION_MODEL", c.options.CompactionModel,
-		c.compactionEnv, main)
-	if err != nil {
-		return err
+	compaction := main
+	if c.compactionRef != "" {
+		compaction, err = c.selection(c.compactionRef)
+		if err != nil {
+			return fmt.Errorf("compaction_model: %w", err)
+		}
 	}
-	compaction.ContextWindow = effectiveAuxiliaryBudget(compaction.ContextWindow, c.options.CompactionContextWindow, compaction.hasLimit, c.compactionContextOverride)
-	compaction.MaxOutputTokens = effectiveAuxiliaryBudget(compaction.MaxOutputTokens, c.options.CompactionMaxOutputTokens, compaction.hasLimit, c.compactionOutputOverride)
 	if compaction.Ref == main.Ref && compaction.UpstreamModel == main.UpstreamModel {
 		compaction.ReasoningEffort = main.ReasoningEffort
 	}

@@ -16,8 +16,8 @@ import (
 )
 
 func TestAssembleReusesServiceMCPPool(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "shared", Version: "test"}, nil)
 	server.AddTool(&mcpsdk.Tool{Name: "echo", InputSchema: map[string]any{"type": "object"}},
 		func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -27,14 +27,14 @@ func TestAssembleReusesServiceMCPPool(t *testing.T) {
 		return server
 	}, nil))
 	defer httpServer.Close()
-	config.EnvAndFileConf.MCPServers = map[string]config.MCPServerConf{"shared": {URL: httpServer.URL}}
+	config.Current.MCPServers = map[string]config.MCPServerConf{"shared": {URL: httpServer.URL}}
 	connectCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pool := ConnectMCPServers(connectCtx)
 	defer pool.Close()
 	cancel() // 连接初始化 context 结束，不得影响后续请求。
 	// 请求不得重新读取配置并连接；只使用服务启动时已建立的 Pool。
-	config.EnvAndFileConf.MCPServers = nil
+	config.Current.MCPServers = nil
 	home, work := t.TempDir(), t.TempDir()
 	var previousRegistry tools.Registry
 	for i := range 2 {
@@ -83,9 +83,9 @@ func TestAssembleReusesServiceMCPPool(t *testing.T) {
 // mcp_servers（接线生效），且坏 server 走 fail-open：装配照常成功、无 MCP
 // 工具注册、cleanup 链可用。坏命令连接在 exec 启动即失败，测试不起真实进程。
 func TestAssembleCodeModeMCPServerFailOpen(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.MCPServers = map[string]config.MCPServerConf{
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	config.Current.MCPServers = map[string]config.MCPServerConf{
 		"broken": {Command: "/nonexistent/laxcode-agentasm-mcp-test"},
 	}
 
@@ -105,10 +105,10 @@ func TestAssembleCodeModeMCPServerFailOpen(t *testing.T) {
 // TestAssembleIgnoresDisabledMCPServers 验证 enabled=false 的 server 不参与
 // 接线（静默跳过，不产生连接尝试）。
 func TestAssembleIgnoresDisabledMCPServers(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
 	disabled := false
-	config.EnvAndFileConf.MCPServers = map[string]config.MCPServerConf{
+	config.Current.MCPServers = map[string]config.MCPServerConf{
 		"paused": {Command: "/nonexistent/laxcode-agentasm-mcp-test", Enabled: &disabled},
 	}
 
@@ -125,9 +125,9 @@ func TestAssembleIgnoresDisabledMCPServers(t *testing.T) {
 }
 
 func TestMCPServersFromConfCopiesHTTPHeaders(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.MCPServers = map[string]config.MCPServerConf{
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	config.Current.MCPServers = map[string]config.MCPServerConf{
 		"remote": {
 			URL:     "https://mcp.example.com/mcp",
 			Headers: map[string]string{"Authorization": "Bearer token"},
@@ -141,7 +141,7 @@ func TestMCPServersFromConfCopiesHTTPHeaders(t *testing.T) {
 	}
 	// 转换结果不能与全局配置共享可变 header map。
 	got.Headers["Authorization"] = "changed"
-	if config.EnvAndFileConf.MCPServers["remote"].Headers["Authorization"] != "Bearer token" {
+	if config.Current.MCPServers["remote"].Headers["Authorization"] != "Bearer token" {
 		t.Fatal("HTTP headers were not defensively copied")
 	}
 }

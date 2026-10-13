@@ -46,7 +46,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 	if err != nil {
 		return err
 	}
-	s := newServer(homeDir, config.CliConf.Plan, models)
+	s := newServer(homeDir, config.Current.Plan, models)
 	defer s.oauth.Close()
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
 		traceHandle, err := tracing.NewOTLP(context.Background())
@@ -102,9 +102,9 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	listener, err := net.Listen("tcp", config.CliConf.Addr)
+	listener, err := net.Listen("tcp", config.Current.Addr)
 	if err != nil {
-		return fmt.Errorf("listen SSE server on %s: %w", config.CliConf.Addr, err)
+		return fmt.Errorf("listen SSE server on %s: %w", config.Current.Addr, err)
 	}
 	actualAddr := listener.Addr().String()
 	srv := &http.Server{Addr: actualAddr, Handler: mux}

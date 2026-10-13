@@ -12,6 +12,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
@@ -37,7 +38,7 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 		return nil, err
 	}
 	if models == nil {
-		models, err = ai_models.New(homeDir, nil, ai_models.DefaultOptions())
+		models, err = ai_models.New(homeDir, config.Conf{})
 		if err != nil {
 			return nil, err
 		}

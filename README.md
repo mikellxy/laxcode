@@ -73,7 +73,7 @@ Windows PowerShell 直接运行启动脚本：
 
 新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。遇到需要确认的工具操作时，页面会暂停当前流并显示确认框。
 
-后端默认启动 coding SSE 服务，仅保留 `-addr`、`-plan` 启动参数。原 `-sse`、`-mode`、`-kb`、`-session` 参数已移除；会话通过 Web UI 创建和续接。已有 code 会话仍可使用，旧 RAG 会话不能作为 coding 会话续接；已有数据库中的遗留记忆表保留原数据。
+后端默认启动 coding SSE 服务，支持 `-addr`、`-plan`，以及配套使用的 `-model`、`-openai_api_key`、`-openai_base_url` 启动参数。原 `-sse`、`-mode`、`-kb`、`-session` 参数已移除；会话通过 Web UI 创建和续接。已有 code 会话仍可使用，旧 RAG 会话不能作为 coding 会话续接；已有数据库中的遗留记忆表保留原数据。
 
 <a id="agent-session-evaluation"></a>
 
@@ -125,7 +125,7 @@ LaxCode/
 │       ├── ripgrep/                 # 文件搜索与内容检索适配
 │       ├── skillrepo/               # 本地 Skill 扫描与加载
 │       ├── skillstore/              # 全局 Skill 包的受限暂存与原子提交
-│       ├── config/                  # 配置输入、原始 provider_list 与 MCP 配置
+│       ├── config/                  # 配置合并、模型目录结构与 MCP 配置
 │       ├── layout/                  # 用户数据与会话磁盘布局
 │       └── tracing/                 # OpenTelemetry、OTLP 与本地追踪实现
 ├── web/                             # React + TypeScript Web 客户端

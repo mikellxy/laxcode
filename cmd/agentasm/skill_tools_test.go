@@ -57,9 +57,9 @@ func TestAssembleDoesNotCloseInjectedTracer(t *testing.T) {
 
 func TestAssemblePhaseDurations(t *testing.T) {
 	// 使用真实 SQLite/技能恢复路径，避免连接用户配置的外部 MCP 服务。
-	previousServers := config.EnvAndFileConf.MCPServers
-	config.EnvAndFileConf.MCPServers = nil
-	t.Cleanup(func() { config.EnvAndFileConf.MCPServers = previousServers })
+	previousServers := config.Current.MCPServers
+	config.Current.MCPServers = nil
+	t.Cleanup(func() { config.Current.MCPServers = previousServers })
 	const prefix = "laxcode.assemble."
 	for _, tc := range []struct {
 		name        string

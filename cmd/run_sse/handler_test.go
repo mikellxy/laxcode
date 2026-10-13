@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +16,7 @@ import (
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
@@ -31,11 +31,10 @@ func (c contextReaderStub) GetRequestContext(context.Context, string) (session.R
 }
 
 func TestHandleSessionContext(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.OpenaiContextWindow = 128000
-	config.EnvAndFileConf.Model = ""
-	config.EnvAndFileConf.ProviderList = nil
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	setTestProviders(t, []config.Provider{{ProviderName: "p", OpenaiApiKey: "key", OpenaiBaseUrl: "https://example.com/v1", ModelList: []config.Model{{ModelName: "main", Limit: &config.ModelLimit{Context: 128000, Output: 16384}}}}})
+	config.Current.Model = "p:main"
 	s := newTestServer(t, t.TempDir(), false)
 	s.contextRepo = contextReaderStub{state: session.RequestContext{WindowToken: sharedkernel.TokenStatistics{TokenInput: 12000, TokenOutput: 932}}}
 	mux := http.NewServeMux()
@@ -243,19 +242,19 @@ func (r *recordingModelRouter) ReplaceClient(client domainrouter.StreamClient) {
 
 func setupSwitchModelCatalog(t *testing.T) {
 	t.Helper()
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	setTestProviders(t, []ai_models.ProviderConfig{
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	setTestProviders(t, []config.Provider{
 		{
 			ProviderName: "first", OpenaiApiKey: "key-1", OpenaiBaseUrl: "https://first.example/v1",
-			ModelList: []ai_models.ModelConfig{{ModelName: "model-1"}},
+			ModelList: []config.Model{{ModelName: "model-1"}},
 		},
 		{
 			ProviderName: "second", OpenaiApiKey: "key-2", OpenaiBaseUrl: "https://second.example/v1",
-			ModelList: []ai_models.ModelConfig{{ModelName: "model-2", UpstreamModel: "upstream-2"}},
+			ModelList: []config.Model{{ModelName: "model-2", UpstreamModel: "upstream-2"}},
 		},
 	})
-	config.EnvAndFileConf.Model = "first:model-1"
+	config.Current.Model = "first:model-1"
 }
 
 func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
@@ -285,7 +284,7 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 	if s.models.Active().Ref != "second:model-2" ||
 		s.models.Active().OpenaiApiKey != "key-2" ||
 		s.models.Active().UpstreamModel != "upstream-2" {
-		t.Fatalf("runtime config not switched: %+v", config.EnvAndFileConf)
+		t.Fatalf("runtime config not switched: %+v", config.Current)
 	}
 }
 
@@ -326,19 +325,19 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 }
 
 func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
-	originalProviders, originalModel := config.EnvAndFileConf.ProviderList, config.EnvAndFileConf.Model
-	setTestProviders(t, []ai_models.ProviderConfig{{
+	originalProviders, originalModel := config.Current.ProviderList, config.Current.Model
+	setTestProviders(t, []config.Provider{{
 		OpenaiApiKey:  "sk-secret",
 		OpenaiBaseUrl: "https://api.example.com",
 		ProviderName:  "example",
-		ModelList: []ai_models.ModelConfig{
+		ModelList: []config.Model{
 			{ModelName: "model-a"},
 			{ModelName: "model-b", UpstreamModel: "upstream-b"},
 		},
 	}})
-	config.EnvAndFileConf.Model = "example:model-a"
+	config.Current.Model = "example:model-a"
 	defer func() {
-		config.EnvAndFileConf.ProviderList, config.EnvAndFileConf.Model = originalProviders, originalModel
+		config.Current.ProviderList, config.Current.Model = originalProviders, originalModel
 	}()
 
 	s := newTestServer(t, t.TempDir(), false)
@@ -368,13 +367,13 @@ func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 }
 
 func TestHandleAddModelPersistsWithoutReturningAPIKey(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	setTestProviders(t, []ai_models.ProviderConfig{{
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	setTestProviders(t, []config.Provider{{
 		ProviderName: "existing", OpenaiApiKey: "old-secret", OpenaiBaseUrl: "https://existing.example/v1",
-		ModelList: []ai_models.ModelConfig{{ModelName: "main"}},
+		ModelList: []config.Model{{ModelName: "main"}},
 	}})
-	config.EnvAndFileConf.Model = "existing:main"
+	config.Current.Model = "existing:main"
 	home := t.TempDir()
 	settingsDir := filepath.Join(home, ".laxcode")
 	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
@@ -536,10 +535,10 @@ func (n *nonFlusherWriter) WriteHeader(code int)        { n.code = code }
 // 预检。
 func stubActiveModel(t *testing.T) {
 	t.Helper()
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.Model = "test:model"
-	setTestProviders(t, []ai_models.ProviderConfig{{ProviderName: "test", OpenaiApiKey: "test-key", OpenaiBaseUrl: "https://test.example/v1", ModelList: []ai_models.ModelConfig{{ModelName: "model"}}}})
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	config.Current.Model = "test:model"
+	setTestProviders(t, []config.Provider{{ProviderName: "test", OpenaiApiKey: "test-key", OpenaiBaseUrl: "https://test.example/v1", ModelList: []config.Model{{ModelName: "model"}}}})
 }
 
 // TestHandleChatNoFlusher 验证 ResponseWriter 不支持 Flusher 时返回 500（仍在进入流之前）。
@@ -614,10 +613,10 @@ func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
 // TestHandleChatWithoutModel 验证延迟配置场景：未激活模型时 /chat 与 resume
 // 在进入 SSE 流之前返回 409 MODEL_REQUIRED，而不是在 LLM 调用处才失败。
 func TestHandleChatWithoutModel(t *testing.T) {
-	previous := config.EnvAndFileConf
-	t.Cleanup(func() { config.EnvAndFileConf = previous })
-	config.EnvAndFileConf.Model = ""
-	config.EnvAndFileConf.ProviderList = nil
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	config.Current.Model = ""
+	config.Current.ProviderList = nil
 
 	workDir := t.TempDir()
 	s := newTestServer(t, t.TempDir(), false)
@@ -684,28 +683,23 @@ func TestSessionLocksSerializesSameID(t *testing.T) {
 // newTestServer isolates model state while retaining settings-based fixtures.
 func newTestServer(t *testing.T, home string, plan bool) *server {
 	t.Helper()
-	opts := ai_models.DefaultOptions()
-	c := config.EnvAndFileConf
-	opts.Model, opts.CompactionModel = c.Model, c.CompactionModel
-	if c.OpenaiContextWindow != 0 {
-		opts.ContextWindow = c.OpenaiContextWindow
-	}
-	if c.OpenaiMaxOutputTokens != 0 {
-		opts.MaxOutputTokens = c.OpenaiMaxOutputTokens
-	}
-	opts.CompactionContextWindow, opts.CompactionMaxOutputTokens = c.CompactionOpenaiContextWindow, c.CompactionOpenaiMaxOutputTokens
-	models, err := ai_models.New(home, c.ProviderList, opts)
+	models, err := ai_models.New(home, config.Current)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return newServer(home, plan, models)
 }
 
-func setTestProviders(t *testing.T, providers []ai_models.ProviderConfig) {
+func setTestProviders(t *testing.T, providers []config.Provider) {
 	t.Helper()
-	raw, err := json.Marshal(providers)
-	if err != nil {
-		t.Fatal(err)
+	for i := range providers {
+		for j := range providers[i].ModelList {
+			model := &providers[i].ModelList[j]
+			if model.Limit == nil {
+				limit := config.DefaultModelLimit()
+				model.Limit = &limit
+			}
+		}
 	}
-	config.EnvAndFileConf.ProviderList = raw
+	config.Current.ProviderList = providers
 }

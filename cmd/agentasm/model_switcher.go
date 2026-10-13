@@ -54,10 +54,5 @@ func (s *ModelSwitcher) SwitchModelLocked(ref string, effort ...string) error {
 
 // NewModels wires settings inputs into the model manager at startup.
 func NewModels(homeDir string) (*ai_models.Manager, error) {
-	c := config.EnvAndFileConf
-	return ai_models.New(homeDir, c.ProviderList, ai_models.Options{
-		Model: c.Model, CompactionModel: c.CompactionModel,
-		ContextWindow: c.OpenaiContextWindow, MaxOutputTokens: c.OpenaiMaxOutputTokens,
-		CompactionContextWindow: c.CompactionOpenaiContextWindow, CompactionMaxOutputTokens: c.CompactionOpenaiMaxOutputTokens,
-	})
+	return ai_models.New(homeDir, config.Current)
 }
