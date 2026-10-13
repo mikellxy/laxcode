@@ -98,7 +98,7 @@ func TestChatGPTRouterRefreshesAndUsesConfiguredModelAndEffort(t *testing.T) {
 	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host == "auth.openai.com" {
 			refreshes++
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"scope":"tokens.use.direct","token_type":"Bearer"}`)), Request: r}, nil
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"scope":"chatgpt.tokens.use.direct","token_type":"Bearer"}`)), Request: r}, nil
 		}
 		calls++
 		if r.URL.String() != BaseURL+"responses" || r.Header.Get("Authorization") != "Bearer fresh" {

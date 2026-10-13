@@ -31,7 +31,7 @@ func jsonResponse(r *http.Request, value any) *http.Response {
 	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data))), Request: r}
 }
 func validCredential() Credential {
-	return Credential{ClientID: "issued-client", Subject: "user", AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{DirectScope}}
+	return Credential{ClientID: "issued-client", Subject: "user", AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"chatgpt.tokens.use.direct"}}
 }
 
 func TestOAuthRequestsUseEnvironmentProxy(t *testing.T) {
@@ -114,7 +114,7 @@ func TestRefreshIsSerializedAndPersistsRotatingToken(t *testing.T) {
 		if r.Form.Get("client_id") != "issued-client" || r.Form.Get("refresh_token") != "refresh" || r.Form.Get("resource") != "https://api.openai.com/v1" || r.Form.Get("scope") != "" {
 			t.Errorf("incorrect refresh form")
 		}
-		return jsonResponse(r, map[string]any{"access_token": "new-access", "refresh_token": "rotated-refresh", "expires_in": 3600, "scope": DirectScope, "token_type": "Bearer"}), nil
+		return jsonResponse(r, map[string]any{"access_token": "new-access", "refresh_token": "rotated-refresh", "expires_in": 3600, "scope": "chatgpt.tokens.use.direct", "token_type": "Bearer"}), nil
 	})
 	var wg sync.WaitGroup
 	for range 12 {

@@ -23,7 +23,7 @@ import (
 const (
 	BaseURL       = "https://api.openai.com/v1/"
 	Issuer        = "https://auth.openai.com"
-	DirectScope   = "tokens.use.direct"
+	DirectScope   = "chatgpt.tokens.use.direct"
 	CredentialRef = "chatgpt-main"
 )
 
