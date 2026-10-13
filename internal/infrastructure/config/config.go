@@ -53,6 +53,22 @@ type Provider struct {
 	ModelList     []Model `json:"model_list" mapstructure:"model_list"`
 }
 
+// DeepCopy returns a provider with an independent model list and model limits.
+func (p Provider) DeepCopy() Provider {
+	cloned := p
+	if p.ModelList != nil {
+		cloned.ModelList = make([]Model, len(p.ModelList))
+		copy(cloned.ModelList, p.ModelList)
+		for i := range cloned.ModelList {
+			if limit := cloned.ModelList[i].Limit; limit != nil {
+				limitCopy := *limit
+				cloned.ModelList[i].Limit = &limitCopy
+			}
+		}
+	}
+	return cloned
+}
+
 type Model struct {
 	ModelName       string      `json:"model_name" mapstructure:"model_name"`
 	UpstreamModel   string      `json:"upstream_model,omitempty" mapstructure:"upstream_model"`

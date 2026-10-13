@@ -3,9 +3,48 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestProviderDeepCopy(t *testing.T) {
+	original := Provider{
+		ProviderName: "provider", AuthType: "api_key", OpenaiApiKey: "key",
+		OpenaiBaseUrl: "https://example.com/v1", CredentialRef: "credential",
+		ModelList: []Model{
+			{ModelName: "alias", UpstreamModel: "actual", DisplayName: "Model", ReasoningEffort: "medium", Limit: &ModelLimit{Context: 1000, Output: 100}},
+			{ModelName: "no-limit"},
+		},
+	}
+	cloned := original.DeepCopy()
+	if !reflect.DeepEqual(cloned, original) {
+		t.Fatal("deep copy changed provider values")
+	}
+	if &cloned.ModelList[0] == &original.ModelList[0] || cloned.ModelList[0].Limit == original.ModelList[0].Limit {
+		t.Fatal("deep copy shares model storage")
+	}
+	cloned.ProviderName = "changed"
+	cloned.ModelList[0].ModelName = "changed"
+	cloned.ModelList[0].Limit.Context = 2000
+	cloned.ModelList[0].Limit.Output = 200
+	cloned.ModelList[1].ModelName = "changed"
+	if original.ProviderName != "provider" || original.ModelList[0].ModelName != "alias" ||
+		*original.ModelList[0].Limit != (ModelLimit{Context: 1000, Output: 100}) || original.ModelList[1].ModelName != "no-limit" {
+		t.Fatal("copy mutations changed the original provider")
+	}
+	original.ModelList[0].Limit.Context = 3000
+	if cloned.ModelList[0].Limit.Context != 2000 {
+		t.Fatal("original mutation changed the copy")
+	}
+
+	for _, models := range [][]Model{nil, {}} {
+		provider := Provider{ModelList: models}
+		if !reflect.DeepEqual(provider.DeepCopy(), provider) {
+			t.Fatal("deep copy changed a nil or empty model list")
+		}
+	}
+}
 
 func swapConfigGlobals(t *testing.T) {
 	t.Helper()

@@ -31,15 +31,8 @@ func New(homeDir string, conf config.Conf) (*Manager, error) {
 	s := modelState{active: ResolvedModel{Ref: conf.Model}, compactionRef: conf.CompactionModel,
 		providers: make([]config.Provider, len(conf.ProviderList))}
 	// Keep runtime mutations isolated from the startup configuration and other managers.
-	for i, provider := range conf.ProviderList {
-		provider.ModelList = append([]config.Model(nil), provider.ModelList...)
-		for j := range provider.ModelList {
-			if limit := provider.ModelList[j].Limit; limit != nil {
-				copied := *limit
-				provider.ModelList[j].Limit = &copied
-			}
-		}
-		s.providers[i] = provider
+	for i := range conf.ProviderList {
+		s.providers[i] = conf.ProviderList[i].DeepCopy()
 	}
 	if err := s.initializeSelection(); err != nil {
 		return nil, err
