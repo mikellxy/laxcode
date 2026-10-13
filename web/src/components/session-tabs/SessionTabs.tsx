@@ -16,7 +16,7 @@ type Props = {
   runningSessionIDs: string[];
   onSelect: (id: string) => void;
   onSelectProject: (projectID: string) => void;
-  onDeleteSession: (session: SessionDTO) => void;
+  onDeleteSession: (session: SessionDTO, label: string) => void;
   onCreateProject: () => void;
   onCreateSession: (projectID: string) => void;
 };
@@ -68,7 +68,7 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, selectedP
                 <button className="session-tab" onClick={() => onSelect(session.session_id)} aria-current={selectedID === session.session_id ? "page" : undefined}>
                   <MessageSquare size={14} /><span><strong>{label}</strong><small>{new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(session.updated_at))}</small></span>
                 </button>
-                <button className="session-delete" onClick={() => onDeleteSession(session)} disabled={Boolean(deletingSessionID) || runningSessionIDs.includes(session.session_id)} aria-label={`删除会话 ${label}`} title={runningSessionIDs.includes(session.session_id) ? "会话正在执行" : "删除会话"}>
+                <button className="session-delete" onClick={() => onDeleteSession(session, label)} disabled={Boolean(deletingSessionID) || runningSessionIDs.includes(session.session_id)} aria-label={`删除会话 ${label}`} title={runningSessionIDs.includes(session.session_id) ? "会话正在执行" : "删除会话"}>
                   {deletingSessionID === session.session_id ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
                 </button>
               </div>;

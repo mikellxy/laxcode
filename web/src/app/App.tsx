@@ -7,6 +7,7 @@ import { historyToMessage } from "../types/chat";
 import { SessionTabs } from "../components/session-tabs/SessionTabs";
 import { MessageList } from "../components/message-list/MessageList";
 import { CommandBlock } from "../components/approval/CommandBlock";
+import { ConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { ChatComposer } from "../components/chat-composer/ChatComposer";
 import { ProjectOnboarding } from "../components/project-onboarding/ProjectOnboarding";
@@ -18,9 +19,12 @@ import type { SessionDTO } from "../types/api";
 export function App() {
   const userID = useMemo(getOrCreateGuestID, []); const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [approvalSubmitting, setApprovalSubmitting] = useState(false); const [approvalError, setApprovalError] = useState("");
+  const [sessionToDelete, setSessionToDelete] = useState<{ session: SessionDTO; label: string }>();
+  const [deleteError, setDeleteError] = useState("");
   const [pickingProject, setPickingProject] = useState(false);
   useEffect(() => { setApprovalError(""); setApprovalSubmitting(false); }, [workspace.stream.approval?.approval_id]);
   const answer = async (approved: boolean) => {
+    if (approvalSubmitting) return;
     setApprovalSubmitting(true); setApprovalError("");
     try { await workspace.approve(approved); } catch (error) { setApprovalError(error instanceof Error ? error.message : "确认提交失败"); }
     finally { setApprovalSubmitting(false); }
@@ -43,12 +47,14 @@ export function App() {
       setPickingProject(false);
     }
   };
-  const deleteSession = async (session: SessionDTO) => {
-    if (!window.confirm("删除这个会话及其历史消息、会话文件？此操作无法撤销。")) return;
+  const deleteSession = async () => {
+    if (!sessionToDelete || workspace.deleteSession.isPending) return;
+    setDeleteError("");
     try {
-      await workspace.deleteSession.mutateAsync(session);
+      await workspace.deleteSession.mutateAsync(sessionToDelete.session);
+      setSessionToDelete(undefined);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "会话删除失败");
+      setDeleteError(error instanceof Error ? error.message : "会话删除失败");
     }
   };
   const messages = [...workspace.historyMessages.map(historyToMessage), ...workspace.stream.messages];
@@ -72,7 +78,7 @@ export function App() {
   if (workspace.projects.isError || workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{connectionError instanceof Error ? connectionError.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => { void workspace.projects.refetch(); void workspace.sessions.refetch(); }}>重新连接</button></div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarOpen ? "mobile-sidebar-open" : ""}`}>
     <div className="mobile-backdrop" onClick={() => setSidebarOpen(false)} />
-    <SessionTabs projects={projects} sessionsByProject={workspace.sessionsByProject} selectedID={workspace.selectedID} selectedProjectID={workspace.selectedProjectID} contextUsage={workspace.contextUsage.data} creatingProject={pickingProject || workspace.createProject.isPending} creatingSessionProjectID={workspace.createSession.isPending ? workspace.createSession.variables : undefined} deletingSessionID={workspace.deleteSession.isPending ? workspace.deleteSession.variables?.session_id : undefined} runningSessionIDs={workspace.runningSessionIDs} onSelect={(id) => { workspace.select(id); setSidebarOpen(false); }} onSelectProject={workspace.selectProject} onDeleteSession={(session) => void deleteSession(session)} onCreateProject={() => void createProject()} onCreateSession={(projectID) => { workspace.startSession(projectID); setSidebarOpen(false); }} />
+    <SessionTabs projects={projects} sessionsByProject={workspace.sessionsByProject} selectedID={workspace.selectedID} selectedProjectID={workspace.selectedProjectID} contextUsage={workspace.contextUsage.data} creatingProject={pickingProject || workspace.createProject.isPending} creatingSessionProjectID={workspace.createSession.isPending ? workspace.createSession.variables : undefined} deletingSessionID={workspace.deleteSession.isPending ? workspace.deleteSession.variables?.session_id : undefined} runningSessionIDs={workspace.runningSessionIDs} onSelect={(id) => { workspace.select(id); setSidebarOpen(false); }} onSelectProject={workspace.selectProject} onDeleteSession={(session, label) => { setDeleteError(""); setSessionToDelete({ session, label }); }} onCreateProject={() => void createProject()} onCreateSession={(projectID) => { workspace.startSession(projectID); setSidebarOpen(false); }} />
     <section className="workspace">
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div className="workspace-meta"><strong title={workDir}>{isFirstRun ? "欢迎使用 LaxCode" : workDir || "请选择项目"}</strong><small>{isFirstRun ? <span>创建项目后即可开始</span> : <>{selected && <span>session_id: {selected.session_id}</span>}{workspace.createSession.isPending ? <span>正在创建会话…</span> : workspace.stream.running ? <><i className="working-dot" />正在执行</> : <span>准备就绪</span>}</>}</small></div><EvaluationPanel key={selected?.session_id ?? "no-session"} sessionID={selected?.session_id} workDir={workDir} disabled={workspace.stream.running || modelLocked} /></header>
       {isFirstRun ? <ProjectOnboarding creating={pickingProject || workspace.createProject.isPending || workspace.createSession.isPending} onCreate={() => void createProject()} /> : <>
@@ -80,18 +86,18 @@ export function App() {
         <ModelPicker running={workspace.stream.running} bounceKey={gearBounce} />
         <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedProject || !workspace.sessions.isSuccess || workspace.history.isLoading || workspace.createSession.isPending || (workspace.deleteSession.isPending && workspace.deleteSession.variables?.session_id === workspace.selectedID)} locked={modelLocked} onLockedClick={() => setGearBounce((value) => value + 1)} onSend={workspace.send} onCancel={workspace.cancel} />
       </>}
-      {workspace.stream.approval && <div className="approval-backdrop"><div className="approval-dialog" role="dialog" aria-modal="true" aria-label="需要确认">
-        <h2>{workspace.stream.approval.kind === "skill_write"
+      {workspace.stream.approval && <ConfirmDialog key={workspace.stream.approval.approval_id} variant="approval" title={workspace.stream.approval.kind === "skill_write"
             ? "确认修改全局 Skill"
             : workspace.stream.approval.kind === "file_path"
               ? "确认访问工作目录之外的文件"
-              : "确认危险命令"}</h2>
+              : "确认危险命令"} description="LaxCode 已暂停执行，请检查操作内容后决定是否继续。" confirmLabel="允许并继续" cancelLabel="停止执行" pending={approvalSubmitting} error={approvalError} onConfirm={() => void answer(true)} onCancel={() => void answer(false)}>
         {workspace.stream.approval.command
           ? <><div className="approval-meta"><strong>{workspace.stream.approval.tool}</strong>{workspace.stream.approval.risk && <span>{workspace.stream.approval.risk}</span>}</div><CommandBlock key={workspace.stream.approval.approval_id} command={workspace.stream.approval.command} /></>
           : <p>{workspace.stream.approval.content}</p>}
-        {approvalError && <small className="approval-error">{approvalError}</small>}
-        <div className="approval-actions"><button onClick={() => void answer(false)} disabled={approvalSubmitting}>停止</button><button onClick={() => void answer(true)} disabled={approvalSubmitting}>继续</button></div>
-      </div></div>}
+      </ConfirmDialog>}
     </section>
+    {sessionToDelete && <ConfirmDialog variant="danger" title="删除这个会话？" description="会话历史和会话文件将被永久删除，此操作无法撤销。" confirmLabel="删除会话" cancelLabel="取消" pending={workspace.deleteSession.isPending} error={deleteError} onConfirm={() => void deleteSession()} onCancel={() => setSessionToDelete(undefined)}>
+      <div className="confirm-session"><strong>{sessionToDelete.label}</strong><span>{sessionToDelete.session.work_dir}</span></div>
+    </ConfirmDialog>}
   </div>;
 }
