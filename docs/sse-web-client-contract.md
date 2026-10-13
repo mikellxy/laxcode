@@ -277,6 +277,24 @@ GET /api/sessions?user_id={UUID}&project_id={PROJECT_ID}&limit=20&before_session
 
 `has_more=false` 时不再请求下一页，且 `next_before_session_id` 可能不存在。
 
+### 删除 Session
+
+```http
+DELETE /api/sessions/{session_id}?user_id={UUID}
+```
+
+`session_id` 和 `user_id` 都必须是 UUID。只能删除属于该用户的会话；成功返回
+`204 No Content`，不存在或不属于该用户时返回 `404`。
+
+删除覆盖 `request_contexts`、该会话所有 original / memory generation 消息，
+以及整个会话目录（history 冷备、artifact、trace 日志和规划文件）。文件清理失败
+时回滚数据库删除并返回 `500`。项目及工作目录中的代码文件保持不变；独立的
+已结束评估记录、报告和项目内评估快照仍保留。
+
+聊天执行中、正在创建评估或有排队/执行中的评估任务时返回 `409`，等待完成后
+再删除。前端在删除成功后清理历史与上下文缓存；删除选中会话后选中同项目下的
+其他会话，若没有剩余会话则展示空聊天页，不自动创建真实 Session。
+
 ## 5. 查询历史消息
 
 ### 请求
@@ -426,7 +444,10 @@ Accept: text/event-stream
 }
 ```
 
-Web 前端应先创建项目，再调用 `POST /api/sessions`，最后使用返回的 `session_id` 发起对话。`/chat` 要求 `session_id` 必填。
+Web 前端先创建项目并展示空聊天页，延迟到用户首次发送消息时调用
+`POST /api/sessions`，再使用返回的 `session_id` 发起对话。`/chat` 要求
+`session_id` 必填；空聊天页不显示 session_id，也不请求会话历史或上下文。
+模型切换接口不依赖 Session，空聊天页仍可切换服务当前使用的模型。
 
 这是 POST SSE，不能直接使用浏览器原生 `EventSource`。使用 `fetch` 读取 `Response.body`，或使用支持 POST 的 SSE 客户端库。SSE 帧可能跨多个网络 chunk，不能把每个 `ReadableStream` chunk 当作一条完整事件。
 
@@ -588,11 +609,12 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
   → 读取或创建游客 UUID Cookie
   → GET /api/projects?user_id=...
   → 对每个项目 GET /api/sessions?user_id=...&project_id=...
-  → 选择最近 Session
-  → GET /api/sessions/{id}/messages
-  → 渲染历史
+  → 有 Session 时选中已有会话，读取历史并渲染
+  → 项目中没有 Session 时展示空聊天页
 
 用户发送问题
+  → 若当前为空聊天页，先 POST /api/sessions（携带 project_id）
+  → 创建成功后选中真实 Session；创建失败保留原消息并提供重试
   → 本地插入 user 消息并禁用重复提交
   → POST /chat，fetch 读取 SSE
   → reasoning/message/tool_call 增量更新临时消息
@@ -610,12 +632,16 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
   → 在 Go 服务所在的设备（Mac / Windows）上选择目录
   → 输入项目名称
   → POST /api/projects
-  → 刷新项目列表
+  → 刷新项目列表并选中新项目，展示空聊天页
 
 用户在项目中新建会话
-  → POST /api/sessions（携带 project_id）
-  → 将新 Session 插到对应项目下并选中
-  → 空历史区等待用户输入
+  → 展示该项目的空聊天页，等待用户输入
+  → 首次发送时才创建真实 Session
+
+用户删除会话
+  → 确认后 DELETE /api/sessions/{id}?user_id=...
+  → 清理列表、历史和上下文缓存
+  → 删除选中会话时选择同项目的其他会话；没有剩余会话则展示空聊天页
 ```
 
 ## 10. 取消与并发

@@ -175,6 +175,49 @@ func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(sessionToDTO(created))
 }
 
+func (s *server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if s.catalog == nil {
+		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
+		return
+	}
+	userID, err := parseUserID(r.URL.Query().Get("user_id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
+		return
+	}
+	sessionID, err := uuid.Parse(r.PathValue("session_id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "session_id must be a UUID")
+		return
+	}
+	unlock, ok := s.locks.TryLock(sessionID.String())
+	if !ok {
+		writeJSONError(w, http.StatusConflict, "会话正在执行，请停止或等待完成后再删除")
+		return
+	}
+	defer unlock()
+	evaluationUnlock, ok := s.evaluationLocks.TryLock(sessionID.String())
+	if !ok {
+		writeJSONError(w, http.StatusConflict, "会话正在创建评估，请稍后再删除")
+		return
+	}
+	defer evaluationUnlock()
+	err = s.catalog.DeleteSession(r.Context(), sessionID.String(), userID)
+	if errors.Is(err, sessionrepo.ErrSessionBusy) {
+		writeJSONError(w, http.StatusConflict, "会话仍有评估任务，请等待完成后再删除")
+		return
+	}
+	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "delete session failed: "+err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if s.catalog == nil {
 		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")

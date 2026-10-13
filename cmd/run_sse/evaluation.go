@@ -86,6 +86,12 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	unlock, ok := s.evaluationLocks.TryLock(req.SessionID)
+	if !ok {
+		writeJSONError(w, http.StatusConflict, "an evaluation is already being created for this session")
+		return
+	}
+	defer unlock()
 	source, err := s.catalog.GetSession(r.Context(), req.SessionID)
 	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
 		writeJSONError(w, http.StatusNotFound, "session not found: "+req.SessionID)
@@ -104,12 +110,6 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	unlock, ok := s.evaluationLocks.TryLock(req.SessionID)
-	if !ok {
-		writeJSONError(w, http.StatusConflict, "an evaluation is already being created for this session")
-		return
-	}
-	defer unlock()
 	existing, err := s.evaluations.ListEvaluationJobs(r.Context(), req.SessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "list evaluation jobs failed: "+err.Error())

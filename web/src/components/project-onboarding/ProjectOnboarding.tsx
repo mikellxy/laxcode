@@ -11,7 +11,7 @@ export function ProjectOnboarding({ creating, onCreate }: Props) {
       <span className="project-onboarding-icon"><FolderPlus size={27} strokeWidth={1.8} /></span>
       <span className="project-onboarding-eyebrow">WELCOME TO LAXCODE</span>
       <h1>创建你的第一个工作空间</h1>
-      <p>选择一个本地代码目录。LaxCode 会创建项目，并自动准备好第一个会话。</p>
+      <p>选择一个本地代码目录，创建项目后即可开始聊天。</p>
       <button className="project-onboarding-action" onClick={onCreate} disabled={creating}>
         {creating ? <LoaderCircle className="spin" size={18} /> : <FolderPlus size={18} />}
         <span>{creating ? "正在创建工作空间…" : "选择项目目录"}</span>

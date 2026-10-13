@@ -84,6 +84,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/directory-picker", s.handlePickDirectory)

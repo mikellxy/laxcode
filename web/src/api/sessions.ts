@@ -2,6 +2,8 @@ import { requestJSON } from "./client";
 import type { SessionDTO, SessionPageDTO } from "../types/api";
 
 export const createSession = (userID: string, projectID: string) => requestJSON<SessionDTO>("/api/sessions", { method: "POST", body: JSON.stringify({ user_id: userID, project_id: projectID }) });
+export const deleteSession = (userID: string, sessionID: string) =>
+  requestJSON<void>(`/api/sessions/${encodeURIComponent(sessionID)}?${new URLSearchParams({ user_id: userID })}`, { method: "DELETE" });
 export const listSessions = (userID: string, projectID: string, before?: string) => {
   const query = new URLSearchParams({ user_id: userID, project_id: projectID, limit: "100" });
   if (before) query.set("before_session_id", before);

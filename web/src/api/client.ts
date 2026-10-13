@@ -8,5 +8,6 @@ export async function requestJSON<T>(input: RequestInfo | URL, init?: RequestIni
     const payload = await response.json().catch(() => null) as { message?: string; code?: string; retry_action?: "resume" | "resend" } | null;
     throw new ApiError(payload?.message || `请求失败 (${response.status})`, response.status, payload?.code, payload?.retry_action);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, Folder, LoaderCircle, MessageSquare, Plus } from "lucide-react";
+import { ChevronRight, Folder, LoaderCircle, MessageSquare, Plus, Trash2 } from "lucide-react";
 import type { ContextData, ProjectDTO, SessionDTO } from "../../types/api";
 import laxcodeLogo from "../../assets/laxcode-logo.png";
 import { contextUsageLabel, sessionLabel } from "./label";
@@ -8,15 +8,20 @@ type Props = {
   projects: ProjectDTO[];
   sessionsByProject: Record<string, SessionDTO[]>;
   selectedID?: string;
+  selectedProjectID?: string;
   contextUsage?: ContextData;
   creatingProject: boolean;
   creatingSessionProjectID?: string;
+  deletingSessionID?: string;
+  runningSessionIDs: string[];
   onSelect: (id: string) => void;
+  onSelectProject: (projectID: string) => void;
+  onDeleteSession: (session: SessionDTO) => void;
   onCreateProject: () => void;
   onCreateSession: (projectID: string) => void;
 };
 
-export function SessionTabs({ projects, sessionsByProject, selectedID, contextUsage, creatingProject, creatingSessionProjectID, onSelect, onCreateProject, onCreateSession }: Props) {
+export function SessionTabs({ projects, sessionsByProject, selectedID, selectedProjectID, contextUsage, creatingProject, creatingSessionProjectID, deletingSessionID, runningSessionIDs, onSelect, onSelectProject, onDeleteSession, onCreateProject, onCreateSession }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
     setExpanded((current) => {
@@ -26,8 +31,6 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, contextUs
     });
   }, [projects]);
 
-  const selectedProjectID = projects.find((project) =>
-    (sessionsByProject[project.project_id] ?? []).some((session) => session.session_id === selectedID))?.project_id;
   const used = contextUsage ? contextUsage.window_token.token_input + contextUsage.window_token.token_output : 0;
   const toggle = (projectID: string) => setExpanded((current) => {
     const next = new Set(current);
@@ -48,7 +51,7 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, contextUs
         const isActive = selectedProjectID === project.project_id;
         return <section key={project.project_id} className={`project-group ${isActive ? "active" : ""}`}>
           <div className={`project-row ${isActive ? "active" : ""}`} title={project.work_dir}>
-            <button className="project-toggle" onClick={() => toggle(project.project_id)} aria-expanded={isExpanded}>
+            <button className="project-toggle" onClick={() => { toggle(project.project_id); onSelectProject(project.project_id); }} aria-expanded={isExpanded}>
               <ChevronRight className={isExpanded ? "expanded" : ""} size={15} />
               <Folder size={16} />
               <span>{project.name}</span>
@@ -59,9 +62,17 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, contextUs
             </button>
           </div>
           {isExpanded && <div className="project-sessions">
-            {projectSessions.map((session, index) => <button key={session.session_id} className={`session-tab ${selectedID === session.session_id ? "active" : ""}`} onClick={() => onSelect(session.session_id)}>
-              <MessageSquare size={14} /><span><strong>{sessionLabel(session.title, index, projectSessions.length)}</strong><small>{new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(session.updated_at))}</small></span>
-            </button>)}
+            {projectSessions.map((session, index) => {
+              const label = sessionLabel(session.title, index, projectSessions.length);
+              return <div key={session.session_id} className={`session-row ${selectedID === session.session_id ? "active" : ""}`}>
+                <button className="session-tab" onClick={() => onSelect(session.session_id)} aria-current={selectedID === session.session_id ? "page" : undefined}>
+                  <MessageSquare size={14} /><span><strong>{label}</strong><small>{new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(session.updated_at))}</small></span>
+                </button>
+                <button className="session-delete" onClick={() => onDeleteSession(session)} disabled={Boolean(deletingSessionID) || runningSessionIDs.includes(session.session_id)} aria-label={`删除会话 ${label}`} title={runningSessionIDs.includes(session.session_id) ? "会话正在执行" : "删除会话"}>
+                  {deletingSessionID === session.session_id ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
+                </button>
+              </div>;
+            })}
             {projectSessions.length === 0 && <p className="project-empty">暂无会话</p>}
           </div>}
         </section>;

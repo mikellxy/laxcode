@@ -93,6 +93,16 @@ func (f *fakeSessionCatalog) ListSessions(_ context.Context, userID, projectID, 
 	return f.page, nil
 }
 
+func (f *fakeSessionCatalog) DeleteSession(_ context.Context, id, userID string) error {
+	for i, item := range f.page.Sessions {
+		if item.ID == id && item.UserID == userID {
+			f.page.Sessions = append(f.page.Sessions[:i], f.page.Sessions[i+1:]...)
+			return nil
+		}
+	}
+	return sessionrepo.ErrSessionNotFound
+}
+
 func (f *fakeSessionCatalog) CreateProject(_ context.Context, id, userID, name, workDir string) (session.Project, error) {
 	now := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
 	project := session.Project{ID: id, UserID: userID, Name: name, WorkDir: workDir, CreatedAt: now, UpdatedAt: now}
@@ -167,6 +177,54 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 	}
 	if !page.HasMore || page.NextBeforeSessionID != "s1" || len(page.Sessions) != 2 {
 		t.Fatalf("unexpected list response: %+v", page)
+	}
+}
+
+func TestHandleDeleteSession(t *testing.T) {
+	const userID = "11111111-1111-4111-8111-111111111111"
+	const sessionID = "22222222-2222-4222-8222-222222222222"
+	catalog := &fakeSessionCatalog{page: session.SummaryPage{Sessions: []session.Summary{{ID: sessionID, UserID: userID}}}}
+	s := newTestServer(t, t.TempDir(), false)
+	s.catalog = catalog
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
+	request := func(id, owner string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/sessions/"+id+"?user_id="+owner, nil))
+		return w
+	}
+	if got := request(sessionID, "invalid"); got.Code != http.StatusBadRequest {
+		t.Fatalf("invalid user status=%d", got.Code)
+	}
+	if got := request("invalid", userID); got.Code != http.StatusBadRequest {
+		t.Fatalf("invalid session status=%d", got.Code)
+	}
+	if got := request(sessionID, "33333333-3333-4333-8333-333333333333"); got.Code != http.StatusNotFound {
+		t.Fatalf("other user status=%d", got.Code)
+	}
+	unlock, ok := s.locks.TryLock(sessionID)
+	if !ok {
+		t.Fatal("could not lock session")
+	}
+	busy := request(sessionID, userID)
+	unlock()
+	if busy.Code != http.StatusConflict || len(catalog.page.Sessions) != 1 {
+		t.Fatalf("busy session status=%d remaining=%d", busy.Code, len(catalog.page.Sessions))
+	}
+	evaluationUnlock, ok := s.evaluationLocks.TryLock(sessionID)
+	if !ok {
+		t.Fatal("could not lock evaluation creation")
+	}
+	evaluating := request(sessionID, userID)
+	evaluationUnlock()
+	if evaluating.Code != http.StatusConflict || len(catalog.page.Sessions) != 1 {
+		t.Fatalf("evaluation creation status=%d remaining=%d", evaluating.Code, len(catalog.page.Sessions))
+	}
+	if got := request(sessionID, userID); got.Code != http.StatusNoContent || len(catalog.page.Sessions) != 0 {
+		t.Fatalf("delete status=%d remaining=%d body=%s", got.Code, len(catalog.page.Sessions), got.Body.String())
+	}
+	if got := request(sessionID, userID); got.Code != http.StatusNotFound {
+		t.Fatalf("missing session status=%d", got.Code)
 	}
 }
 

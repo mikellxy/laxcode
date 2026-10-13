@@ -226,6 +226,112 @@ func TestCreateAndListSessionsByUser(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionRemovesMessagesAndFilesForItsOwner(t *testing.T) {
+	repo, root := newTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.CreateProject(ctx, "project", "owner", "Project", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"delete-session", "keep-session"} {
+		if _, err := repo.CreateSession(ctx, id, "owner", "project", "", "", "code"); err != nil {
+			t.Fatal(err)
+		}
+		createSystem(t, repo, id, "system")
+	}
+	next, err := repo.GetRequestContext(ctx, "delete-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.MemoryGeneration++
+	if _, err := repo.CommitNextMemoryGeneration(ctx, "delete-session", next); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "history", "delete-session")
+	for _, file := range []string{"artifacts/output", "log/tracing.log", "plan.md"} {
+		path := filepath.Join(dir, file)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("session data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.DeleteSession(ctx, "delete-session", "other-owner"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("other owner delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, historyFile)); err != nil {
+		t.Fatalf("other owner changed history: %v", err)
+	}
+	job, err := repo.CreateEvaluationJob(ctx, evaluation.Job{
+		ID: "evaluation", SourceSessionID: "delete-session", UserID: "owner", Status: evaluation.StatusQueued,
+		WorkDir: root, Requirement: "test evaluation", SnapshotHistory: filepath.Join(dir, historyFile),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteSession(ctx, "delete-session", "owner"); !errors.Is(err, ErrSessionBusy) {
+		t.Fatalf("active evaluation delete: %v", err)
+	}
+	if err := repo.UpdateEvaluationJob(ctx, job.ID, evaluation.StatusFailed, "", "test finished"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteSession(ctx, "delete-session", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetSession(ctx, "delete-session"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("deleted session still exists: %v", err)
+	}
+	var count int64
+	if err := repo.db.Model(&messageModel{}).Where("session_id = ?", "delete-session").Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("remaining messages=%d err=%v", count, err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session directory still exists: %v", err)
+	}
+	if _, err := repo.GetSession(ctx, "keep-session"); err != nil {
+		t.Fatalf("other session changed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "history", "keep-session", historyFile)); err != nil {
+		t.Fatalf("other session files changed: %v", err)
+	}
+	if _, err := repo.GetProject(ctx, "project"); err != nil {
+		t.Fatalf("project changed: %v", err)
+	}
+	if err := repo.DeleteSession(ctx, "../history", "owner"); err == nil {
+		t.Fatal("accepted unsafe session ID")
+	}
+}
+
+func TestDeleteSessionRollsBackWhenDirectoryCleanupFails(t *testing.T) {
+	repo, root := newTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.CreateSession(ctx, "session", "owner", "project", "", "", "code"); err != nil {
+		t.Fatal(err)
+	}
+	createSystem(t, repo, "session", "system")
+	path := filepath.Join(root, "history", "session")
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("unexpected file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteSession(ctx, "session", "owner"); err == nil {
+		t.Fatal("expected cleanup failure")
+	}
+	if _, err := repo.GetSession(ctx, "session"); err != nil {
+		t.Fatalf("failed deletion lost session: %v", err)
+	}
+	snapshot, err := repo.GetRequestContext(ctx, "session")
+	if err != nil || len(snapshot.Messages) != 1 || snapshot.Messages[0].Content != "system" {
+		t.Fatalf("failed deletion lost messages: %+v err=%v", snapshot, err)
+	}
+	var count int64
+	if err := repo.db.Model(&messageModel{}).Where("session_id = ?", "session").Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("failed deletion lost original or memory messages: count=%d err=%v", count, err)
+	}
+}
+
 func TestCreateAndListProjectsAndProjectSessions(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	ctx := context.Background()

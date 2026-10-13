@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/libtnb/sqlite"
+	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"gorm.io/gorm"
@@ -28,6 +29,7 @@ var (
 	ErrStaleSequence   = errors.New("sessionrepo: stale message sequence")
 	ErrStaleGeneration = errors.New("sessionrepo: stale memory generation")
 	ErrSessionNotFound = errors.New("sessionrepo: session not found")
+	ErrSessionBusy     = errors.New("sessionrepo: session has an active evaluation")
 	ErrProjectNotFound = errors.New("sessionrepo: project not found")
 )
 
@@ -282,6 +284,51 @@ func (r *SqliteSessionRepo) GetSession(ctx context.Context, id string) (session.
 		return session.Summary{}, fmt.Errorf("get session: %w", err)
 	}
 	return summaryFromModel(row), nil
+}
+
+func (r *SqliteSessionRepo) DeleteSession(ctx context.Context, id, userID string) error {
+	if err := validSessionID(id); err != nil {
+		return err
+	}
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("user ID is required")
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row requestContextModel
+		err := tx.Where("session_id = ? AND user_id = ?", id, userID).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrSessionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load session for deletion: %w", err)
+		}
+		var activeEvaluations int64
+		if err := tx.Model(&evaluationJobModel{}).Where("source_session_id = ? AND status IN ?", id,
+			[]string{evaluation.StatusQueued, evaluation.StatusRunning}).Count(&activeEvaluations).Error; err != nil {
+			return fmt.Errorf("check active evaluations: %w", err)
+		}
+		if activeEvaluations > 0 {
+			return ErrSessionBusy
+		}
+		// Explicitly delete every message generation, without relying on foreign-key settings.
+		if err := tx.Where("session_id = ?", id).Delete(&messageModel{}).Error; err != nil {
+			return fmt.Errorf("delete session messages: %w", err)
+		}
+		if err := tx.Where("session_id = ?", id).Delete(&requestContextModel{}).Error; err != nil {
+			return fmt.Errorf("delete session context: %w", err)
+		}
+		// Keep the database records available for retry if file cleanup fails.
+		path := filepath.Join(r.historyRoot, id)
+		if info, err := os.Lstat(path); err == nil && !info.IsDir() {
+			return fmt.Errorf("session path is not a directory: %s", path)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat session directory: %w", err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("delete session directory: %w", err)
+		}
+		return nil
+	})
 }
 
 func (r *SqliteSessionRepo) ListSessions(ctx context.Context, userID, projectID, beforeSessionID string, limit int) (session.SummaryPage, error) {
