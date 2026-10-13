@@ -33,7 +33,7 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 			effort = "medium"
 		}
 		limit := config.DefaultModelLimit()
-		provider.ModelList = append(provider.ModelList, config.Model{Limit: &limit, ModelName: model.Slug, DisplayName: model.DisplayName, ReasoningEffort: effort})
+		provider.ModelList = append(provider.ModelList, config.Model{Limit: &limit, ModelName: model.Slug, ReasoningEffort: effort})
 	}
 	replace := func(providers []config.Provider) ([]config.Provider, error) {
 		result := append([]config.Provider(nil), providers...)

@@ -408,7 +408,7 @@ func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.CurrentModel != "example:model-a" || len(got.Providers) != 1 || len(got.Providers[0].ModelList) != 2 ||
+	if got.CurrentModel != "example:model-a" || len(got.Providers) != 1 || got.Providers[0].ProviderName != "example" || len(got.Providers[0].ModelList) != 2 ||
 		got.Providers[0].ModelList[0].ModelName != "model-a" || got.Providers[0].ModelList[0].UpstreamModel != "" ||
 		got.Providers[0].ModelList[1].UpstreamModel != "upstream-b" {
 		t.Fatalf("unexpected response: %+v", got)
@@ -417,7 +417,7 @@ func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 		got.Providers[0].ModelList[1].ModelRef != "example:model-b" {
 		t.Fatalf("unexpected model refs: %+v", got.Providers[0].ModelList)
 	}
-	for _, secret := range []string{"sk-secret", "https://api.example.com", "api_key", "base_url", "provider_name"} {
+	for _, secret := range []string{"sk-secret", "https://api.example.com", "api_key", "base_url"} {
 		if strings.Contains(rec.Body.String(), secret) {
 			t.Fatalf("response leaks sensitive field %q: %s", secret, rec.Body.String())
 		}

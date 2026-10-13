@@ -20,7 +20,7 @@ func TestOAuthModelListAndEffortSwitch(t *testing.T) {
 	config.Current.CompactionModel = ""
 	home := t.TempDir()
 	s := newTestServer(t, home, false)
-	if err := s.models.SaveChatGPTModels([]ai_models.Model{{Slug: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol"}}); err != nil {
+	if err := s.models.SaveChatGPTModels([]ai_models.Model{{Slug: "gpt-6.1-sol"}}); err != nil {
 		t.Fatal(err)
 	}
 	router := &recordingModelRouter{}

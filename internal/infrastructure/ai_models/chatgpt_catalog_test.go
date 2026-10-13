@@ -17,7 +17,7 @@ func TestChatGPTCatalogPersistsAndResolvesAfterRestart(t *testing.T) {
 	if err := parseTestSettings(); err != nil {
 		t.Fatal(err)
 	}
-	models := []Model{{Slug: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol"}, {Slug: "another-model", DisplayName: "Another"}}
+	models := []Model{{Slug: "gpt-6.1-sol"}, {Slug: "another-model"}}
 	if err := testManager.SaveChatGPTModels(models); err != nil {
 		t.Fatal(err)
 	}

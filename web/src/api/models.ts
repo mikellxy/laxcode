@@ -1,5 +1,5 @@
 import { requestJSON } from "./client";
-import type { AddModelInput, ChatGPTLoginDTO, ModelDTO, ProviderListModelDTO, SwitchModelDTO } from "../types/api";
+import type { AddModelInput, ChatGPTLoginDTO, ModelDTO, ProviderListModelDTO, ProviderModelsDTO, SwitchModelDTO } from "../types/api";
 
 export const listModels = () => requestJSON<ProviderListModelDTO>("/api/models");
 export const switchModelRequest = (provider: string, model: string, reasoning_effort?: string) => requestJSON<SwitchModelDTO>("/api/model", { method: "POST", body: JSON.stringify({ provider, model, reasoning_effort }) });
@@ -12,7 +12,10 @@ export const cancelChatGPTLogin = async (id: string) => {
   if (!response.ok) throw new Error("取消 ChatGPT 登录失败");
 };
 
-export const modelRefs = (payload: ProviderListModelDTO): string[] => payload.providers.flatMap((provider) => provider.model_list.map((model) => model.model_ref)).sort();
+export const modelProviders = (payload: ProviderListModelDTO): ProviderModelsDTO[] => payload.providers
+  .filter((provider) => provider.model_list.length > 0)
+  .map((provider) => ({ ...provider, model_list: [...provider.model_list].sort((a, b) => a.model_name.localeCompare(b.model_name)) }))
+  .sort((a, b) => a.provider_name.localeCompare(b.provider_name));
 
 export const splitModelRef = (ref: string): { provider: string; model: string } | null => {
   const index = ref.indexOf(":");

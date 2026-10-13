@@ -35,7 +35,7 @@ cp docs/settings.json ~/.laxcode/settings.json
 
 `provider_name` 和同一 provider 内的 `model_name` 必须分别唯一。`model` 必须指向配置中的现有条目。
 未填写 `model` 时，默认选中目录中的第一个模型。`model_name` 是配置中的名称；
-可通过 `upstream_model` 指定实际请求的模型名，`display_name` 指定页面显示名称。
+可通过 `upstream_model` 指定实际请求的模型名。
 
 ## 命令行覆盖
 
@@ -81,7 +81,7 @@ go run ./cmd/main -model=chat -openai_api_key=YOUR_API_KEY -openai_base_url=http
   "credential_ref": "chatgpt-main",
   "openai_base_url": "https://api.openai.com/v1/",
   "model_list": [
-    { "model_name": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "reasoning_effort": "medium" }
+    { "model_name": "gpt-6.1-sol", "reasoning_effort": "medium" }
   ]
 }
 ```

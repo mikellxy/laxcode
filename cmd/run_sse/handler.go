@@ -405,7 +405,6 @@ type historyMessageDTO struct {
 // 的切换请求。CurrentModel 是运行时生效的引用，即当前（及后续每个请求）LLM
 // client 实际使用的模型。
 type modelConfigDTO struct {
-	DisplayName      string   `json:"display_name,omitempty"`
 	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
 	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 	ModelName        string   `json:"model_name"`
@@ -414,8 +413,9 @@ type modelConfigDTO struct {
 }
 
 type providerModelsDTO struct {
-	AuthType  string           `json:"auth_type,omitempty"`
-	ModelList []modelConfigDTO `json:"model_list"`
+	ProviderName string           `json:"provider_name"`
+	AuthType     string           `json:"auth_type,omitempty"`
+	ModelList    []modelConfigDTO `json:"model_list"`
 }
 
 type providerListModelDTO struct {
@@ -449,13 +449,13 @@ func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 		models := make([]modelConfigDTO, len(provider.ModelList))
 		for j, model := range provider.ModelList {
 			models[j] = modelConfigDTO{
-				DisplayName: model.DisplayName, ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: model.ReasoningEfforts,
+				ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: model.ReasoningEfforts,
 				ModelName:     model.ModelName,
 				UpstreamModel: model.UpstreamModel,
 				ModelRef:      model.Ref,
 			}
 		}
-		response.Providers[i] = providerModelsDTO{AuthType: provider.AuthType, ModelList: models}
+		response.Providers[i] = providerModelsDTO{ProviderName: provider.ProviderName, AuthType: provider.AuthType, ModelList: models}
 	}
 	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

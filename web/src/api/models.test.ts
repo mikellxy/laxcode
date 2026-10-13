@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cancelChatGPTLogin, chatGPTLoginStatus, modelRefs, splitModelRef, startChatGPTLogin, switchModelRequest } from "./models";
+import { cancelChatGPTLogin, chatGPTLoginStatus, modelProviders, splitModelRef, startChatGPTLogin, switchModelRequest } from "./models";
 import type { ProviderListModelDTO } from "../types/api";
 
 const payload: ProviderListModelDTO = {
   current_model: "b:model-2",
   providers: [
-    { model_list: [{ model_name: "model-2", model_ref: "b:model-2" }] },
-    { model_list: [{ model_name: "model-1", model_ref: "a:model-1" }, { model_name: "model-0", upstream_model: "up-0", model_ref: "a:model-0" }] },
+    { provider_name: "b", model_list: [{ model_name: "model-2", model_ref: "b:model-2" }] },
+    { provider_name: "a", model_list: [{ model_name: "model-1", model_ref: "a:model-1" }, { model_name: "model-0", upstream_model: "up-0", model_ref: "a:model-0" }] },
   ],
 };
 
@@ -30,9 +30,16 @@ it("starts, polls and cancels login without requiring a token in the browser", a
   expect(fetch.mock.calls[2][1].method).toBe("DELETE");
 });
 
-describe("modelRefs", () => {
-  it("flattens and sorts refs across providers", () => expect(modelRefs(payload)).toEqual(["a:model-0", "a:model-1", "b:model-2"]));
-  it("returns empty list when catalog is empty", () => expect(modelRefs({ current_model: "", providers: [] })).toEqual([]));
+describe("modelProviders", () => {
+  it("sorts providers and their models without changing the catalog", () => {
+    const providers = modelProviders(payload);
+    expect(providers.map((provider) => provider.provider_name)).toEqual(["a", "b"]);
+    expect(providers[0].model_list.map((model) => model.model_ref)).toEqual(["a:model-0", "a:model-1"]);
+    expect(payload.providers[0].provider_name).toBe("b");
+    expect(payload.providers[1].model_list[0].model_name).toBe("model-1");
+  });
+  it("omits providers without models", () => expect(modelProviders({ current_model: "", providers: [{ provider_name: "empty", model_list: [] }] })).toEqual([]));
+  it("returns empty list when catalog is empty", () => expect(modelProviders({ current_model: "", providers: [] })).toEqual([]));
 });
 
 describe("splitModelRef", () => {

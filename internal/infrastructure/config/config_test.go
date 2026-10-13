@@ -13,7 +13,7 @@ func TestProviderDeepCopy(t *testing.T) {
 		ProviderName: "provider", AuthType: "api_key", OpenaiApiKey: "key",
 		OpenaiBaseUrl: "https://example.com/v1", CredentialRef: "credential",
 		ModelList: []Model{
-			{ModelName: "alias", UpstreamModel: "actual", DisplayName: "Model", ReasoningEffort: "medium", Limit: &ModelLimit{Context: 1000, Output: 100}},
+			{ModelName: "alias", UpstreamModel: "actual", ReasoningEffort: "medium", Limit: &ModelLimit{Context: 1000, Output: 100}},
 			{ModelName: "no-limit"},
 		},
 	}
@@ -156,13 +156,13 @@ func TestLoadRejectsInvalidModelsAndJSONStructure(t *testing.T) {
 
 func TestLoadParsesTypedProvidersAndDefaultsIndependently(t *testing.T) {
 	home := t.TempDir()
-	writeSettings(t, home, `{"MODEL":"CaseSensitive:alias","PROVIDER_LIST":[{"provider_name":"CaseSensitive","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"alias","upstream_model":"actual","display_name":"Display Name","reasoning_effort":"","limit":{"context":100000,"output":8000}},{"model_name":"plain"},{"model_name":"other"}]}]}`)
+	writeSettings(t, home, `{"MODEL":"CaseSensitive:alias","PROVIDER_LIST":[{"provider_name":"CaseSensitive","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"alias","upstream_model":"actual","reasoning_effort":"","limit":{"context":100000,"output":8000}},{"model_name":"plain"},{"model_name":"other"}]}]}`)
 	conf, err := Load(home, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	models := conf.ProviderList[0].ModelList
-	if conf.Model != "CaseSensitive:alias" || models[0].UpstreamModel != "actual" || models[0].DisplayName != "Display Name" || models[0].Limit.Context != 100000 {
+	if conf.Model != "CaseSensitive:alias" || models[0].UpstreamModel != "actual" || models[0].Limit.Context != 100000 {
 		t.Fatalf("typed fields lost: %+v", conf)
 	}
 	models[1].Limit.Context = 1

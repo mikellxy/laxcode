@@ -13,9 +13,8 @@ import (
 )
 
 type Model struct {
-	Slug        string `json:"slug"`
-	DisplayName string `json:"display_name"`
-	Visibility  string `json:"visibility"`
+	Slug       string `json:"slug"`
+	Visibility string `json:"visibility"`
 }
 
 func (s *Store) Models(ctx context.Context, ref string) ([]Model, error) {

@@ -72,7 +72,6 @@ func (p Provider) DeepCopy() Provider {
 type Model struct {
 	ModelName       string      `json:"model_name" mapstructure:"model_name"`
 	UpstreamModel   string      `json:"upstream_model,omitempty" mapstructure:"upstream_model"`
-	DisplayName     string      `json:"display_name,omitempty" mapstructure:"display_name"`
 	ReasoningEffort string      `json:"reasoning_effort,omitempty" mapstructure:"reasoning_effort"`
 	Limit           *ModelLimit `json:"limit,omitempty" mapstructure:"limit"`
 }

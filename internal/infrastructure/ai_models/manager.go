@@ -155,7 +155,6 @@ type ModelInfo struct {
 	Ref              string
 	ModelName        string
 	UpstreamModel    string
-	DisplayName      string
 	ReasoningEffort  string
 	ReasoningEfforts []string
 }
@@ -172,7 +171,7 @@ func (m *Manager) List() []ProviderInfo {
 				upstream = model.ModelName
 			}
 			info.ModelList = append(info.ModelList, ModelInfo{Ref: modelRef(p.ProviderName, model.ModelName), ModelName: model.ModelName,
-				UpstreamModel: model.UpstreamModel, DisplayName: model.DisplayName, ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: ReasoningEfforts(upstream)})
+				UpstreamModel: model.UpstreamModel, ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: ReasoningEfforts(upstream)})
 		}
 		result = append(result, info)
 	}

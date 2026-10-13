@@ -293,7 +293,7 @@ func TestDynamicLoginVerifiesCallbackIdentityAndImportsCatalog(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer access" {
 				t.Error("model catalog is not authenticated")
 			}
-			return jsonResponse(r, map[string]any{"models": []any{Model{Slug: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", Visibility: "list"}, Model{Slug: "hidden", Visibility: "hidden"}}}), nil
+			return jsonResponse(r, map[string]any{"models": []any{Model{Slug: "gpt-6.1-sol", Visibility: "list"}, Model{Slug: "hidden", Visibility: "hidden"}}}), nil
 		default:
 			return nil, fmt.Errorf("unexpected test endpoint")
 		}
