@@ -21,6 +21,7 @@ type readFileToolArgs struct {
 const readFileToolMaxReadBytes = 50 * 1024
 
 type ReadFileTool struct {
+	UserRoot  string
 	WorkDir   string   `json:"work_dir"`
 	ReadRoots []string `json:"-"`
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
@@ -35,11 +36,14 @@ func NewReadFileTool(workDir string, workFS WorkFS, readRoots ...string) *ReadFi
 // workDir 或任一 readRoot 内则返回 nil 不打扰；参数类错误交由 Execute 走
 // 标准错误路径（返回 nil, nil）。
 func (r *ReadFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
+	if r.UserRoot != "" {
+		return nil, nil
+	}
 	var a readFileToolArgs
 	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Path) == "" {
 		return nil, nil
 	}
-	requested, _, err := resolveReadTarget(r.WorkDir, r.ReadRoots, a.Path)
+	requested, _, err := resolveReadTarget(r.WorkDir, r.ReadRoots, a.Path, r.UserRoot)
 	if err != nil {
 		var ose *OutsideSandboxError
 		if !errors.As(err, &ose) {
@@ -120,15 +124,15 @@ func (r *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("path required"))
 	}
 
-	pathSafe, root, err := resolveReadTarget(r.WorkDir, r.ReadRoots, argsObj.Path)
+	pathSafe, root, err := resolveReadTarget(r.WorkDir, r.ReadRoots, argsObj.Path, r.UserRoot)
 	if err != nil {
 		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) || !GrantAllows(ctx, ose.Requested) {
+		if !errors.As(err, &ose) || r.UserRoot != "" || !GrantAllows(ctx, ose.Requested) {
 			return "", NewErrorWithPrompt(&FilePathError{}, err)
 		}
 		// 人工批准的沙箱外访问：放行确认过的目标
 		pathSafe = ose.Requested
-	} else if err := ensureRealPathWithin(root, pathSafe); err != nil && !GrantAllows(ctx, pathSafe) {
+	} else if err := ensureRealPathWithin(root, pathSafe); err != nil && (r.UserRoot != "" || !GrantAllows(ctx, pathSafe)) {
 		return "", NewErrorWithPrompt(&FilePathError{}, err)
 	}
 

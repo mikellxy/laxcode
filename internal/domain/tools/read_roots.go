@@ -20,7 +20,10 @@ func (e *OutsideSandboxError) Error() string { return e.Reason }
 
 // resolveReadTarget keeps relative paths rooted at workDir and permits absolute
 // paths only when they are inside an explicitly configured read-only root.
-func resolveReadTarget(workDir string, readRoots []string, input string) (requested, allowedRoot string, err error) {
+func resolveReadTarget(workDir string, readRoots []string, input string, userRoots ...string) (requested, allowedRoot string, err error) {
+	if len(userRoots) > 0 && userRoots[0] != "" {
+		return resolveUserTarget(workDir, userRoots[0], input)
+	}
 	workDir, err = filepath.Abs(workDir)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve work dir: %w", err)
@@ -118,7 +121,17 @@ func realPathWithinRoots(real, workDir string, roots []string) bool {
 // resolveWriteTarget permits the normal workdir plus explicitly configured
 // writable roots. It resolves existing symlinks (or the deepest existing
 // parent for a new file) so a link cannot redirect a write outside that root.
-func resolveWriteTarget(workDir string, writeRoots []string, input string) (target, allowedRoot string, err error) {
+func resolveWriteTarget(workDir string, writeRoots []string, input string, userRoots ...string) (target, allowedRoot string, err error) {
+	if len(userRoots) > 0 && userRoots[0] != "" {
+		target, allowedRoot, err = resolveUserTarget(workDir, userRoots[0], input)
+		if err != nil {
+			return "", "", err
+		}
+		if err = ValidateUserPath(allowedRoot, target); err != nil {
+			return "", "", err
+		}
+		return target, allowedRoot, nil
+	}
 	if filepath.IsAbs(input) {
 		target = filepath.Clean(input)
 		for _, root := range writeRoots {
@@ -159,4 +172,43 @@ func resolveWriteTarget(workDir string, writeRoots []string, input string) (targ
 		}
 		probe = parent
 	}
+}
+
+func resolveUserTarget(workDir, userRoot, input string) (string, string, error) {
+	root, err := filepath.Abs(userRoot)
+	if err != nil {
+		return "", "", err
+	}
+	target := input
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(workDir, target)
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return "", "", err
+	}
+	if !withinSearchRoot(root, target) {
+		return "", "", &OutsideSandboxError{Requested: target, Reason: "path is outside user root"}
+	}
+	return target, root, nil
+}
+
+// ValidateUserPath checks user-scoped working directories and explicit targets.
+// File adapters additionally enforce this boundary during the actual operation.
+func ValidateUserPath(userRoot, target string) error {
+	if target == "" {
+		return fmt.Errorf("user-scoped path is required")
+	}
+	requested, root, err := resolveUserTarget(userRoot, userRoot, target)
+	if err != nil {
+		return err
+	}
+	real, err := realPath(requested)
+	if err != nil {
+		return err
+	}
+	if !realPathWithinRoots(real, root, nil) {
+		return fmt.Errorf("path resolves outside user root")
+	}
+	return nil
 }

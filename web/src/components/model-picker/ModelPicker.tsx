@@ -8,7 +8,7 @@ import { AddModelDialog } from "./AddModelDialog";
 // ModelPicker 承载模型选择触发器与旁侧的「添加模型」齿轮按钮：齿轮直接打开
 // 添加表单；bounceKey 由父组件在用户点击被锁定的输入框时递增，驱动齿轮跳动
 // 引导配置模型。
-export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKey: number }) {
+export function ModelPicker({ running, bounceKey, cloud }: { running: boolean; bounceKey: number; cloud: boolean }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
@@ -126,6 +126,6 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
       </div>}
       {switchModel.isError && <div className="model-menu-state error" role="alert">切换失败：{switchModel.error instanceof Error ? switchModel.error.message : "未知错误"}</div>}
     </div>}
-    {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} onConnected={connected} />}
+    {adding && <AddModelDialog cloud={cloud} saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} onConnected={connected} />}
   </div>;
 }

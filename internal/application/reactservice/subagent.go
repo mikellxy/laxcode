@@ -29,6 +29,8 @@ type subAgentArgs struct {
 // （cmd/agentasm）注入基础设施实现。集中在一个结构体里，使 application 层
 // 只依赖 domain 端口、不反向依赖 infrastructure，且后续新增端口不破构造签名。
 type SubAgentDeps struct {
+	UserRoot string
+	TempDir  string
 	// WorkFS 是沙箱文件读写端口，供子 Agent 的 read_file 使用；无状态，可与父共享。
 	WorkFS  tools.WorkFS
 	Ripgrep tools.RipgrepRunner
@@ -114,6 +116,11 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 		workDir = a.WorkDir
 	}
 
+	if s.deps.UserRoot != "" {
+		if err := tools.ValidateUserPath(s.deps.UserRoot, workDir); err != nil {
+			return "", err
+		}
+	}
 	// 子会话：全新 id、复用父 SessRepo，使用与主 Agent 相同的快照恢复入口。
 	// 注入人格系统提示词（含 workDir 沙箱约束）与全局技能索引；
 	// plan 传 nil（子 Agent 不支持 Plan Mode），warn 传 nil（技能警告已在主 Agent
@@ -122,6 +129,9 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	childSess := session.NewSession(childID, workDir)
 	childSkills := prompt.LoadSkills(s.deps.SkillSrc, workDir, nil)
 	childSysPrompt := prompt.GetSysPrompt(workDir, childSkills, nil, s.deps.SkillsRoot)
+	if s.deps.UserRoot != "" {
+		childSysPrompt += fmt.Sprintf("\n用户文件范围：%s。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。", s.deps.UserRoot, s.deps.TempDir)
+	}
 
 	// 受限工具集不含 sub-agent 自身；构造服务时另注册会话级 read_artifact。
 	// 不含 sub-agent 自身，避免递归。子 Agent
@@ -129,10 +139,16 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// 命令执行端口按子 Agent 新建，以免回收波及父 Agent 的后台进程。
 	childReg := tools.NewDefaultRegistry(s.parent.tracer)
 	childReg.Register(tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID))
-	childReg.Register(tools.NewReadFileTool(workDir, s.deps.WorkFS, s.deps.SkillsRoot))
+	read := tools.NewReadFileTool(workDir, s.deps.WorkFS, s.deps.SkillsRoot)
+	read.UserRoot = s.deps.UserRoot
+	childReg.Register(read)
 	if s.deps.Ripgrep != nil {
-		childReg.Register(tools.NewGrepTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot))
-		childReg.Register(tools.NewGlobTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot))
+		grep := tools.NewGrepTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot)
+		grep.UserRoot = s.deps.UserRoot
+		childReg.Register(grep)
+		glob := tools.NewGlobTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot)
+		glob.UserRoot = s.deps.UserRoot
+		childReg.Register(glob)
 	}
 	defer childReg.Close()
 
@@ -150,6 +166,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 		}, s.parent.tracer, s.parent.Artifacts)
 	childSvc.humanConfirmationEnabled = s.parent.humanConfirmationEnabled
 	childSvc.SetWorkDir(workDir)
+	childSvc.SetUserRoot(s.deps.UserRoot)
 	if err := childSvc.InitSession(ctx); err != nil {
 		return "", fmt.Errorf("init session: %w", err)
 	}

@@ -5,6 +5,7 @@
 ### 注册 POST /chat 路由，SSE 服务监听并在收到 SIGINT/SIGTERM 后等在途流收束
 
 - `cmd/run_sse/run_sse.go`：`func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) error`
+- `cmd/run_sse/run_sse.go`：`func (s *server) routes() *http.ServeMux`
 
 ## 请求前置校验（进入 SSE 流之前，失败返回普通 JSON 状态码）
 
@@ -53,7 +54,7 @@
 
 ## 错误处理与重试语义
 
-### 危险命令被用户拒绝时终止本轮对话并发 CHAT_STOPPED 错误帧
+### 本地模式危险命令被用户拒绝时终止本轮对话并发 CHAT_STOPPED 错误帧
 
 - `cmd/run_sse/handler.go`：`func (s *server) handleChat(w http.ResponseWriter, r *http.Request)`
 - `internal/application/reactservice/reactservice.go`：`ErrDangerousCommandDeclined`

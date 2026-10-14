@@ -345,3 +345,19 @@ func TestRetiredMemorySettingsDoNotBlockStartup(t *testing.T) {
 		t.Fatalf("retired configuration blocked Web startup: %v", err)
 	}
 }
+
+func TestCloudFlagAndSettingsDoNotApplyUserEnvironment(t *testing.T) {
+	home := t.TempDir()
+	writeSettings(t, home, `{}`)
+	if err := os.WriteFile(filepath.Join(home, ".laxcode", "env.conf"), []byte("LAXCODE_CLOUD_ENV_PROBE=user-value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LAXCODE_CLOUD_ENV_PROBE", "server-value")
+	conf, err := LoadSettings(home, []string{"-cloud", "-addr=127.0.0.1:0"})
+	if err != nil || !conf.Cloud || conf.Addr != "127.0.0.1:0" {
+		t.Fatalf("cloud flags: %+v %v", conf, err)
+	}
+	if os.Getenv("LAXCODE_CLOUD_ENV_PROBE") != "server-value" {
+		t.Fatal("user env changed process environment")
+	}
+}

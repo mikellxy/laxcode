@@ -5,6 +5,7 @@
 package skillrepo
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -17,7 +18,10 @@ const skillFileName = "SKILL.md"
 
 // Source 绑定用户主目录；List 的 workDir 参数为领域端口的兼容参数，技能不再
 // 随项目工作目录变化，主 Agent 与子 Agent 始终看到同一份全局技能。
-type Source struct{ HomeDir string }
+type Source struct {
+	HomeDir  string
+	UserRoot string
+}
 
 // New 返回技能发现端口的文件系统实现。
 func New(homeDirs ...string) *Source {
@@ -40,6 +44,9 @@ var _ prompt.SkillSource = (*Source)(nil)
 // 层级里的 SKILL.md（不递归）、技能目录内文件名大小写不符、读取失败。
 func (s Source) List(_ string) []prompt.SkillFile {
 	skillsRoot := layout.SkillsRoot(s.HomeDir)
+	if s.UserRoot != "" {
+		return s.listRooted(skillsRoot)
+	}
 	if err := os.MkdirAll(skillsRoot, 0o700); err != nil {
 		return nil
 	}
@@ -88,4 +95,38 @@ func readSkillFile(dirPath string) (string, bool) {
 		return "", false
 	}
 	return string(content), true
+}
+
+func NewWithRoot(homeDir, userRoot string) *Source {
+	return &Source{HomeDir: homeDir, UserRoot: userRoot}
+}
+func (s Source) listRooted(skillsRoot string) []prompt.SkillFile {
+	root, err := os.OpenRoot(s.UserRoot)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	rel, err := filepath.Rel(s.UserRoot, skillsRoot)
+	if err != nil {
+		return nil
+	}
+	if err := root.MkdirAll(rel, 0700); err != nil {
+		return nil
+	}
+	entries, err := fs.ReadDir(root.FS(), filepath.ToSlash(rel))
+	if err != nil {
+		return nil
+	}
+	var files []prompt.SkillFile
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := filepath.Join(rel, entry.Name(), skillFileName)
+		content, err := root.ReadFile(name)
+		if err == nil {
+			files = append(files, prompt.SkillFile{DirName: entry.Name(), Content: string(content)})
+		}
+	}
+	return files
 }

@@ -31,11 +31,12 @@ func main() {
 }
 
 func run() error {
+	cloud := flag.Bool("cloud", false, "allow a non-loopback web UI listen address")
 	addr := flag.String("addr", "127.0.0.1:5173", "loopback address for the web UI")
 	backendValue := flag.String("backend", "", "LaxCode backend URL")
 	flag.Parse()
 
-	if err := validateLoopbackAddress(*addr); err != nil {
+	if err := validateLoopbackAddress(*addr); err != nil && !*cloud {
 		return err
 	}
 	backend, err := parseBackendURL(*backendValue)

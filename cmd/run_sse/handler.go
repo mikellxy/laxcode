@@ -39,6 +39,9 @@ const maxBodyBytes = 1 << 20
 type server struct {
 	tracer             telemetry.Tracer
 	mcpPool            *mcpserver.Pool // 启动时建立，请求只读复用，退出时统一关闭。
+	userRoot           string
+	tempDir            string
+	projectMu          sync.Mutex
 	homeDir            string
 	planMode           bool
 	assemble           func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
@@ -312,13 +315,53 @@ func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "project name must not exceed 120 characters")
 		return
 	}
-	workDir, err := normalizeWorkDir(req.WorkDir)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
+	var workDir string
+	if s.userRoot != "" {
+		s.projectMu.Lock()
+		defer s.projectMu.Unlock()
+		if err := validateCloudProjectName(name); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		items, err := s.projects.ListProjects(r.Context(), userID)
+		if err != nil {
+			writeJSONError(w, 500, err.Error())
+			return
+		}
+		for _, item := range items {
+			if item.Name == name {
+				writeJSONError(w, 409, "project name already exists")
+				return
+			}
+		}
+		workDir = filepath.Join(s.userRoot, name)
+		root, err := os.OpenRoot(s.userRoot)
+		if err != nil {
+			writeJSONError(w, 500, err.Error())
+			return
+		}
+		defer root.Close()
+		if err := root.Mkdir(name, 0700); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				writeJSONError(w, 409, "project name already exists")
+			} else {
+				writeJSONError(w, 500, err.Error())
+			}
+			return
+		}
+	} else {
+		var err error
+		workDir, err = normalizeWorkDir(req.WorkDir)
+		if err != nil {
+			writeJSONError(w, 400, err.Error())
+			return
+		}
 	}
 	created, err := s.projects.CreateProject(r.Context(), uuid.NewString(), userID, name, workDir)
 	if err != nil {
+		if s.userRoot != "" {
+			_ = os.Remove(workDir)
+		}
 		writeJSONError(w, http.StatusInternalServerError, "create project failed: "+err.Error())
 		return
 	}
@@ -628,6 +671,16 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
+	if s.userRoot != "" {
+		if _, err := s.catalog.GetSession(r.Context(), sessionID); err != nil {
+			if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+				writeJSONError(w, 404, "session not found")
+			} else {
+				writeJSONError(w, 500, err.Error())
+			}
+			return
+		}
+	}
 	contextState, err := s.contextRepo.GetRequestContext(r.Context(), sessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "load context failed: "+err.Error())
@@ -778,8 +831,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	assembled, err := s.assembleAgent(trace, agentasm.Input{
-		WorkDir:   selected.WorkDir,
-		HomeDir:   s.homeDir,
+		WorkDir:  selected.WorkDir,
+		HomeDir:  s.homeDir,
+		UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo,
 		SessionID: req.SessionID,
 		PlanMode:  s.planMode,
 		Consumer:  trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
@@ -895,7 +949,7 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	assembled, err := s.assembleAgent(trace, agentasm.Input{
-		WorkDir: selected.WorkDir, HomeDir: s.homeDir, SessionID: sessionID, PlanMode: s.planMode, Consumer: trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
+		WorkDir: selected.WorkDir, HomeDir: s.homeDir, UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo, SessionID: sessionID, PlanMode: s.planMode, Consumer: trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
 	})
 	if err != nil {
 		trace.err = err

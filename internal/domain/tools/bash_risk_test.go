@@ -113,3 +113,21 @@ func TestAssessBashRiskSymlinkEscape(t *testing.T) {
 		t.Fatal("plain workdir target must be allowed")
 	}
 }
+
+func TestCloudBashRiskScope(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "project")
+	if err := os.Mkdir(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"cat /etc/hostname", "cat < /etc/hostname", "echo hi > /tmp/global", "rm -rf build", "cat ../../secret"} {
+		if _, risky := AssessBashRisk(command, work, root); !risky {
+			t.Errorf("allowed %s", command)
+		}
+	}
+	for _, command := range []string{"pwd", "cat ../tmp.txt", "echo hi > ../tmp.txt", "go test ./..."} {
+		if reason, risky := AssessBashRisk(command, work, root); risky {
+			t.Errorf("rejected %s: %s", command, reason)
+		}
+	}
+}

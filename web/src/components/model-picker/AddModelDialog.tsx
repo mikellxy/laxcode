@@ -3,6 +3,7 @@ import type { AddModelInput } from "../../types/api";
 import { ChatGPTLogin } from "./ChatGPTLogin";
 
 type Props = {
+  cloud: boolean;
   saving: boolean;
   error?: string;
   onCancel: () => void;
@@ -19,7 +20,7 @@ const initialForm: AddModelInput = {
   max_output_tokens: 16384,
 };
 
-export function AddModelDialog({ saving, error, onCancel, onSubmit, onConnected }: Props) {
+export function AddModelDialog({ cloud, saving, error, onCancel, onSubmit, onConnected }: Props) {
   const [authType, setAuthType] = useState("api_key");
   const [form, setForm] = useState(initialForm);
   const [validationError, setValidationError] = useState("");
@@ -49,9 +50,9 @@ export function AddModelDialog({ saving, error, onCancel, onSubmit, onConnected 
 
   return <div className="model-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onCancel(); }}>
     <form className="model-dialog" role="dialog" aria-modal="true" aria-label="添加模型" onSubmit={submit}>
-      <header><h2>添加模型</h2><p>选择模型接入方式</p></header>
-      <label className="auth-method"><span>认证方式</span><select value={authType} onChange={(event) => setAuthType(event.target.value)} disabled={saving}><option value="api_key">API Key</option><option value="oauth">ChatGPT 订阅</option></select></label>
-      {authType === "oauth" ? <ChatGPTLogin onConnected={onConnected} /> : <div className="model-form-grid">
+      <header><h2>添加模型</h2><p>{cloud ? "使用 API Key 和 Base URL 接入模型" : "选择模型接入方式"}</p></header>
+      {!cloud && <label className="auth-method"><span>认证方式</span><select value={authType} onChange={(event) => setAuthType(event.target.value)} disabled={saving}><option value="api_key">API Key</option><option value="oauth">ChatGPT 订阅</option></select></label>}
+      {!cloud && authType === "oauth" ? <ChatGPTLogin onConnected={onConnected} /> : <div className="model-form-grid">
         <label><span>Provider</span><input autoFocus required value={form.provider} onChange={(event) => update("provider", event.target.value)} placeholder="例如 openai" /></label>
         <label><span>Model</span><input required value={form.model} onChange={(event) => update("model", event.target.value)} placeholder="例如 gpt-5" /></label>
         <label className="full"><span>Base URL</span><input required type="url" value={form.base_url} onChange={(event) => update("base_url", event.target.value)} placeholder="https://api.example.com/v1" /></label>

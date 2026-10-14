@@ -44,6 +44,12 @@ type Input struct {
 	// HomeDir 是全局数据根的用户主目录；空值使用 os.UserHomeDir。
 	// 测试可显式注入临时目录，避免触碰真实用户数据。
 	HomeDir string
+	// UserRoot enables cloud restrictions; WorkDir remains the relative-path base.
+	UserRoot string
+	// TempDir is passed explicitly to temporary-file APIs and child environments.
+	TempDir string
+	// Repository is borrowed from the HTTP server and is never closed by Cleanup.
+	Repository session.SessionRepository
 	// ReadRoots are additional absolute, read-only roots for command-specific
 	// workflows such as evaluating one immutable session history.
 	ReadRoots []string
@@ -84,10 +90,14 @@ type Assembled struct {
 
 // newMainProvider copies the selected model and its effective limits into a
 // request-scoped provider. ReActService reads them via LLMClient.ContextBudget.
-func newMainProvider(homeDir string, models *ai_models.Manager) *llmprovider.OpenApiProvider {
+func newMainProvider(homeDir string, models *ai_models.Manager, direct bool) *llmprovider.OpenApiProvider {
 	c := models.Active()
+	gateway := config.Current.LlmRouterURL
+	if direct {
+		gateway = ""
+	}
 	provider := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, config.Current.LlmRouterURL,
+		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, gateway,
 		c.ContextWindow, c.MaxOutputTokens).WithReasoningEffort(c.ReasoningEffort)
 	if c.AuthType == "oauth" {
 		provider.WithChatGPT(homeDir, c.CredentialRef)
@@ -107,7 +117,18 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	if in.PlanMode && in.Mode != ModeCode {
 		return nil, fmt.Errorf("plan mode requires code mode")
 	}
-	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode, in.Tracer, in.Models)
+	if in.UserRoot != "" {
+		if err := tools.ValidateUserPath(in.UserRoot, in.WorkDir); err != nil {
+			return nil, err
+		}
+		if err := tools.ValidateUserPath(in.UserRoot, in.HomeDir); err != nil {
+			return nil, err
+		}
+		if err := tools.ValidateUserPath(in.UserRoot, in.TempDir); err != nil {
+			return nil, err
+		}
+	}
+	core, err := assembleCore(ctx, in.WorkDir, in.HomeDir, in.SessionID, in.Consumer, in.Mode == ModeCode, in.Tracer, in.Models, in.Repository, in.UserRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +144,9 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	if in.Mode == ModeCode {
 		skillsStart := time.Now()
 		skillSrc = skillrepo.New(homeDir)
+		if in.UserRoot != "" {
+			skillSrc = skillrepo.NewWithRoot(homeDir, in.UserRoot)
+		}
 		skills = prompt.LoadSkills(skillSrc, in.WorkDir, warnSkillSkip)
 		skillsRoot = layout.SkillsRoot(homeDir)
 		readRoots = append([]string{skillsRoot}, readRoots...)
@@ -136,18 +160,58 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	}
 	// Evaluation receives read-only inspection tools; code receives the complete coding profile.
 	var workFS tools.WorkFS = workfs.New()
+	if in.UserRoot != "" {
+		bounded, err := workfs.NewRoot(in.UserRoot)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		workFS = bounded
+		baseCleanup := cleanup
+		cleanup = func() { baseCleanup(); _ = bounded.Close() }
+		core.service.SetUserRoot(in.UserRoot)
+	}
 	toolReg := core.registry
-	ripgrepRunner := ripgrep.New()
-	toolReg.Register(tools.NewReadFileTool(in.WorkDir, workFS, readRoots...))
-	toolReg.Register(tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...))
-	toolReg.Register(tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...))
+	var ripgrepRunner tools.RipgrepRunner = ripgrep.New()
+	if in.UserRoot != "" {
+		bounded, err := ripgrep.NewRoot(in.UserRoot, in.HomeDir, in.TempDir)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		ripgrepRunner = bounded
+		baseCleanup := cleanup
+		cleanup = func() { baseCleanup(); _ = bounded.Close() }
+	}
+	read := tools.NewReadFileTool(in.WorkDir, workFS, readRoots...)
+	read.UserRoot = in.UserRoot
+	toolReg.Register(read)
+	grep := tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...)
+	grep.UserRoot = in.UserRoot
+	toolReg.Register(grep)
+	glob := tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...)
+	glob.UserRoot = in.UserRoot
+	toolReg.Register(glob)
 	if in.Mode == ModeCode {
-		shellRunner := shell.New()
+		newShell := func() tools.ShellRunner {
+			if in.UserRoot != "" {
+				return shell.NewWithHome(in.HomeDir, in.TempDir)
+			}
+			return shell.New()
+		}
+		shellRunner := newShell()
 		toolReg.Register(tools.NewBashTool(in.WorkDir, shellRunner, core.artifacts, sess.ID))
-		toolReg.Register(tools.NewWriteFileTool(in.WorkDir, workFS, writeRoots...))
-		toolReg.Register(tools.NewEditFileTool(in.WorkDir, workFS, writeRoots...))
+		write := tools.NewWriteFileTool(in.WorkDir, workFS, writeRoots...)
+		write.UserRoot = in.UserRoot
+		toolReg.Register(write)
+		edit := tools.NewEditFileTool(in.WorkDir, workFS, writeRoots...)
+		edit.UserRoot = in.UserRoot
+		toolReg.Register(edit)
 		toolReg.Register(tools.NewReadArtifactTool(core.artifacts, sess.ID))
 		skillStore := skillstore.New(skillsRoot)
+		if in.UserRoot != "" {
+			skillStore = skillstore.NewWithRoot(skillsRoot, in.UserRoot)
+		}
 		toolReg.Register(tools.NewCreateSkillTool(skillsRoot, skillStore))
 		toolReg.Register(tools.NewUpdateSkillTool(skillsRoot, skillStore))
 		toolReg.Register(reactservice.NewSubAgent(core.service, in.WorkDir,
@@ -158,12 +222,15 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 				SkillsRoot: skillsRoot,
 				// 每个子 Agent 各自新建：其 childReg.Close() 只回收自己派生的
 				// 后台进程，不会波及主 Agent 尚在运行的后台服务
-				NewShell: func() tools.ShellRunner { return shell.New() },
+				NewShell: newShell,
+				UserRoot: in.UserRoot, TempDir: in.TempDir,
 			}))
 		// 后端注入共享连接，装配只向本 Agent 的 registry 注册工具。
 		// 独立装配仍自行连接和回收；子 Agent 不接入 MCP 工具。
 		mcpStart := time.Now()
-		if in.MCPPool != nil {
+		if in.UserRoot != "" {
+			// Cloud prototype does not expose shared, unrestricted MCP tools.
+		} else if in.MCPPool != nil {
 			in.MCPPool.Register(toolReg)
 			telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPRegisterMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
 		} else {
@@ -200,6 +267,9 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 			return nil, fmt.Errorf("evaluate mode requires a system prompt")
 		}
 		sysPrompt = in.SystemPrompt
+	}
+	if in.UserRoot != "" {
+		sysPrompt += fmt.Sprintf("\n用户文件范围：%s。相对路径以 %s 为起点。HOME=%s。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。越界操作会直接返回错误。", in.UserRoot, in.WorkDir, in.HomeDir, in.TempDir)
 	}
 	err = svc.InitSysPrompt(ctx, sysPrompt)
 	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSysPromptInitMs.Float64(float64(time.Since(sysPromptStart)) / float64(time.Millisecond)))

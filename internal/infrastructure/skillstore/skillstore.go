@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -31,8 +32,9 @@ const (
 var ErrRevisionChanged = errors.New("skill package changed after preflight")
 
 type Store struct {
-	root string
-	mu   sync.Mutex
+	root     string
+	userRoot string
+	mu       sync.Mutex
 }
 
 func New(root string) *Store { return &Store{root: root} }
@@ -119,6 +121,29 @@ func (s *Store) Replace(ctx context.Context, name, expectedRevision string, file
 }
 
 func (s *Store) openRoot() (*os.Root, error) {
+	if s.userRoot != "" {
+		user, err := os.OpenRoot(s.userRoot)
+		if err != nil {
+			return nil, err
+		}
+		defer user.Close()
+		rel, err := filepath.Rel(s.userRoot, s.root)
+		if err != nil {
+			return nil, err
+		}
+		if err := user.MkdirAll(rel, dirPerm); err != nil {
+			return nil, err
+		}
+		root, err := user.OpenRoot(rel)
+		if err != nil {
+			return nil, err
+		}
+		if err := root.MkdirAll(tempDir, dirPerm); err != nil {
+			root.Close()
+			return nil, err
+		}
+		return root, nil
+	}
 	if err := os.MkdirAll(s.root, dirPerm); err != nil {
 		return nil, fmt.Errorf("create skills root: %w", err)
 	}
@@ -251,4 +276,8 @@ func randomSuffix() (string, error) {
 		return "", fmt.Errorf("generate skill staging name: %w", err)
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+func NewWithRoot(skillsRoot, userRoot string) *Store {
+	return &Store{root: skillsRoot, userRoot: userRoot}
 }

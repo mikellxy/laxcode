@@ -40,7 +40,7 @@ export function useWorkspace(userID: string) {
   const selectedProject = projects.data?.projects.find((project) => project.project_id === selectedProjectID);
 
   const createProjectMutation = useMutation({
-    mutationFn: ({ name, workDir }: { name: string; workDir: string }) => createProject(userID, name, workDir),
+    mutationFn: ({ name, workDir }: { name: string; workDir?: string }) => createProject(userID, name, workDir),
     onSuccess: async (created) => {
       client.setQueryData(["projects", userID], (old: Awaited<ReturnType<typeof listProjects>> | undefined) =>
         ({ projects: [created, ...(old?.projects ?? []).filter((project) => project.project_id !== created.project_id)] }));

@@ -13,10 +13,13 @@ import { ChatComposer } from "../components/chat-composer/ChatComposer";
 import { ProjectOnboarding } from "../components/project-onboarding/ProjectOnboarding";
 import { EvaluationPanel } from "../components/evaluation-panel/EvaluationPanel";
 import { pickDirectory } from "../api/directory-picker";
+import { requestJSON } from "../api/client";
 import { listModels } from "../api/models";
 import type { SessionDTO } from "../types/api";
 
 export function App() {
+  const mode = useQuery({ queryKey: ["server-config"], queryFn: () => requestJSON<{ cloud: boolean }>("/api/config") });
+  const cloud = mode.data?.cloud === true;
   const userID = useMemo(getOrCreateGuestID, []); const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [approvalSubmitting, setApprovalSubmitting] = useState(false); const [approvalError, setApprovalError] = useState("");
   const [sessionToDelete, setSessionToDelete] = useState<{ session: SessionDTO; label: string }>();
@@ -33,6 +36,15 @@ export function App() {
     if (pickingProject || workspace.createProject.isPending || workspace.createSession.isPending) return;
     setPickingProject(true);
     try {
+      if (cloud) {
+        const name = window.prompt("请输入项目名称（字母、数字、中横线、下划线）")?.trim();
+        if (!name) return;
+        if (!/^[A-Za-z0-9_-]{1,120}$/.test(name) || ["agenthome", "tmp"].includes(name.toLowerCase())) throw new Error("项目名称只能包含字母、数字、中横线、下划线，且不能为 agenthome 或 tmp");
+        await workspace.createProject.mutateAsync({ name });
+        await models.refetch();
+        setSidebarOpen(false);
+        return;
+      }
       const { path: workDir } = await pickDirectory();
       if (!workDir) return;
       const suggestedName = workDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
@@ -74,16 +86,17 @@ export function App() {
     const timer = window.setTimeout(() => setGearBounce((value) => value + 1), 500);
     return () => window.clearTimeout(timer);
   }, [modelLocked, workspace.projects.isSuccess, isFirstRun]);
-  const connectionError = workspace.projects.error ?? workspace.sessions.error;
-  if (workspace.projects.isError || workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{connectionError instanceof Error ? connectionError.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => { void workspace.projects.refetch(); void workspace.sessions.refetch(); }}>重新连接</button></div>;
+  const connectionError = mode.error ?? workspace.projects.error ?? workspace.sessions.error;
+  if (mode.isPending) return <div className="fatal"><p>正在连接 LaxCode…</p></div>;
+  if (mode.isError || workspace.projects.isError || workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{connectionError instanceof Error ? connectionError.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => { void mode.refetch(); void workspace.projects.refetch(); void workspace.sessions.refetch(); }}>重新连接</button></div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarOpen ? "mobile-sidebar-open" : ""}`}>
     <div className="mobile-backdrop" onClick={() => setSidebarOpen(false)} />
     <SessionTabs projects={projects} sessionsByProject={workspace.sessionsByProject} selectedID={workspace.selectedID} selectedProjectID={workspace.selectedProjectID} contextUsage={workspace.contextUsage.data} creatingProject={pickingProject || workspace.createProject.isPending} creatingSessionProjectID={workspace.createSession.isPending ? workspace.createSession.variables : undefined} deletingSessionID={workspace.deleteSession.isPending ? workspace.deleteSession.variables?.session_id : undefined} runningSessionIDs={workspace.runningSessionIDs} onSelect={(id) => { workspace.select(id); setSidebarOpen(false); }} onSelectProject={workspace.selectProject} onDeleteSession={(session, label) => { setDeleteError(""); setSessionToDelete({ session, label }); }} onCreateProject={() => void createProject()} onCreateSession={(projectID) => { workspace.startSession(projectID); setSidebarOpen(false); }} />
     <section className="workspace">
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div className="workspace-meta"><strong title={workDir}>{isFirstRun ? "欢迎使用 LaxCode" : workDir || "请选择项目"}</strong><small>{isFirstRun ? <span>创建项目后即可开始</span> : <>{selected && <span>session_id: {selected.session_id}</span>}{workspace.createSession.isPending ? <span>正在创建会话…</span> : workspace.stream.running ? <><i className="working-dot" />正在执行</> : <span>准备就绪</span>}</>}</small></div><EvaluationPanel key={selected?.session_id ?? "no-session"} sessionID={selected?.session_id} workDir={workDir} disabled={workspace.stream.running || modelLocked} /></header>
-      {isFirstRun ? <ProjectOnboarding creating={pickingProject || workspace.createProject.isPending || workspace.createSession.isPending} onCreate={() => void createProject()} /> : <>
+      {isFirstRun ? <ProjectOnboarding cloud={cloud} creating={pickingProject || workspace.createProject.isPending || workspace.createSession.isPending} onCreate={() => void createProject()} /> : <>
         <MessageList messages={messages} sessionID={workspace.selectedID} hasMore={Boolean(workspace.history.hasNextPage)} loading={workspace.history.isFetchingNextPage} initialLoading={workspace.history.isLoading} error={workspace.stream.error} retryAction={workspace.stream.retryAction} retrying={workspace.stream.running} onRetry={workspace.retry} onLoadMore={() => workspace.history.fetchNextPage()} />
-        <ModelPicker running={workspace.stream.running} bounceKey={gearBounce} />
+        <ModelPicker cloud={cloud} running={workspace.stream.running} bounceKey={gearBounce} />
         <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedProject || !workspace.sessions.isSuccess || workspace.history.isLoading || workspace.createSession.isPending || (workspace.deleteSession.isPending && workspace.deleteSession.variables?.session_id === workspace.selectedID)} locked={modelLocked} onLockedClick={() => setGearBounce((value) => value + 1)} onSend={workspace.send} onCancel={workspace.cancel} />
       </>}
       {workspace.stream.approval && <ConfirmDialog key={workspace.stream.approval.approval_id} variant="approval" title={workspace.stream.approval.kind === "skill_write"

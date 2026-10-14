@@ -2,6 +2,7 @@ package artifactstore
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -16,7 +17,8 @@ import (
 )
 
 type FileStore struct {
-	Root string
+	Root     string
+	UserRoot string
 }
 
 func New(root string) *FileStore { return &FileStore{Root: root} }
@@ -53,6 +55,9 @@ func (s *FileStore) PutArtifact(ctx context.Context, sessionID, content string) 
 		return sharedkernel.ArtifactRef{}, fmt.Errorf("artifact content is not valid UTF-8")
 	}
 	ref := sharedkernel.ArtifactRef{ID: artifactID([]byte(content)), ByteSize: len(content)}
+	if s.UserRoot != "" {
+		return s.putRooted(sessionID, content, ref)
+	}
 	path := filepath.Join(s.Root, sessionID, "artifacts", ref.ID)
 	if existing, err := os.ReadFile(path); err == nil {
 		if artifactID(existing) != ref.ID {
@@ -101,7 +106,7 @@ func (s *FileStore) ReadArtifact(ctx context.Context, sessionID, id string, offs
 	if offset < 0 || limit < 1 || limit > tools.MaxArtifactPageRunes {
 		return page, fmt.Errorf("invalid artifact page range")
 	}
-	root, err := os.OpenRoot(filepath.Join(s.Root, sessionID, "artifacts"))
+	root, err := s.artifactRoot(sessionID)
 	if err != nil {
 		return page, fmt.Errorf("open session artifacts: %w", err)
 	}
@@ -133,3 +138,69 @@ func (s *FileStore) ReadArtifact(ctx context.Context, sessionID, id string, offs
 }
 
 var _ tools.ArtifactStore = (*FileStore)(nil)
+
+func NewWithRoot(root, userRoot string) *FileStore { return &FileStore{Root: root, UserRoot: userRoot} }
+func (s *FileStore) artifactRoot(sessionID string) (*os.Root, error) {
+	target := filepath.Join(s.Root, sessionID, "artifacts")
+	if s.UserRoot == "" {
+		return os.OpenRoot(target)
+	}
+	root, err := os.OpenRoot(s.UserRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	rel, err := filepath.Rel(s.UserRoot, target)
+	if err != nil {
+		return nil, err
+	}
+	return root.OpenRoot(rel)
+}
+func (s *FileStore) putRooted(sessionID, content string, ref sharedkernel.ArtifactRef) (sharedkernel.ArtifactRef, error) {
+	root, err := os.OpenRoot(s.UserRoot)
+	if err != nil {
+		return ref, err
+	}
+	defer root.Close()
+	dir, err := filepath.Rel(s.UserRoot, filepath.Join(s.Root, sessionID, "artifacts"))
+	if err != nil {
+		return ref, err
+	}
+	if err := root.MkdirAll(dir, 0700); err != nil {
+		return ref, err
+	}
+	name := filepath.Join(dir, ref.ID)
+	if data, err := root.ReadFile(name); err == nil {
+		if artifactID(data) != ref.ID {
+			return ref, fmt.Errorf("artifact digest mismatch")
+		}
+		return ref, nil
+	} else if !os.IsNotExist(err) {
+		return ref, err
+	}
+	temp := filepath.Join(dir, "artifact-"+rand.Text())
+	f, err := root.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return ref, err
+	}
+	defer root.Remove(temp)
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		return ref, err
+	}
+	if err := f.Sync(); err != nil {
+		return ref, err
+	}
+	if err := f.Close(); err != nil {
+		return ref, err
+	}
+	if err := root.Rename(temp, name); err != nil {
+		return ref, err
+	}
+	d, err := root.Open(dir)
+	if err != nil {
+		return ref, err
+	}
+	defer d.Close()
+	return ref, d.Sync()
+}

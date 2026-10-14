@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -386,4 +387,43 @@ func TestRunBackgroundServerIntegration(t *testing.T) {
 		t.Fatalf("kill Run() error = %v", err)
 	}
 	waitProcDead(t, pid)
+}
+
+func TestUserEnvironmentIsPerChild(t *testing.T) {
+	serverHome, serverTemp := os.Getenv("HOME"), os.Getenv("TMPDIR")
+	root := t.TempDir()
+	var wg sync.WaitGroup
+	for _, name := range []string{"first", "second"} {
+		home, temp := filepath.Join(root, name, "home"), filepath.Join(root, name, "tmp")
+		if err := os.MkdirAll(home, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(temp, 0700); err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runner := NewWithHome(home, temp)
+			defer runner.Close()
+			got, err := runner.Run(context.Background(), home, `printf '%s\n' "$HOME" "$TMPDIR" "$TMP" "$TEMP"; mktemp "$TMPDIR/tmp.XXXXXX"`, time.Second)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			lines := strings.Split(strings.TrimSpace(got.Output), "\n")
+			if len(lines) != 5 || lines[0] != home || lines[1] != temp || lines[2] != temp || lines[3] != temp || !strings.HasPrefix(lines[4], temp+string(filepath.Separator)) {
+				t.Errorf("child env: %q", got.Output)
+			}
+			for _, proc := range runner.procs {
+				if !strings.HasPrefix(proc.tempfile, temp+string(filepath.Separator)) {
+					t.Error("output temporary file outside user tmp")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if os.Getenv("HOME") != serverHome || os.Getenv("TMPDIR") != serverTemp {
+		t.Fatal("server environment changed")
+	}
 }

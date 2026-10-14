@@ -1,20 +1,21 @@
 import { ArrowRight, FolderPlus, LoaderCircle } from "lucide-react";
 
 type Props = {
+  cloud: boolean;
   creating: boolean;
   onCreate: () => void;
 };
 
-export function ProjectOnboarding({ creating, onCreate }: Props) {
+export function ProjectOnboarding({ cloud, creating, onCreate }: Props) {
   return <main className="project-onboarding">
     <section className="project-onboarding-card">
       <span className="project-onboarding-icon"><FolderPlus size={27} strokeWidth={1.8} /></span>
       <span className="project-onboarding-eyebrow">WELCOME TO LAXCODE</span>
       <h1>创建你的第一个工作空间</h1>
-      <p>选择一个本地代码目录，创建项目后即可开始聊天。</p>
+      <p>{cloud ? "输入项目名称，创建云端工作空间后即可开始聊天。" : "选择一个本地代码目录，创建项目后即可开始聊天。"}</p>
       <button className="project-onboarding-action" onClick={onCreate} disabled={creating}>
         {creating ? <LoaderCircle className="spin" size={18} /> : <FolderPlus size={18} />}
-        <span>{creating ? "正在创建工作空间…" : "选择项目目录"}</span>
+        <span>{creating ? "正在创建工作空间…" : cloud ? "创建项目" : "选择项目目录"}</span>
         {!creating && <ArrowRight size={17} />}
       </button>
       <small>项目数据仅保存在当前 LaxCode 服务中</small>

@@ -63,6 +63,10 @@ func (*Runner) Search(ctx context.Context, cwd, file, pattern, include string, l
 	args = append(args, "--glob=!**/.git/**", "--", pattern, file)
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = cwd
+	return runSearch(ctx, cmd, limit)
+}
+
+func runSearch(ctx context.Context, cmd *exec.Cmd, limit int) (tools.GrepSearchResult, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return tools.GrepSearchResult{}, err

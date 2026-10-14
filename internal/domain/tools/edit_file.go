@@ -24,6 +24,7 @@ type editFileArgs struct {
 }
 
 type EditFileTool struct {
+	UserRoot   string
 	WorkDir    string
 	WriteRoots []string
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
@@ -38,11 +39,14 @@ func NewEditFileTool(workDir string, workFS WorkFS, writeRoots ...string) *EditF
 // （含 symlink 重定向探测）则返回 nil 不打扰；参数类错误交由 Execute 走
 // 标准错误路径（返回 nil, nil）。
 func (e *EditFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
+	if e.UserRoot != "" {
+		return nil, nil
+	}
 	var a editFileArgs
 	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Path) == "" {
 		return nil, nil
 	}
-	_, _, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, a.Path)
+	_, _, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, a.Path, e.UserRoot)
 	if err == nil {
 		return nil, nil
 	}
@@ -135,10 +139,10 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		}
 	}
 
-	target, displayRoot, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, argsObj.Path)
+	target, displayRoot, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, argsObj.Path, e.UserRoot)
 	if err != nil {
 		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) || !GrantAllows(ctx, ose.Requested) {
+		if !errors.As(err, &ose) || e.UserRoot != "" || !GrantAllows(ctx, ose.Requested) {
 			return "", err
 		}
 		// 人工批准的沙箱外访问：放行确认过的目标

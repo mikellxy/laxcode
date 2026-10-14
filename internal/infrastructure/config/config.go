@@ -42,6 +42,7 @@ type Conf struct {
 	LlmRouterURL    string
 	Addr            string
 	Plan            bool
+	Cloud           bool
 }
 
 type Provider struct {
@@ -93,6 +94,7 @@ type fileConf struct {
 type cliConf struct {
 	Addr          string `mapstructure:"addr"`
 	Plan          bool   `mapstructure:"plan"`
+	Cloud         bool   `mapstructure:"cloud"`
 	ModelName     string `mapstructure:"model"`
 	OpenaiApiKey  string `mapstructure:"openai_api_key"`
 	OpenaiBaseUrl string `mapstructure:"openai_base_url"`
@@ -130,6 +132,11 @@ func Load(homeDir string, args []string) (Conf, error) {
 	if err := ApplyEnvFile(homeDir); err != nil {
 		return Conf{}, err
 	}
+	return LoadSettings(homeDir, args)
+}
+
+// LoadSettings reads settings and flags without changing process environment.
+func LoadSettings(homeDir string, args []string) (Conf, error) {
 	file, err := parseFile(homeDir)
 	if err != nil {
 		return Conf{}, err
@@ -181,6 +188,7 @@ func parseCLI(args []string) (cliConf, error) {
 	}
 	flags.StringVar(&cli.Addr, "addr", DefaultSSEAddr, "Web backend listen address")
 	flags.BoolVar(&cli.Plan, "plan", false, "enable plan mode")
+	flags.BoolVar(&cli.Cloud, "cloud", false, "enable cloud prototype with per-user workspaces")
 	flags.StringVar(&cli.ModelName, "model", "", "upstream model name (requires API key and base URL)")
 	flags.StringVar(&cli.OpenaiApiKey, "openai_api_key", "", "API key for the CLI model")
 	flags.StringVar(&cli.OpenaiBaseUrl, "openai_base_url", "", "base URL for the CLI model")
@@ -200,7 +208,7 @@ func merge(file fileConf, cli cliConf) (Conf, error) {
 	if file.LlmRouterAddr != "" {
 		conf.LlmRouterAddr = file.LlmRouterAddr
 	}
-	conf.Addr, conf.Plan = cli.Addr, cli.Plan
+	conf.Addr, conf.Plan, conf.Cloud = cli.Addr, cli.Plan, cli.Cloud
 	for _, provider := range conf.ProviderList {
 		if provider.ProviderName == CLIProviderName {
 			return Conf{}, fmt.Errorf("provider_name %q is reserved for CLI configuration", CLIProviderName)

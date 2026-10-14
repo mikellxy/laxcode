@@ -13,6 +13,7 @@ type ModelSwitcher struct {
 	mu     sync.RWMutex
 	router RouterClientReplacer
 	models *ai_models.Manager
+	direct bool
 }
 
 var ErrRouterUnavailable = errors.New("model switching requires a running LLM router")
@@ -21,13 +22,18 @@ func NewModelSwitcher(router RouterClientReplacer, models *ai_models.Manager) *M
 	return &ModelSwitcher{router: router, models: models}
 }
 
+// NewDirectModelSwitcher keeps cloud users independent of the shared router.
+func NewDirectModelSwitcher(models *ai_models.Manager) *ModelSwitcher {
+	return &ModelSwitcher{models: models, direct: true}
+}
+
 func (s *ModelSwitcher) RLock()   { s.mu.RLock() }
 func (s *ModelSwitcher) RUnlock() { s.mu.RUnlock() }
 func (s *ModelSwitcher) Lock()    { s.mu.Lock() }
 func (s *ModelSwitcher) Unlock()  { s.mu.Unlock() }
 
 func (s *ModelSwitcher) SwitchModel(ref string, effort ...string) error {
-	if s == nil || s.router == nil {
+	if s == nil || (s.router == nil && !s.direct) {
 		return ErrRouterUnavailable
 	}
 	s.mu.Lock()
@@ -38,8 +44,11 @@ func (s *ModelSwitcher) SwitchModel(ref string, effort ...string) error {
 // SwitchModelLocked publishes a validated selection and its client under the
 // same lock used by agent assembly and Chat/Resume. Failure keeps both unchanged.
 func (s *ModelSwitcher) SwitchModelLocked(ref string, effort ...string) error {
-	if s == nil || s.router == nil {
+	if s == nil || (s.router == nil && !s.direct) {
 		return ErrRouterUnavailable
+	}
+	if s.direct {
+		return s.models.SetActiveModel(ref, effort...)
 	}
 	client, err := s.models.StreamClient(ref, effort...)
 	if err != nil {

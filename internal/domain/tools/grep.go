@@ -47,6 +47,7 @@ type grepArgs struct {
 }
 
 type GrepTool struct {
+	UserRoot  string
 	WorkDir   string
 	ReadRoots []string
 	Runner    RipgrepRunner
@@ -101,7 +102,7 @@ func (g *GrepTool) ExecuteResult(ctx context.Context, raw json.RawMessage) *shar
 		return &sharedkernel.ToolResult{Error: errors.New("grep runner is not configured")}
 	}
 
-	requested, allowedRoot, err := resolveReadTarget(g.WorkDir, g.ReadRoots, a.Path)
+	requested, allowedRoot, err := resolveReadTarget(g.WorkDir, g.ReadRoots, a.Path, g.UserRoot)
 	if err != nil {
 		return &sharedkernel.ToolResult{Error: NewErrorWithPrompt(&FilePathError{}, err)}
 	}

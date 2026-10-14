@@ -45,27 +45,27 @@
 - `cmd/run_sse/tracing.go`：`func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agentasm.Assembled, err error)`
 - `cmd/agentasm/agentasm.go`：`func Assemble(ctx context.Context, in Input) (*Assembled, error)`
 
-### 按用户主目录创建会话及 SQLite 仓储，确定上下文的持久化位置
+### 按用户主目录创建会话，复用注入仓储或创建 SQLite 仓储以确定上下文的持久化位置
 
-- `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager) (*coreAssembly, error)`
+- `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager, suppliedRepo session.SessionRepository, userRoot string) (*coreAssembly, error)`
 - `cmd/agentasm/agentasm.go`：`func resolveHomeDir(explicit string) (string, error)`
 - `internal/infrastructure/sessionrepo/sqlite.go`：`func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error)`
 
 ### 根据运行模式创建归档存储，并注册读取归档原文的工具
 
-- `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager) (*coreAssembly, error)`
+- `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager, suppliedRepo session.SessionRepository, userRoot string) (*coreAssembly, error)`
 - `cmd/agentasm/agentasm.go`：`func Assemble(ctx context.Context, in Input) (*Assembled, error)`
 - `internal/domain/tools/read_artifact.go`：`func NewReadArtifactTool(store ArtifactStore, sessionID string) *ReadArtifactTool`
 
-### 按当前主模型创建客户端，注入预算、认证和流式路由器连接
+### 按当前主模型创建客户端并注入预算和认证，云端直连上游，本地使用流式路由器
 
-- `cmd/agentasm/agentasm.go`：`func newMainProvider(homeDir string, models *ai_models.Manager) *llmprovider.OpenApiProvider`
+- `cmd/agentasm/agentasm.go`：`func newMainProvider(homeDir string, models *ai_models.Manager, direct bool) *llmprovider.OpenApiProvider`
 - `internal/infrastructure/llmprovider/openai_impl.go`：`func NewOpenApiProviderWithStreamGateway(apiKey, baseURL, model, streamGatewayURL string, budgetValues ...int) *OpenApiProvider`
 - `internal/infrastructure/llmprovider/openai_impl.go`：`func (p *OpenApiProvider) WithChatGPT(homeDir, credentialRef string) *OpenApiProvider`
 
 ### 按压缩模型创建独立摘要客户端，使用该模型自己的预算和连接
 
-- `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager) (*coreAssembly, error)`
+- `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager, suppliedRepo session.SessionRepository, userRoot string) (*coreAssembly, error)`
 - `internal/infrastructure/llmprovider/openai_impl.go`：`func NewOpenApiProvider(apiKey, baseURL, model string, budgetValues ...int) *OpenApiProvider`
 
 ### 将会话、仓储、模型客户端、工具注册表和归档存储注入 ReActService

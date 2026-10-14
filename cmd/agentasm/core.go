@@ -32,7 +32,7 @@ type coreAssembly struct {
 }
 
 func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
-	consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager) (*coreAssembly, error) {
+	consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager, suppliedRepo session.SessionRepository, userRoot string) (*coreAssembly, error) {
 	homeDir, err := resolveHomeDir(explicitHome)
 	if err != nil {
 		return nil, err
@@ -44,7 +44,16 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 		}
 	}
 	repoStart := time.Now()
-	repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
+	repo := suppliedRepo
+	closeRepo := func() {}
+	if repo == nil {
+		owned, openErr := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
+		err = openErr
+		if owned != nil {
+			repo = owned
+			closeRepo = func() { _ = owned.Close() }
+		}
+	}
 	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleRepoInitMs.Float64(float64(time.Since(repoStart)) / float64(time.Millisecond)))
 	if err != nil {
 		return nil, err
@@ -54,7 +63,7 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	if tracer == nil {
 		traceHandle, err = newTraceHandle(ctx, layout.TracingLog(homeDir, sess.ID))
 		if err != nil {
-			_ = repo.Close()
+			closeRepo()
 			return nil, fmt.Errorf("init tracing: %w", err)
 		}
 		tracer = traceHandle.Tracer
@@ -63,6 +72,9 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	var artifacts tools.ArtifactStore
 	if withArtifacts {
 		artifacts = artifactstore.New(layout.SessionRoot(homeDir))
+		if userRoot != "" {
+			artifacts = artifactstore.NewWithRoot(layout.SessionRoot(homeDir), userRoot)
+		}
 	}
 
 	c := models.Compaction()
@@ -73,7 +85,7 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	service := reactservice.NewReActService(
 		sess,
 		repo,
-		newMainProvider(homeDir, models),
+		newMainProvider(homeDir, models, userRoot != ""),
 		summaryProvider,
 		registry,
 		consumer,
@@ -86,7 +98,7 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	cleanup := func() {
 		once.Do(func() {
 			_ = registry.Close()
-			_ = repo.Close()
+			closeRepo()
 			if traceHandle != nil {
 				_ = traceHandle.Shutdown(context.WithoutCancel(ctx))
 			}

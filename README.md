@@ -137,3 +137,27 @@ LaxCode/
 │       ├── hooks/                   # 工作区等可复用 React Hooks
 │       └── types/                   # 前端 API 与消息类型
 ```
+
+
+### 云端原型
+
+运行 `./cloud.sh` 构建并启动后端和 Web UI。Web 默认监听 `0.0.0.0:5173`，可用
+`LAXCODE_CLOUD_PORT=5180 ./cloud.sh` 修改端口；后端只监听本机，并通过 Web 服务代理。
+直接启动后端时使用 `./bin/laxcode -cloud`，该参数由现有 config 解析流程处理。
+
+云端项目只输入名称（1–120 个英文字母、数字、中横线、下划线；`agenthome`、`tmp`
+为保留名称），同一用户的重名项目返回 409。首次创建项目初始化
+`~/laxcode/{user_id}/agenthome/.laxcode`、用户 SQLite 与技能模板；项目工作目录是
+`~/laxcode/{user_id}/{project_name}`。默认 API Key 模型配置与 skills 从服务账户的
+`.laxcode` 复制，OAuth 凭据、历史和 MCP 配置不会复制；后续用户配置互相独立。
+
+浏览器继续用访客 UUID cookie 分流。直接调用 API 时可传 `X-Laxcode-User-ID` UUID
+请求头；原有项目/session 接口中的 `user_id` 仍保留，多个来源的身份必须一致。
+`GET /api/config` 返回 cloud 标记。OAuth、目录选择、人工审批和共享 MCP 在此模式下关闭。
+
+文件工具的相对路径从项目 workdir 解析，允许访问整个用户根，越界直接返回工具错误。
+每用户共用 `tmp`，仅子进程设置 HOME、TMPDIR、TMP、TEMP，服务进程环境不受请求影响。
+云端 grep/glob 通过受限文件句柄操作，跳过符号链接与 `.git`，当前未应用 `.gitignore`。
+
+此版本用于受信任用户的原型验证：访客 UUID 不是登录鉴权，Bash 静态风险检查也不是
+操作系统沙箱。Bash 及其启动的程序仍可能访问用户目录之外的宿主机资源。

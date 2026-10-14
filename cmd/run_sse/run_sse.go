@@ -2,12 +2,14 @@ package run_sse
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -60,44 +62,30 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 			_ = traceHandle.Shutdown(ctx)
 		}()
 	}
-	s.switcher = agentasm.NewModelSwitcher(router, models)
-	historyRepo, err := sessionrepo.NewSqliteSessionRepo(
-		layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
-	if err != nil {
-		return fmt.Errorf("init session history repository: %w", err)
+	if !config.Current.Cloud {
+		s.switcher = agentasm.NewModelSwitcher(router, models)
+		historyRepo, err := sessionrepo.NewSqliteSessionRepo(
+			layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
+		if err != nil {
+			return fmt.Errorf("init session history repository: %w", err)
+		}
+		defer historyRepo.Close()
+		s.history = historyRepo
+		s.catalog = historyRepo
+		s.projects = historyRepo
+		s.contextRepo = historyRepo
+		s.evaluations = historyRepo
+		if err := historyRepo.FailActiveEvaluationJobs(context.Background(), "evaluation interrupted by server restart"); err != nil {
+			return fmt.Errorf("reconcile evaluation jobs: %w", err)
+		}
 	}
-	defer historyRepo.Close()
-	s.history = historyRepo
-	s.catalog = historyRepo
-	s.projects = historyRepo
-	s.contextRepo = historyRepo
-	s.evaluations = historyRepo
-	if err := historyRepo.FailActiveEvaluationJobs(context.Background(), "evaluation interrupted by server restart"); err != nil {
-		return fmt.Errorf("reconcile evaluation jobs: %w", err)
+	mux := s.routes()
+	var handler http.Handler = mux
+	if config.Current.Cloud {
+		users := newCloudUsers(homeDir, s.tracer)
+		defer users.Close()
+		handler = users
 	}
-	mux := http.NewServeMux()
-	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
-	// 无需在各 handler 内重复判方法。
-	mux.HandleFunc("POST /chat", s.handleChat)
-	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
-	mux.HandleFunc("POST /api/sessions/{session_id}/approvals/{approval_id}", s.handleApproval)
-	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
-	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
-	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
-	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
-	mux.HandleFunc("GET /api/projects", s.handleListProjects)
-	mux.HandleFunc("POST /api/directory-picker", s.handlePickDirectory)
-	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
-	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
-	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
-	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
-	mux.HandleFunc("GET /api/models", s.handleListModels)
-	mux.HandleFunc("POST /api/models", s.handleAddModel)
-	mux.HandleFunc("POST /api/auth/chatgpt", s.handleChatGPTLogin)
-	mux.HandleFunc("GET /api/auth/chatgpt/{login_id}", s.handleChatGPTStatus)
-	mux.HandleFunc("DELETE /api/auth/chatgpt/{login_id}", s.handleChatGPTCancel)
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -108,7 +96,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 		return fmt.Errorf("listen SSE server on %s: %w", config.Current.Addr, err)
 	}
 	actualAddr := listener.Addr().String()
-	srv := &http.Server{Addr: actualAddr, Handler: mux}
+	srv := &http.Server{Addr: actualAddr, Handler: handler}
 	if err := codeInstance.Publish("http://" + actualAddr); err != nil {
 		_ = listener.Close()
 		return err
@@ -116,15 +104,21 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 	// 每条 MCP 连接只在服务启动时初始化，完成后才接收请求。即使连接失败
 	// 也注入空池，避免每个请求重新启动坏 server。连接不绑定任何 chat context。
 	// ponytail: 暂不自动重连；运行中断线需重启服务恢复。
-	s.mcpPool = agentasm.ConnectMCPServers(ctx)
-	defer s.mcpPool.Close()
+	if !config.Current.Cloud {
+		s.mcpPool = agentasm.ConnectMCPServers(ctx)
+		defer s.mcpPool.Close()
+	}
 	if ctx.Err() != nil {
 		_ = listener.Close()
 		return nil
 	}
 
-	fmt.Printf("LaxCode SSE code listening on %s (data: %s)\n", actualAddr, layout.Root(homeDir))
-	fmt.Printf(">>> create a session with work_dir, then POST /chat with its session_id\n")
+	if config.Current.Cloud {
+		fmt.Printf("LaxCode cloud prototype listening on %s (users: %s)\n", actualAddr, filepath.Join(homeDir, "laxcode"))
+	} else {
+		fmt.Printf("LaxCode SSE code listening on %s (data: %s)\n", actualAddr, layout.Root(homeDir))
+	}
+	fmt.Printf(">>> create a project and session, then POST /chat with its session_id\n")
 
 	// 监听在独立 goroutine：ListenAndServe 阻塞至服务关闭；ErrServerClosed 是
 	// Shutdown/Close 的正常结果，其余错误（如端口占用）经 errChan 回流主 goroutine。
@@ -151,4 +145,36 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 	}
 	s.stopEvaluations()
 	return serveErr
+}
+
+func (s *server) routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
+	// 无需在各 handler 内重复判方法。
+	mux.HandleFunc("POST /chat", s.handleChat)
+	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	mux.HandleFunc("POST /api/sessions/{session_id}/approvals/{approval_id}", s.handleApproval)
+	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
+	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
+	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+	mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	mux.HandleFunc("POST /api/directory-picker", s.handlePickDirectory)
+	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
+	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
+	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
+	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
+	mux.HandleFunc("GET /api/models", s.handleListModels)
+	mux.HandleFunc("POST /api/models", s.handleAddModel)
+	mux.HandleFunc("POST /api/auth/chatgpt", s.handleChatGPTLogin)
+	mux.HandleFunc("GET /api/auth/chatgpt/{login_id}", s.handleChatGPTStatus)
+	mux.HandleFunc("DELETE /api/auth/chatgpt/{login_id}", s.handleChatGPTCancel)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"cloud": s.userRoot != ""})
+	})
+
+	return mux
 }

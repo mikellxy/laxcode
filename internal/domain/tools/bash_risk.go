@@ -12,15 +12,15 @@ import (
 // predict expansions or the effects of arbitrary programs, so uncertain forms
 // also require a human decision. workDir is the base directory for judging
 // whether file redirect targets stay within the permitted scope.
-func AssessBashRisk(command, workDir string) (reason string, risky bool) {
+func AssessBashRisk(command, workDir string, userRoots ...string) (reason string, risky bool) {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil {
 		return fmt.Sprintf("无法解析 Bash 命令: %v", err), true
 	}
-	return assessBashTree(file, workDir)
+	return assessBashTree(file, workDir, userRoots...)
 }
 
-func assessBashTree(file *syntax.File, workDir string) (string, bool) {
+func assessBashTree(file *syntax.File, workDir string, userRoots ...string) (string, bool) {
 	var reason string
 	syntax.Walk(file, func(node syntax.Node) bool {
 		if reason != "" || node == nil {
@@ -28,9 +28,12 @@ func assessBashTree(file *syntax.File, workDir string) (string, bool) {
 		}
 		switch n := node.(type) {
 		case *syntax.Redirect:
-			reason = assessBashRedirect(n, workDir)
+			reason = assessBashRedirect(n, workDir, userRoots...)
 		case *syntax.CallExpr:
 			reason = assessBashCall(n)
+			if reason == "" && len(userRoots) > 0 && userRoots[0] != "" {
+				reason = assessCloudBashArgs(n, workDir, userRoots[0])
+			}
 		}
 		return reason == ""
 	})
@@ -40,10 +43,14 @@ func assessBashTree(file *syntax.File, workDir string) (string, bool) {
 // assessBashRedirect 放行 fd 复制/关闭（2>&1、>&-）与输入重定向（<、<<、<<<）；
 // 输出到文件的重定向（>、>>、>|、<>、>&file、&>）只放行 workdir、/tmp 与
 // /dev/null 内的目标，其余（含动态目标、~ 展开、.. 与符号链接逃逸）需人工确认。
-func assessBashRedirect(n *syntax.Redirect, workDir string) string {
+func assessBashRedirect(n *syntax.Redirect, workDir string, userRoots ...string) string {
 	switch n.Op {
-	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+	case syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
 		return ""
+	case syntax.RdrIn:
+		if len(userRoots) == 0 || userRoots[0] == "" {
+			return ""
+		}
 	case syntax.DplIn, syntax.DplOut:
 		if target, ok := staticBashWord(n.Word); ok && bashIsFdRef(target) {
 			return ""
@@ -56,7 +63,7 @@ func assessBashRedirect(n *syntax.Redirect, workDir string) string {
 	if target == "" {
 		return "重定向目标为空，无法确认写入位置"
 	}
-	if !bashRedirectTargetAllowed(target, workDir) {
+	if !bashRedirectTargetAllowed(target, workDir, userRoots...) {
 		return "命令重定向写入受限范围之外的文件: " + target
 	}
 	return ""
@@ -79,7 +86,7 @@ func bashIsFdRef(target string) bool {
 // bashRedirectTargetAllowed 判断输出重定向目标是否落在放行范围：
 // /dev/null、/tmp 内或 workdir 内。相对路径按 workdir 解析；目标经 ..
 // 或符号链接指向范围之外时判为不允许。workDir 为空时相对路径一律不允许。
-func bashRedirectTargetAllowed(target, workDir string) bool {
+func bashRedirectTargetAllowed(target, workDir string, userRoots ...string) bool {
 	if target == "/dev/null" {
 		return true
 	}
@@ -91,6 +98,9 @@ func bashRedirectTargetAllowed(target, workDir string) bool {
 			return false
 		}
 		target = filepath.Join(workDir, target)
+	}
+	if len(userRoots) > 0 && userRoots[0] != "" {
+		return ValidateUserPath(userRoots[0], target) == nil
 	}
 	target = resolveBashRedirectPath(filepath.Clean(target))
 	if bashPathWithin(target, "/tmp") {
@@ -238,4 +248,36 @@ func hasBashArgPrefix(args []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// shortcut: shell syntax cannot reveal files accessed by arbitrary programs;
+// replace this prototype check with OS isolation before public untrusted use.
+func assessCloudBashArgs(call *syntax.CallExpr, workDir, userRoot string) string {
+	for _, word := range call.Args[1:] {
+		value, ok := staticBashWord(word)
+		if !ok {
+			return "命令参数含动态展开，cloud 模式无法确认访问范围"
+		}
+		if strings.HasPrefix(value, "-") {
+			if i := strings.IndexByte(value, '='); i >= 0 {
+				value = value[i+1:]
+			}
+		}
+		if strings.HasPrefix(value, "~") {
+			return "cloud 模式无法确认波浪号路径"
+		}
+		if filepath.IsAbs(value) || value == ".." || strings.HasPrefix(value, "../") {
+			if value == "/dev/null" {
+				continue
+			}
+			target := value
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(workDir, target)
+			}
+			if err := ValidateUserPath(userRoot, target); err != nil {
+				return "命令参数位于用户目录之外: " + value
+			}
+		}
+	}
+	return ""
 }

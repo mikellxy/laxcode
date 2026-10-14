@@ -127,3 +127,38 @@ func TestWriteFileParentDirError(t *testing.T) {
 		t.Errorf("err = %v, want it to mention %q", err, "create parent dir")
 	}
 }
+
+func TestRootRejectsSymlinkIntroducedAfterPreflight(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	bounded, err := NewRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bounded.Close()
+	dir := filepath.Join(root, "safe")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(target, []byte("safe"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "file.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bounded.OpenRead(target); err == nil {
+		t.Fatal("escaped read")
+	}
+	if err := bounded.WriteFile(target, []byte("changed")); err == nil {
+		t.Fatal("escaped write")
+	}
+	if data, _ := os.ReadFile(filepath.Join(outside, "file.txt")); string(data) != "secret" {
+		t.Fatal("outside file changed")
+	}
+}

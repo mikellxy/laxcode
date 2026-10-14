@@ -12,6 +12,7 @@ import (
 )
 
 type WriteFileTool struct {
+	UserRoot   string
 	WorkDir    string
 	WriteRoots []string
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
@@ -26,6 +27,9 @@ func NewWriteFileTool(workDir string, workFS WorkFS, writeRoots ...string) *Writ
 // （含 symlink 重定向探测）则返回 nil 不打扰；参数类错误交由 Execute 走
 // 标准错误路径（返回 nil, nil）。
 func (w *WriteFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
+	if w.UserRoot != "" {
+		return nil, nil
+	}
 	var argsMap map[string]string
 	if err := json.Unmarshal(raw, &argsMap); err != nil {
 		return nil, nil
@@ -34,7 +38,7 @@ func (w *WriteFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (
 	if strings.TrimSpace(path) == "" {
 		return nil, nil
 	}
-	_, _, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path)
+	_, _, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path, w.UserRoot)
 	if err == nil {
 		return nil, nil
 	}
@@ -107,10 +111,10 @@ func (w *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("content required"))
 	}
 
-	target, displayRoot, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path)
+	target, displayRoot, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path, w.UserRoot)
 	if err != nil {
 		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) || !GrantAllows(ctx, ose.Requested) {
+		if !errors.As(err, &ose) || w.UserRoot != "" || !GrantAllows(ctx, ose.Requested) {
 			return "", NewErrorWithPrompt(&FilePathError{}, err)
 		}
 		// 人工批准的沙箱外访问：放行确认过的目标

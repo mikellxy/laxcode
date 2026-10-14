@@ -31,6 +31,8 @@ const (
 
 // Runner 是基于 os/exec 的 tools.ShellRunner 实现，与一次 agent 运行同生命周期。
 type Runner struct {
+	homeDir string
+	tempDir string
 	// procs 登记每次调用派生的进程与输出临时文件，供 Close 统一回收
 	// LLM 遗忘清理的后台进程
 	mu    sync.Mutex
@@ -62,13 +64,16 @@ func (r *Runner) Run(ctx context.Context, workDir, command string, timeout time.
 	// 输出落临时文件而非 CombinedOutput 的内部管道：后台子进程继承的
 	// 管道写端会让 Wait 永久阻塞（超时也救不了）；文件句柄则随主命令
 	// 退出即可返回，后台进程还能继续安全写入
-	tmp, err := os.CreateTemp("", tempFilePattern)
+	tmp, err := os.CreateTemp(r.tempDir, tempFilePattern)
 	if err != nil {
 		return tools.ShellOutcome{}, fmt.Errorf("创建命令输出临时文件失败: %w", err)
 	}
 
 	cmd := exec.CommandContext(ctx, shellBin, "-o", "pipefail", "-c", command)
 	cmd.Dir = workDir
+	if r.homeDir != "" {
+		cmd.Env = append(cmd.Environ(), "HOME="+r.homeDir, "TMPDIR="+r.tempDir, "TMP="+r.tempDir, "TEMP="+r.tempDir)
+	}
 	cmd.Stdout = tmp
 	cmd.Stderr = tmp
 	// 独立进程组 + 覆盖 CommandContext 默认的"只杀直接子进程"；两者都必须在
@@ -131,3 +136,6 @@ func (r *Runner) track(pid int, tempfile string) {
 	defer r.mu.Unlock()
 	r.procs = append(r.procs, procRecord{pid: pid, tempfile: tempfile})
 }
+
+// NewWithHome configures only spawned processes; the server environment stays unchanged.
+func NewWithHome(homeDir, tempDir string) *Runner { return &Runner{homeDir: homeDir, tempDir: tempDir} }

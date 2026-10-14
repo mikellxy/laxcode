@@ -12,6 +12,7 @@ import (
 	"github.com/mikellxy/laxcode/cmd/run_sse"
 	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
 	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
@@ -30,9 +31,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
-	models, err := agentasm.NewModels(homeDir)
-	if err != nil {
-		panic(err)
+	var models *ai_models.Manager
+	if !config.Current.Cloud {
+		models, err = agentasm.NewModels(homeDir)
+		if err != nil {
+			panic(err)
+		}
 	}
 	codeInstance, err := run_sse.AcquireCodeInstanceGuard(homeDir)
 	if err != nil {
@@ -47,6 +51,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer logFile.Close()
+
+	if config.Current.Cloud {
+		run_sse.Run(nil, codeInstance, nil)
+		return
+	}
 
 	// 模型路由器独立使用 llmrouter.log；先在 goroutine 中启动
 	// 本地 HTTP server，再把实际端点写入运行时配置供 agentasm 注入 provider。

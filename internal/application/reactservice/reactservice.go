@@ -35,7 +35,8 @@ type ReActService struct {
 	tracer telemetry.Tracer
 	// workDir 是 bash 危险命令检查的基准目录：输出重定向只放行该目录、
 	// /tmp 与 /dev/null 内的目标。经 SetWorkDir 由组合根注入。
-	workDir string
+	workDir  string
+	userRoot string
 }
 
 var (
@@ -517,7 +518,10 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 			Command string `json:"command"`
 		}
 		if json.Unmarshal(call.Arguments, &args) == nil && strings.TrimSpace(args.Command) != "" {
-			if reason, risky := tools.AssessBashRisk(args.Command, r.workDir); risky {
+			if reason, risky := tools.AssessBashRisk(args.Command, r.workDir, r.userRoot); risky {
+				if r.userRoot != "" {
+					return rejectedToolResult(call.ID, "cloud 模式拒绝 Bash 命令，命令未执行："+reason), nil
+				}
 				answer, err := r.requestBashCommandConfirmation(ctx, args.Command, reason)
 				if err != nil {
 					return nil, err
@@ -535,6 +539,12 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 			ToolCallID: call.ID, IsError: true, Error: confirmErr,
 			Output: message, CompactContent: message,
 		}, nil
+	}
+	if confirmation != nil && r.userRoot != "" {
+		if confirmation.Kind == HumanConfirmKindSkillWrite {
+			return r.ToolRegistry.Execute(ctx, call), nil
+		}
+		return rejectedToolResult(call.ID, "cloud 模式拒绝越界工具操作，操作未执行。"), nil
 	}
 	if confirmation != nil {
 		if !r.humanConfirmationEnabled {
@@ -598,3 +608,6 @@ func (r *ReActService) commitNextMemoryGeneration(ctx context.Context, candidate
 	*r.Session = *candidate
 	return nil
 }
+
+// SetUserRoot enables hard file boundaries and rejects risky commands without approval.
+func (r *ReActService) SetUserRoot(root string) { r.userRoot = root }
