@@ -131,6 +131,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	childSysPrompt := prompt.GetSysPrompt(workDir, childSkills, nil, s.deps.SkillsRoot)
 	if s.deps.UserRoot != "" {
 		childSysPrompt += fmt.Sprintf("\n用户文件范围：%s。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。", s.deps.UserRoot, s.deps.TempDir)
+		childSysPrompt += prompt.CloudPathDisplayRules(s.deps.UserRoot, s.workDir)
 	}
 
 	// 受限工具集不含 sub-agent 自身；构造服务时另注册会话级 read_artifact。

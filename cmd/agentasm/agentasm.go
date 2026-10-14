@@ -270,6 +270,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	}
 	if in.UserRoot != "" {
 		sysPrompt += fmt.Sprintf("\n用户文件范围：%s。相对路径以 %s 为起点。HOME=%s。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。越界操作会直接返回错误。", in.UserRoot, in.WorkDir, in.HomeDir, in.TempDir)
+		sysPrompt += prompt.CloudPathDisplayRules(in.UserRoot, in.WorkDir)
 	}
 	err = svc.InitSysPrompt(ctx, sysPrompt)
 	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSysPromptInitMs.Float64(float64(time.Since(sysPromptStart)) / float64(time.Millisecond)))

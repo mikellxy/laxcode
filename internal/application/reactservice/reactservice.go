@@ -403,6 +403,9 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		interrupted := false
 		for _, tc := range msg.ToolCalls {
 			info := r.ToolRegistry.BeforeExecInfo(&tc)
+			if r.userRoot != "" {
+				info = strings.ReplaceAll(info, r.userRoot, "")
+			}
 			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info, ContextUsage: r.contextUsageSnapshot()})
 
 			var result *sharedkernel.ToolResult

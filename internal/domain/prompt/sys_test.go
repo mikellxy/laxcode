@@ -17,6 +17,18 @@ const testWorkDir = "/tmp/lax-proj"
 // layout.SessionDir(testHomeDir, "sess-abc") 的结果。
 var testSessionDir = filepath.Join("/home/test", ".laxcode", "sessions", "sess-abc")
 
+func TestCloudPathDisplayRules(t *testing.T) {
+	root := filepath.Join("/srv", "laxcode", "user-id")
+	for _, work := range []string{filepath.Join(root, "demo1"), filepath.Join(root, "demo1", "src")} {
+		out := CloudPathDisplayRules(root, work)
+		for _, rule := range []string{"项目路径只能从 /demo1 开始", "/demo1/xxx", "禁止暴露宿主机绝对路径", "代码块、表格", "$TMPDIR", "调用工具时仍使用相对真实工作目录的路径"} {
+			if !strings.Contains(out, rule) {
+				t.Fatalf("missing %q: %s", rule, out)
+			}
+		}
+	}
+}
+
 func TestGetSysPromptPersonalityAndWorkDir(t *testing.T) {
 	out := GetSysPrompt(testWorkDir, nil, nil)
 

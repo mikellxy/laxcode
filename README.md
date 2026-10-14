@@ -157,6 +157,8 @@ LaxCode/
 浏览器继续用访客 UUID cookie 分流。直接调用 API 时可传 `X-Laxcode-User-ID` UUID
 请求头；原有项目/session 接口中的 `user_id` 仍保留，多个来源的身份必须一致。
 `GET /api/config` 返回 cloud 标记。OAuth、目录选择、人工审批和共享 MCP 在此模式下关闭。
+前端工作目录及悬停提示只显示 `/{project_name}`。主 Agent 和子 Agent 的系统提示词
+要求回答中的项目路径隐藏宿主机前缀；工具调用与服务端请求继续使用真实工作目录。
 
 文件工具的相对路径从项目 workdir 解析，允许访问整个用户根，越界直接返回工具错误。
 每用户共用 `tmp`，仅子进程设置 HOME、TMPDIR、TMP、TEMP，服务进程环境不受请求影响。

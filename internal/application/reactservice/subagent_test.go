@@ -442,6 +442,33 @@ func TestSubAgentChildPromptNoSkillsNoIndex(t *testing.T) {
 	}
 }
 
+func TestCloudSubAgentPathDisplayRules(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "demo1")
+	childWork := filepath.Join(work, "src")
+	if err := os.MkdirAll(childWork, 0700); err != nil {
+		t.Fatal(err)
+	}
+	repo := newMemRepo()
+	parent := NewReActService(newTestSession("parent", repo), repo, &scriptedLLM{
+		responses: []scriptedResp{{msg: assistantMsg("ok")}},
+	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
+	sa := NewSubAgent(parent, work, SubAgentDeps{
+		WorkFS: workfs.New(), UserRoot: root, TempDir: filepath.Join(root, "tmp"),
+		NewShell: func() tools.ShellRunner { return shell.New() },
+	})
+	args, err := json.Marshal(map[string]string{"task": "inspect", "work_dir": childWork})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sa.Execute(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	if out := childSysPrompt(t, repo); !strings.Contains(out, "项目路径只能从 /demo1 开始") || !strings.Contains(out, "调用工具时仍使用相对真实工作目录的路径") {
+		t.Fatalf("child prompt lacks cloud path rules: %s", out)
+	}
+}
+
 func TestSubAgentBeforeAfterExecInfo(t *testing.T) {
 	sa := newTestSubAgent(&ReActService{}, "/tmp/wd")
 

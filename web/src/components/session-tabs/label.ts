@@ -4,6 +4,10 @@ export function sessionLabel(title: string, newestFirstIndex: number, total: num
   return `会话 ${String(total - newestFirstIndex).padStart(2, "0")}`;
 }
 
+export function workDirLabel(workDir: string | undefined, projectName: string | undefined, cloud: boolean): string | undefined {
+  return cloud ? (projectName ? `/${projectName}` : undefined) : workDir;
+}
+
 export function contextUsageLabel(used: number, contextWindow: number): string {
   if (contextWindow <= 0) return "0% used";
   const percent = used / contextWindow * 100;

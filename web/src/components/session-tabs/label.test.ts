@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { contextUsageLabel, sessionLabel } from "./label";
+import { contextUsageLabel, sessionLabel, workDirLabel } from "./label";
+
+it("hides cloud host paths and preserves local workdirs", () => {
+  const hostPath = "/Users/service/laxcode/user-id/demo1";
+  expect(workDirLabel(hostPath, "demo1", true)).toBe("/demo1");
+  expect(workDirLabel(hostPath, undefined, true)).toBeUndefined();
+  expect(workDirLabel(hostPath, "demo1", false)).toBe(hostPath);
+});
 
 describe("sessionLabel", () => {
   it("numbers newest-first sessions by creation order", () => {

@@ -25,6 +25,9 @@ func TestCloudToolBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer assembled.Cleanup()
+	if !strings.Contains(assembled.Session.Messages[0].Content, "项目路径只能从 /demo 开始") {
+		t.Fatal("cloud system prompt lacks display path rules")
+	}
 	registry := assembled.Service.ToolRegistry
 	run := func(name string, args any) *sharedkernel.ToolResult {
 		raw, _ := json.Marshal(args)

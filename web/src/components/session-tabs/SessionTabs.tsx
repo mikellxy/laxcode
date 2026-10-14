@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Folder, LoaderCircle, MessageSquare, Plus, Trash2 } from "lucide-react";
 import type { ContextData, ProjectDTO, SessionDTO } from "../../types/api";
 import laxcodeLogo from "../../assets/laxcode-logo.png";
-import { contextUsageLabel, sessionLabel } from "./label";
+import { contextUsageLabel, sessionLabel, workDirLabel } from "./label";
 
 type Props = {
+  cloud: boolean;
   projects: ProjectDTO[];
   sessionsByProject: Record<string, SessionDTO[]>;
   selectedID?: string;
@@ -21,7 +22,7 @@ type Props = {
   onCreateSession: (projectID: string) => void;
 };
 
-export function SessionTabs({ projects, sessionsByProject, selectedID, selectedProjectID, contextUsage, creatingProject, creatingSessionProjectID, deletingSessionID, runningSessionIDs, onSelect, onSelectProject, onDeleteSession, onCreateProject, onCreateSession }: Props) {
+export function SessionTabs({ cloud, projects, sessionsByProject, selectedID, selectedProjectID, contextUsage, creatingProject, creatingSessionProjectID, deletingSessionID, runningSessionIDs, onSelect, onSelectProject, onDeleteSession, onCreateProject, onCreateSession }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
     setExpanded((current) => {
@@ -50,7 +51,7 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, selectedP
         const isExpanded = expanded.has(project.project_id);
         const isActive = selectedProjectID === project.project_id;
         return <section key={project.project_id} className={`project-group ${isActive ? "active" : ""}`}>
-          <div className={`project-row ${isActive ? "active" : ""}`} title={project.work_dir}>
+          <div className={`project-row ${isActive ? "active" : ""}`} title={workDirLabel(project.work_dir, project.name, cloud)}>
             <button className="project-toggle" onClick={() => { toggle(project.project_id); onSelectProject(project.project_id); }} aria-expanded={isExpanded}>
               <ChevronRight className={isExpanded ? "expanded" : ""} size={15} />
               <Folder size={16} />

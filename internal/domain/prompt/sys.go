@@ -25,6 +25,24 @@ type PlanMode struct {
 	SessionDir string
 }
 
+// CloudPathDisplayRules keeps user-facing paths separate from tool paths.
+func CloudPathDisplayRules(userRoot, workDir string) string {
+	rootPrefix := strings.TrimRight(strings.ReplaceAll(userRoot, "\\", "/"), "/") + "/"
+	dir := strings.ReplaceAll(workDir, "\\", "/")
+	projectPath := "/{project_name}"
+	if strings.HasPrefix(dir, rootPrefix) {
+		name := strings.Split(strings.TrimPrefix(dir, rootPrefix), "/")[0]
+		if name != "" && name != "." && name != ".." {
+			projectPath = "/" + name
+		}
+	}
+	return fmt.Sprintf(`
+【云端路径展示规则】
+对用户回答问题、解释操作、引用错误、总结或交付文件时，项目路径只能从 %s 开始，文件路径展示为 %s/xxx。移除用户根目录 %s 及其之前的全部宿主机前缀，禁止暴露宿主机绝对路径、服务账户主目录或用户 ID 目录；代码块、表格和引用的工具输出也必须遵守。
+不要向用户展示 agenthome、临时目录或其他内部目录的实际路径；需要说明临时文件时使用“用户临时目录”或 $TMPDIR。工具返回的实际路径只供内部定位，不能原样复述给用户。
+上述路径仅用于回答中的展示；调用工具时仍使用相对真实工作目录的路径，或系统提供的真实绝对路径。不要将展示路径当成宿主机绝对路径执行。`, projectPath, projectPath, userRoot)
+}
+
 // GetSysPrompt 返回 agent 的 system prompt：通用工程提示词（含工作区边界）
 // 拼接已加载的技能索引段；plan 非 nil 时再追加 Plan Mode 工作流提示词。
 //

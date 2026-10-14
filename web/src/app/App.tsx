@@ -5,6 +5,7 @@ import { getOrCreateGuestID } from "../features/identity/guest";
 import { useWorkspace } from "../hooks/use-workspace";
 import { historyToMessage } from "../types/chat";
 import { SessionTabs } from "../components/session-tabs/SessionTabs";
+import { workDirLabel } from "../components/session-tabs/label";
 import { MessageList } from "../components/message-list/MessageList";
 import { CommandBlock } from "../components/approval/CommandBlock";
 import { ConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
@@ -71,6 +72,7 @@ export function App() {
   const [gearBounce, setGearBounce] = useState(0);
   const selected = workspace.allSessions.find((session) => session.session_id === workspace.selectedID);
   const workDir = selected?.work_dir ?? workspace.selectedProject?.work_dir;
+  const displayWorkDir = workDirLabel(workDir, workspace.selectedProject?.name, cloud);
   const projects = workspace.projects.data?.projects ?? [];
   const isFirstRun = workspace.projects.isSuccess && projects.length === 0;
   // 主工作区首次确认尚未配置模型后，稍作停顿再提示一次，避免页面刚加载时
@@ -85,9 +87,9 @@ export function App() {
   if (mode.isError || workspace.projects.isError || workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{connectionError instanceof Error ? connectionError.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => { void mode.refetch(); void workspace.projects.refetch(); void workspace.sessions.refetch(); }}>重新连接</button></div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarOpen ? "mobile-sidebar-open" : ""}`}>
     <div className="mobile-backdrop" onClick={() => setSidebarOpen(false)} />
-    <SessionTabs projects={projects} sessionsByProject={workspace.sessionsByProject} selectedID={workspace.selectedID} selectedProjectID={workspace.selectedProjectID} contextUsage={workspace.contextUsage.data} creatingProject={pickingProject || workspace.createProject.isPending} creatingSessionProjectID={workspace.createSession.isPending ? workspace.createSession.variables : undefined} deletingSessionID={workspace.deleteSession.isPending ? workspace.deleteSession.variables?.session_id : undefined} runningSessionIDs={workspace.runningSessionIDs} onSelect={(id) => { workspace.select(id); setSidebarOpen(false); }} onSelectProject={workspace.selectProject} onDeleteSession={(session, label) => { setDeleteError(""); setSessionToDelete({ session, label }); }} onCreateProject={() => void createProject()} onCreateSession={(projectID) => { workspace.startSession(projectID); setSidebarOpen(false); }} />
+    <SessionTabs cloud={cloud} projects={projects} sessionsByProject={workspace.sessionsByProject} selectedID={workspace.selectedID} selectedProjectID={workspace.selectedProjectID} contextUsage={workspace.contextUsage.data} creatingProject={pickingProject || workspace.createProject.isPending} creatingSessionProjectID={workspace.createSession.isPending ? workspace.createSession.variables : undefined} deletingSessionID={workspace.deleteSession.isPending ? workspace.deleteSession.variables?.session_id : undefined} runningSessionIDs={workspace.runningSessionIDs} onSelect={(id) => { workspace.select(id); setSidebarOpen(false); }} onSelectProject={workspace.selectProject} onDeleteSession={(session, label) => { setDeleteError(""); setSessionToDelete({ session, label }); }} onCreateProject={() => void createProject()} onCreateSession={(projectID) => { workspace.startSession(projectID); setSidebarOpen(false); }} />
     <section className="workspace">
-      <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div className="workspace-meta"><strong title={workDir}>{isFirstRun ? "欢迎使用 LaxCode" : workDir || "请选择项目"}</strong><small>{isFirstRun ? <span>创建项目后即可开始</span> : <>{selected && <span>session_id: {selected.session_id}</span>}{workspace.createSession.isPending ? <span>正在创建会话…</span> : workspace.stream.running ? <><i className="working-dot" />正在执行</> : <span>准备就绪</span>}</>}</small></div><EvaluationPanel key={selected?.session_id ?? "no-session"} sessionID={selected?.session_id} workDir={workDir} disabled={workspace.stream.running || modelLocked} /></header>
+      <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div className="workspace-meta"><strong title={displayWorkDir}>{isFirstRun ? "欢迎使用 LaxCode" : displayWorkDir || "请选择项目"}</strong><small>{isFirstRun ? <span>创建项目后即可开始</span> : <>{selected && <span>session_id: {selected.session_id}</span>}{workspace.createSession.isPending ? <span>正在创建会话…</span> : workspace.stream.running ? <><i className="working-dot" />正在执行</> : <span>准备就绪</span>}</>}</small></div><EvaluationPanel key={selected?.session_id ?? "no-session"} sessionID={selected?.session_id} workDir={workDir} disabled={workspace.stream.running || modelLocked} /></header>
       {isFirstRun ? <ProjectOnboarding cloud={cloud} creating={pickingProject || workspace.createProject.isPending || workspace.createSession.isPending} onCreate={() => void createProject()} /> : <>
         <MessageList messages={messages} sessionID={workspace.selectedID} hasMore={Boolean(workspace.history.hasNextPage)} loading={workspace.history.isFetchingNextPage} initialLoading={workspace.history.isLoading} error={workspace.stream.error} retryAction={workspace.stream.retryAction} retrying={workspace.stream.running} onRetry={workspace.retry} onLoadMore={() => workspace.history.fetchNextPage()} />
         <ModelPicker cloud={cloud} running={workspace.stream.running} bounceKey={gearBounce} />
@@ -110,7 +112,7 @@ export function App() {
       void models.refetch();
     }} />}
     {sessionToDelete && <ConfirmDialog variant="danger" title="删除这个会话？" description="会话历史和会话文件将被永久删除，此操作无法撤销。" confirmLabel="删除会话" cancelLabel="取消" pending={workspace.deleteSession.isPending} error={deleteError} onConfirm={() => void deleteSession()} onCancel={() => setSessionToDelete(undefined)}>
-      <div className="confirm-session"><strong>{sessionToDelete.label}</strong><span>{sessionToDelete.session.work_dir}</span></div>
+      <div className="confirm-session"><strong>{sessionToDelete.label}</strong><span>{workDirLabel(sessionToDelete.session.work_dir, projects.find((project) => project.project_id === sessionToDelete.session.project_id)?.name, cloud)}</span></div>
     </ConfirmDialog>}
   </div>;
 }

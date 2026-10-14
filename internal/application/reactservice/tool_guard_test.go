@@ -28,6 +28,58 @@ func TestToolCallFingerprintCanonicalizesArguments(t *testing.T) {
 	}
 }
 
+func TestBeforeExecInfoHidesCloudUserRoot(t *testing.T) {
+	const root = "/srv/laxcode/user-id"
+	input := root + "/demo/a.txt " + root + "/tmp/probe.log"
+	raw, err := json.Marshal(map[string]string{"msg": input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := sharedkernel.ToolCall{ID: "echo", Name: "echo_tool", Arguments: raw}
+	for _, cloud := range []bool{true, false} {
+		t.Run(fmt.Sprintf("cloud=%t", cloud), func(t *testing.T) {
+			repo := newMemRepo()
+			sess := newTestSession("display-info", repo)
+			reg := tools.NewDefaultRegistry(nil)
+			reg.Register(echoTool{})
+			want := "echo_tool(" + string(raw) + ")"
+			if cloud {
+				want = `echo_tool({"msg":"/demo/a.txt /tmp/probe.log"})`
+			}
+			var eventInfo string
+			svc := NewReActService(sess, repo, &scriptedLLM{responses: []scriptedResp{
+				{msg: assistantMsgWithTool(call)}, {msg: assistantMsg("done")},
+			}}, nil, reg, func(event *ReactEvent) {
+				if event.Type == ReActEventTypeToolCall {
+					eventInfo = event.Content
+				}
+			}, nil)
+			if cloud {
+				svc.SetUserRoot(root)
+			}
+			if _, err := svc.Chat(context.Background(), "echo paths"); err != nil {
+				t.Fatal(err)
+			}
+			if eventInfo != want {
+				t.Fatalf("tool event = %q, want %q", eventInfo, want)
+			}
+			var result *sharedkernel.Message
+			for i := range repo.msgs[sess.ID] {
+				msg := &repo.msgs[sess.ID][i]
+				if msg.Role == sharedkernel.RoleTool {
+					result = msg
+				}
+				if len(msg.ToolCalls) > 0 && string(msg.ToolCalls[0].Arguments) != string(raw) {
+					t.Fatal("tool arguments changed")
+				}
+			}
+			if result == nil || result.DisplayContent != want || result.Content != "echo:"+input {
+				t.Fatalf("persisted tool message = %+v", result)
+			}
+		})
+	}
+}
+
 func TestThreeIdenticalToolCallsInterruptBeforeExecution(t *testing.T) {
 	repo := newMemRepo()
 	sess := newTestSession("loop-guard", repo)
