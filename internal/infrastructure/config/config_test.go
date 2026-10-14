@@ -396,3 +396,17 @@ func TestConfCopyDirFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudBashImageFlag(t *testing.T) {
+	for _, image := range []string{"laxcode-cloud-bash:local", "registry.example/cloud-bash:v1"} {
+		conf, err := LoadSettings(t.TempDir(), []string{"-cloud", "-cloud_bash_image=" + image})
+		if err != nil || conf.CloudBashImage != image {
+			t.Fatalf("image=%s conf=%+v err=%v", image, conf, err)
+		}
+	}
+	for _, image := range []string{"", "--privileged", "bad image"} {
+		if _, err := LoadSettings(t.TempDir(), []string{"-cloud_bash_image=" + image}); err == nil {
+			t.Fatalf("accepted %q", image)
+		}
+	}
+}

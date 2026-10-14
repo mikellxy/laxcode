@@ -12,8 +12,10 @@ import (
 
 // ShellOutcome 是一次 shell 执行的观测结果；超时/取消时也保留终止前输出。
 type ShellOutcome struct {
-	// Output 是 stdout 与 stderr 合并后的原始输出，未截断。
+	// Output 是 stdout 与 stderr 合并的输出；捕获上限丢弃的部分由 OutputTruncated 标识。
 	Output string
+	// OutputTruncated means the runner discarded output beyond its capture limit.
+	OutputTruncated bool
 	// ExitCode 是命令退出码，正常结束为 0。
 	// Run 返回 error 时，不应仅凭 ExitCode 判断命令是否成功。
 	ExitCode int
@@ -40,4 +42,10 @@ type ShellRunner interface {
 	Run(ctx context.Context, workDir, command string, timeout time.Duration) (ShellOutcome, error)
 	// Close 回收 Run 遗留的后台进程与中间产物，可安全重复调用。
 	Close() error
+}
+
+// SandboxedShellRunner is implemented only by runners that cannot fall back to host Bash.
+type SandboxedShellRunner interface {
+	ShellRunner
+	BashSandboxed() bool
 }

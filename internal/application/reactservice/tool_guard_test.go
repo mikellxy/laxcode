@@ -171,6 +171,27 @@ func TestRecentToolStreakRestoresOnlyCurrentUserTurn(t *testing.T) {
 
 type recordingShell struct{ calls []string }
 
+type sandboxedRecordingShell struct{ recordingShell }
+
+func (*sandboxedRecordingShell) BashSandboxed() bool { return true }
+
+func TestCloudDockerBashUsesSandboxInsteadOfStaticPathGuessing(t *testing.T) {
+	repo := newMemRepo()
+	runner := &sandboxedRecordingShell{}
+	reg := tools.NewDefaultRegistry(nil)
+	reg.Register(tools.NewBashTool("/users/demo", runner, nil, "sandbox"))
+	svc := NewReActService(newTestSession("sandbox", repo), repo, &scriptedLLM{}, nil, reg, func(ev *ReactEvent) {
+		if ev.Type == ReActEventTypeHumanInTheLoop {
+			t.Fatal("sandbox asked for approval")
+		}
+	}, nil)
+	svc.SetUserRoot("/users")
+	result, err := svc.executeToolCall(context.Background(), &sharedkernel.ToolCall{ID: "run", Name: tools.ToolBash, Arguments: json.RawMessage(`{"command":"printf 'log' > \"$TMPDIR/server.log\"; kill \"$pid\""}`)})
+	if err != nil || result.IsError || len(runner.calls) != 1 {
+		t.Fatalf("sandboxed command not dispatched: %+v %v", result, err)
+	}
+}
+
 func (s *recordingShell) Run(_ context.Context, _, command string, _ time.Duration) (tools.ShellOutcome, error) {
 	s.calls = append(s.calls, command)
 	return tools.ShellOutcome{Output: "ran"}, nil

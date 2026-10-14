@@ -22,12 +22,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for command_name in pnpm make go curl; do
+for command_name in pnpm make go curl docker; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "required command not found: ${command_name}" >&2
     exit 1
   fi
 done
+
+if [[ "$(id -u)" == "0" ]]; then
+  echo "cloud Bash requires a non-root service account with Docker access" >&2
+  exit 1
+fi
 
 make -C "${repo_root}" build build-web
 (
@@ -92,7 +97,7 @@ if [[ "${frontend_ready}" != true ]]; then
 fi
 
 echo "LaxCode cloud prototype is ready on port ${cloud_port} (local: ${frontend_url})"
-echo "Data: ${HOME}/laxcode/<user_id>/; guest UUID identity and Bash checks are prototype-only."
+echo "Data: ${HOME}/laxcode/<user_id>/; Bash uses offline Docker sandboxes; guest UUID identity is prototype-only."
 
 # Bash 3.2 (the macOS default) has no wait -n. Monitor both long-running
 # children so either failure tears down the other process through the trap.

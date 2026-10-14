@@ -44,6 +44,7 @@ type Conf struct {
 	Addr            string
 	Plan            bool
 	Cloud           bool
+	CloudBashImage  string
 	ConfCopyDir     string
 }
 
@@ -94,13 +95,14 @@ type fileConf struct {
 }
 
 type cliConf struct {
-	Addr          string `mapstructure:"addr"`
-	Plan          bool   `mapstructure:"plan"`
-	Cloud         bool   `mapstructure:"cloud"`
-	ConfCopyDir   string `mapstructure:"conf_copy_dir"`
-	ModelName     string `mapstructure:"model"`
-	OpenaiApiKey  string `mapstructure:"openai_api_key"`
-	OpenaiBaseUrl string `mapstructure:"openai_base_url"`
+	Addr           string `mapstructure:"addr"`
+	Plan           bool   `mapstructure:"plan"`
+	Cloud          bool   `mapstructure:"cloud"`
+	CloudBashImage string `mapstructure:"cloud_bash_image"`
+	ConfCopyDir    string `mapstructure:"conf_copy_dir"`
+	ModelName      string `mapstructure:"model"`
+	OpenaiApiKey   string `mapstructure:"openai_api_key"`
+	OpenaiBaseUrl  string `mapstructure:"openai_base_url"`
 }
 
 const (
@@ -197,6 +199,7 @@ func parseCLI(args []string) (cliConf, error) {
 	flags.StringVar(&cli.Addr, "addr", DefaultSSEAddr, "Web backend listen address")
 	flags.BoolVar(&cli.Plan, "plan", false, "enable plan mode")
 	flags.BoolVar(&cli.Cloud, "cloud", false, "enable cloud prototype with per-user workspaces")
+	flags.StringVar(&cli.CloudBashImage, "cloud_bash_image", "laxcode-cloud-bash:local", "prebuilt local image for cloud Bash (never pulled at runtime)")
 	flags.StringVar(&cli.ConfCopyDir, "conf_copy_dir", "", "cloud initialization source containing settings.json and skills (default: service home/.laxcode)")
 	flags.StringVar(&cli.ModelName, "model", "", "upstream model name (requires API key and base URL)")
 	flags.StringVar(&cli.OpenaiApiKey, "openai_api_key", "", "API key for the CLI model")
@@ -218,6 +221,10 @@ func merge(file fileConf, cli cliConf) (Conf, error) {
 		conf.LlmRouterAddr = file.LlmRouterAddr
 	}
 	conf.Addr, conf.Plan, conf.Cloud = cli.Addr, cli.Plan, cli.Cloud
+	conf.CloudBashImage = strings.TrimSpace(cli.CloudBashImage)
+	if conf.CloudBashImage == "" || strings.HasPrefix(conf.CloudBashImage, "-") || strings.ContainsAny(conf.CloudBashImage, " \t\r\n") {
+		return Conf{}, errors.New("cloud_bash_image must be a non-empty Docker image reference")
+	}
 	if cli.ConfCopyDir != "" {
 		dir, err := filepath.Abs(cli.ConfCopyDir)
 		if err != nil {

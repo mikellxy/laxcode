@@ -29,6 +29,7 @@ const (
 )
 
 type BashTool struct {
+	Cloud   bool
 	WorkDir string
 	// Timeout 是未指定 timeout_ms 时的默认值，零值取 30s；最终最多 60s。
 	Timeout time.Duration
@@ -69,15 +70,17 @@ func (b *BashTool) Name() string {
 }
 
 func (b *BashTool) Definition() sharedkernel.ToolDefinition {
+	background := "需要后台进程（如启动服务器）时，务必重定向输出到日志文件并记录pid，例如: " +
+		"python3 server.py > /tmp/srv.log 2>&1 & echo \"pid=$!\"，之后用返回的pid执行 kill -9 <pid> 清理，也可 tail 日志文件排错"
+	if b.Cloud {
+		background = CloudBashEnvironment + "\n" + CloudBashOfflineHint
+	}
 	return sharedkernel.ToolDefinition{
 		Name: b.Name(),
 		Description: "在工作目录执行 bash 命令。timeout_ms 默认 30000，超过 60000 按 60000 执行。" +
 			"默认启用 pipefail，管道中任一命令失败时返回最右侧非零退出码。" +
 			"长输出会先归档，再返回前 8000 字符及 read_artifact 引用；不必为缩短输出追加 head/tail。退出码代表整段脚本。" +
-			"需要后台进程（如启动服务器）时，" +
-			"务必重定向输出到日志文件并记录pid，例如: " +
-			"python3 server.py > /tmp/srv.log 2>&1 & echo \"pid=$!\"，" +
-			"之后用返回的pid执行 kill -9 <pid> 清理，也可 tail 日志文件排错",
+			background,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -156,6 +159,9 @@ func (b *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) *sha
 			runErr = fmt.Errorf("bash执行超时或被取消: %w", runErr)
 		}
 	}
+	if outcome.OutputTruncated {
+		result.Desc += "；沙箱日志超过捕获上限，超出部分未保存，无法通过 artifact 获取"
+	}
 
 	ret := &sharedkernel.ToolResult{}
 	// 归档保存原始 stdout/stderr；预览及状态单独保存在消息中。
@@ -186,11 +192,19 @@ func (b *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) *sha
 		result.Desc, result.Status, result.exitCodeString(), result.Truncated)
 	ret.Output = result.String()
 	if ret.Artifact != nil {
-		ret.Output += fmt.Sprintf("\n[完整输出已归档 bytes=%d；read_artifact(artifact_id=%s, offset=0, limit=4000) 按需读取]",
-			ret.Artifact.ByteSize, ret.Artifact.ID)
+		label := "完整输出"
+		if outcome.OutputTruncated {
+			label = "捕获范围内的输出"
+		}
+		ret.Output += fmt.Sprintf("\n[%s已归档 bytes=%d；read_artifact(artifact_id=%s, offset=0, limit=4000) 按需读取]",
+			label, ret.Artifact.ByteSize, ret.Artifact.ID)
 	}
 	if runErr != nil {
 		ret.Error = NewErrorWithPrompt(&BashExecuteError{}, runErr)
+	}
+	if b.Cloud && (runErr != nil || outcome.ExitCode != 0 || outcome.ExitErr != "") {
+		ret.Output += "\n" + CloudBashOfflineHint
+		ret.CompactContent += "\n" + CloudBashOfflineHint
 	}
 	return ret
 }

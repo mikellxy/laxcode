@@ -142,3 +142,40 @@ func TestBashShortOutputDefersArchiving(t *testing.T) {
 		t.Fatalf("short output should not archive yet: %+v", res)
 	}
 }
+
+func TestCloudBashOfflineHintsCoverNonzeroAndExecutionErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit int
+		err  error
+	}{
+		{"success", 0, nil}, {"nonzero", 1, nil}, {"timeout", 0, context.DeadlineExceeded}, {"startup", 0, errors.New("Docker unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newTestBashTool(t, &fakeRunner{outcome: ShellOutcome{Output: "diagnostic", ExitCode: tc.exit}, err: tc.err})
+			b.Cloud = true
+			result := b.ExecuteResult(context.Background(), json.RawMessage(`{"command":"go test ./..."}`))
+			want := tc.exit != 0 || tc.err != nil
+			if strings.Contains(result.Output, CloudBashOfflineHint) != want || strings.Contains(result.CompactContent, CloudBashOfflineHint) != want {
+				t.Fatalf("offline hint: %+v", result)
+			}
+			if !strings.Contains(b.Definition().Description, "同一次 Bash 调用") || strings.Contains(b.Definition().Description, "之后用返回的pid") {
+				t.Fatal("cloud tool describes persistent processes")
+			}
+		})
+	}
+	local := newTestBashTool(t, &fakeRunner{outcome: ShellOutcome{ExitCode: 1}})
+	if result := local.ExecuteResult(context.Background(), json.RawMessage(`{"command":"false"}`)); strings.Contains(result.Output, CloudBashOfflineHint) {
+		t.Fatal("local mode gained offline hint")
+	}
+}
+
+func TestBashOutputLimitRemainsVisibleInCompactContext(t *testing.T) {
+	b := newTestBashTool(t, &fakeRunner{outcome: ShellOutcome{Output: "partial", OutputTruncated: true}})
+	result := b.ExecuteResult(context.Background(), json.RawMessage(`{"command":"cmd"}`))
+	for _, text := range []string{result.Output, result.CompactContent} {
+		if !strings.Contains(text, "超出部分未保存") {
+			t.Fatal("runner output loss hidden")
+		}
+	}
+}

@@ -132,6 +132,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if s.deps.UserRoot != "" {
 		childSysPrompt += fmt.Sprintf("\n用户文件范围：%s。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。", s.deps.UserRoot, s.deps.TempDir)
 		childSysPrompt += prompt.CloudPathDisplayRules(s.deps.UserRoot, s.workDir)
+		childSysPrompt += "\n" + tools.CloudBashEnvironment + "\n" + tools.CloudBashOfflineHint
 	}
 
 	// 受限工具集不含 sub-agent 自身；构造服务时另注册会话级 read_artifact。
@@ -139,7 +140,9 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// 一次运行即完整生命周期，defer Close 回收 bash 后台进程与临时文件；
 	// 命令执行端口按子 Agent 新建，以免回收波及父 Agent 的后台进程。
 	childReg := tools.NewDefaultRegistry(s.parent.tracer)
-	childReg.Register(tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID))
+	bash := tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID)
+	bash.Cloud = s.deps.UserRoot != ""
+	childReg.Register(bash)
 	read := tools.NewReadFileTool(workDir, s.deps.WorkFS, s.deps.SkillsRoot)
 	read.UserRoot = s.deps.UserRoot
 	childReg.Register(read)

@@ -10,12 +10,23 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
+	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
+
+type cloudNoRunShell struct{ t *testing.T }
+
+func (s cloudNoRunShell) Run(context.Context, string, string, time.Duration) (tools.ShellOutcome, error) {
+	s.t.Helper()
+	s.t.Fatal("unsandboxed HTTP test fixture executed Bash")
+	return tools.ShellOutcome{}, nil
+}
+func (cloudNoRunShell) Close() error { return nil }
 
 func cloudRequest(t *testing.T, handler http.Handler, id, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -114,6 +125,8 @@ func TestCloudLifecycleAndUserIsolation(t *testing.T) {
 			return nil, err
 		}
 		assembled.Service.LLMClient = &approvalFlowLLM{}
+		// HTTP unit tests keep an unsandboxed fixture behind the static guard.
+		assembled.Service.ToolRegistry.Register(tools.NewBashTool(in.WorkDir, cloudNoRunShell{t}, nil, in.SessionID))
 		return assembled, nil
 	}
 	response = cloudRequest(t, users, first, "POST", "/chat", map[string]string{"session_id": sess.SessionID, "task": "work"})

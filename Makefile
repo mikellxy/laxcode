@@ -6,9 +6,13 @@ BUILD_DIR := bin
 MAIN_PKG := ./cmd/main
 WINDOWS_BUILD_DIR := $(BUILD_DIR)/win
 
-.PHONY: all build build-web build-windows vet test clean
+.PHONY: all build build-web build-windows build-cloud-bash-image vet test clean
 
 all: build
+
+# Build once with network access; cloud Bash never pulls images at runtime.
+build-cloud-bash-image:
+	docker build -t laxcode-cloud-bash:local docker/cloud-bash
 
 # 编译主程序到 bin/laxcode
 build:

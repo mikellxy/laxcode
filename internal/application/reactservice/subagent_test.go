@@ -467,6 +467,9 @@ func TestCloudSubAgentPathDisplayRules(t *testing.T) {
 	if out := childSysPrompt(t, repo); !strings.Contains(out, "项目路径只能从 /demo1 开始") || !strings.Contains(out, "调用工具时仍使用相对真实工作目录的路径") {
 		t.Fatalf("child prompt lacks cloud path rules: %s", out)
 	}
+	if out := childSysPrompt(t, repo); !strings.Contains(out, tools.CloudBashEnvironment) || !strings.Contains(out, tools.CloudBashOfflineHint) {
+		t.Fatal("child lacks cloud Bash guidance")
+	}
 }
 
 func TestSubAgentBeforeAfterExecInfo(t *testing.T) {

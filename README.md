@@ -145,6 +145,27 @@ LaxCode/
 `LAXCODE_CLOUD_PORT=5180 ./cloud.sh` 修改端口；后端只监听本机，并通过 Web 服务代理。
 直接启动后端时使用 `./bin/laxcode -cloud`，该参数由现有 config 解析流程处理。
 
+部署前在有网络的构建环境运行 `make build-cloud-bash-image`，生成
+`laxcode-cloud-bash:local`（Linux，Go 1.26.6、Python 3、rg、Bash）。镜像需预装在
+运行服务的 Docker daemon 上；可用 `./cloud.sh -cloud_bash_image="your-image:tag"`
+指定其他预制镜像。服务必须以可访问 Docker 的非 root 账户运行，挂载文件按服务
+账户的 UID/GID 读写。运行时禁止自动拉取镜像，Docker/镜像不可用时不会回退到宿主机 Bash。
+
+cloud 主 Agent 和子 Agent 每次 Bash 调用都使用一个新容器：`--rm --network=none
+--pull=never`，保留本次容器内的 `127.0.0.1` 回环访问。仅将项目 WorkDir 和用户
+TempDir 挂载到容器相同的绝对路径；不挂载 UserRoot、agenthome 或 Docker socket。
+容器根文件系统只读，删除全部 capabilities、禁止提权，限 2 CPU、1 GiB 内存、
+256 个进程；容器 `/tmp` 使用 256 MiB tmpfs，HOME 为 `/tmp/agenthome`。
+TMPDIR/TMP/TEMP 指向挂载的用户 tmp，Go 禁用依赖下载和自动工具链下载。
+Go 的 GOPATH 位于用户 tmp/go，避免向镜像中的只读目录写入模块缓存。
+超时、取消和 Runner.Close 显式清理容器；后台服务不会跨 Bash 调用保留，启动、
+等待就绪、测试和结束服务必须在同一次调用内完成。挂载目录中的文件保留，其他
+目录里的环境修改随容器删除。Skills 通过宿主机的 grep/glob/read_file 工具读取。
+非零退出和执行异常在模型正文、压缩摘要中都附带离线提示：用容器内的本地实现，
+不反复联网重试；受离线限制的验证应说明未验证项目、原因及用户自行验证命令。
+每次调用最多捕获 32 MiB 合并日志，超出部分丢弃并明确提示，Docker 日志驱动关闭。
+容器内命令由 Docker 提供访问隔离，本地及未接入沙箱的 Bash 保留静态风险检查。
+
 云端项目只输入名称（1–120 个英文字母、数字、中横线、下划线；`agenthome`、`tmp`
 为保留名称），同一用户的重名项目返回 409。首次创建项目初始化
 `~/laxcode/{user_id}/agenthome/.laxcode`、用户 SQLite 与技能模板；项目工作目录是
@@ -171,5 +192,5 @@ assistant 消息后展示新增/修改清单。重复写入与 resume 合并到�
 配置目录、临时目录及 Bash/脚本生成的文件不自动收录，不保存历史文件快照。
 新增 `chat_upsert_files` 表由启动时自动迁移创建，删除 session 时清理其清单。
 
-此版本用于受信任用户的原型验证：访客 UUID 不是登录鉴权，Bash 静态风险检查也不是
-操作系统沙箱。Bash 及其启动的程序仍可能访问用户目录之外的宿主机资源。
+访客 UUID 仍不是登录鉴权，Docker Bash 隔离不能替代真实用户认证；云端部署仍需
+在入口完成用户身份验证。Bash/脚本产生的文件不会自动加入聊天文件清单。

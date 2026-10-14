@@ -29,6 +29,14 @@ func TestCloudToolBoundaries(t *testing.T) {
 		t.Fatal("cloud system prompt lacks display path rules")
 	}
 	registry := assembled.Service.ToolRegistry
+	if sandbox, ok := registry.(interface{ BashSandboxed() bool }); !ok || !sandbox.BashSandboxed() {
+		t.Fatal("cloud Bash was not wired to a sandbox")
+	}
+	for _, rule := range []string{tools.CloudBashEnvironment, tools.CloudBashOfflineHint} {
+		if !strings.Contains(assembled.Session.Messages[0].Content, rule) {
+			t.Fatal("cloud prompt lacks Bash environment rules")
+		}
+	}
 	run := func(name string, args any) *sharedkernel.ToolResult {
 		raw, _ := json.Marshal(args)
 		call := &sharedkernel.ToolCall{ID: "test", Name: name, Arguments: raw}

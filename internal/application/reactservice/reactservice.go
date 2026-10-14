@@ -520,7 +520,9 @@ func rejectedToolResult(id, message string) *sharedkernel.ToolResult {
 }
 
 func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.ToolCall) (*sharedkernel.ToolResult, error) {
-	if call.Name == tools.ToolBash {
+	sandbox, ok := r.ToolRegistry.(interface{ BashSandboxed() bool })
+	cloudSandbox := r.userRoot != "" && ok && sandbox.BashSandboxed()
+	if call.Name == tools.ToolBash && !cloudSandbox {
 		var args struct {
 			Command string `json:"command"`
 		}

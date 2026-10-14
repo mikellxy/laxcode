@@ -95,6 +95,15 @@ func NewDefaultRegistry(tracer telemetry.Tracer) *DefaultRegistry {
 	}
 }
 
+func (d *DefaultRegistry) BashSandboxed() bool {
+	bash, ok := d.db[ToolBash].(*BashTool)
+	if !ok {
+		return false
+	}
+	runner, ok := bash.Runner.(SandboxedShellRunner)
+	return ok && runner.BashSandboxed()
+}
+
 func (d *DefaultRegistry) GetAvailableTools() []sharedkernel.ToolDefinition {
 	var toolDefs []sharedkernel.ToolDefinition
 	for _, tool := range d.db {
