@@ -150,6 +150,9 @@ LaxCode/
 `~/laxcode/{user_id}/agenthome/.laxcode`、用户 SQLite 与技能模板；项目工作目录是
 `~/laxcode/{user_id}/{project_name}`。默认 API Key 模型配置与 skills 从服务账户的
 `.laxcode` 复制，OAuth 凭据、历史和 MCP 配置不会复制；后续用户配置互相独立。
+可用 `./cloud.sh -conf_copy_dir="/srv/laxcode-defaults"` 指定初始化来源；该目录直接包含
+`settings.json` 和 `skills/`，不再追加 `.laxcode`。相对路径按后端启动目录解析；
+未指定时使用服务账户的 `~/.laxcode`。已有用户不会被重新复制或覆盖。
 
 浏览器继续用访客 UUID cookie 分流。直接调用 API 时可传 `X-Laxcode-User-ID` UUID
 请求头；原有项目/session 接口中的 `user_id` 仍保留，多个来源的身份必须一致。

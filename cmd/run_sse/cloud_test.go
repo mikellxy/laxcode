@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
+	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
@@ -233,5 +234,76 @@ func TestCloudConcurrentFirstProject(t *testing.T) {
 	}
 	if counts[201] != 1 || counts[409] != 1 {
 		t.Fatalf("concurrent creates: %v", counts)
+	}
+}
+
+func TestCloudConfCopyDir(t *testing.T) {
+	previous := config.Current
+	t.Cleanup(func() { config.Current = previous })
+	home, source := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(layout.Root(home), 0700); err != nil {
+		t.Fatal(err)
+	}
+	serviceSettings := `{"model":"service:service-model","provider_list":[{"provider_name":"service","openai_api_key":"service-key","openai_base_url":"https://service.example/v1","model_list":[{"model_name":"service-model"}]}]}`
+	if err := os.WriteFile(layout.UserSettings(home), []byte(serviceSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sourceSettings := `{"model":"custom:custom-model","provider_list":[{"provider_name":"custom","openai_api_key":"custom-key","openai_base_url":"https://custom.example/v1","model_list":[{"model_name":"custom-model"}]}]}`
+	if err := os.WriteFile(layout.SettingsFile(source), []byte(sourceSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(layout.SkillsDir(source), "custom-skill")
+	if err := os.MkdirAll(skillDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	skillContent := "---\nname: custom-skill\ndescription: custom skill\n---\nUse the custom source."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	config.Current, err = config.LoadSettings(home, []string{"-cloud", "-conf_copy_dir=" + source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := newCloudUsers(home, nil)
+	defer users.Close()
+	id := uuid.NewString()
+	created := cloudRequest(t, users, id, "POST", "/api/projects", map[string]string{"user_id": id, "name": "custom"})
+	if created.Code != 201 {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	user := users.users[id]
+	if active := user.server.models.Active(); active.Ref != "custom:custom-model" || active.OpenaiApiKey != "custom-key" {
+		t.Fatalf("did not use custom configuration: ref=%s", active.Ref)
+	}
+	destination := filepath.Join(layout.SkillsRoot(user.server.homeDir), "custom-skill", "SKILL.md")
+	if content, err := os.ReadFile(destination); err != nil || string(content) != skillContent {
+		t.Fatalf("custom skill copy: %q %v", content, err)
+	}
+	settingsPath := layout.UserSettings(user.server.homeDir)
+	settingsBefore, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users.Close()
+	// Existing users keep their configuration even if the original source is gone.
+	config.Current.ConfCopyDir = filepath.Join(source, "removed-source")
+	users = newCloudUsers(home, nil)
+	defer users.Close()
+	listed := cloudRequest(t, users, id, "GET", "/api/projects?user_id="+id, nil)
+	if listed.Code != 200 {
+		t.Fatalf("existing user: %d %s", listed.Code, listed.Body.String())
+	}
+	if settingsAfter, err := os.ReadFile(settingsPath); err != nil || string(settingsAfter) != string(settingsBefore) {
+		t.Fatalf("existing settings were overwritten: %v", err)
+	}
+	// An explicitly selected empty directory must not fall back to service defaults.
+	config.Current.ConfCopyDir = t.TempDir()
+	emptyUsers := newCloudUsers(home, nil)
+	defer emptyUsers.Close()
+	emptyID := uuid.NewString()
+	created = cloudRequest(t, emptyUsers, emptyID, "POST", "/api/projects", map[string]string{"user_id": emptyID, "name": "empty"})
+	if created.Code != 201 || emptyUsers.users[emptyID].server.models.Active().Ref != "" {
+		t.Fatalf("empty source fallback: %d %s", created.Code, created.Body.String())
 	}
 }

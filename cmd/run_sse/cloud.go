@@ -45,14 +45,19 @@ type cloudUser struct {
 // The guest UUID is prototype identity, not authentication. Never share a server's
 // mutable home, model selection or repository between different UUIDs.
 type cloudUsers struct {
-	home   string
-	tracer telemetry.Tracer
-	mu     sync.Mutex
-	users  map[string]*cloudUser
+	home    string
+	copyDir string
+	tracer  telemetry.Tracer
+	mu      sync.Mutex
+	users   map[string]*cloudUser
 }
 
 func newCloudUsers(home string, tracer telemetry.Tracer) *cloudUsers {
-	return &cloudUsers{home: home, tracer: tracer, users: make(map[string]*cloudUser)}
+	copyDir := config.Current.ConfCopyDir
+	if copyDir == "" {
+		copyDir = layout.Root(home)
+	}
+	return &cloudUsers{home: home, copyDir: copyDir, tracer: tracer, users: make(map[string]*cloudUser)}
 }
 
 func cloudUserID(w http.ResponseWriter, r *http.Request) (string, error) {
@@ -166,7 +171,7 @@ func (c *cloudUsers) user(id string, create bool) (*cloudUser, error) {
 			return nil, err
 		}
 	}
-	if err := initializeCloudHome(c.home, id); err != nil {
+	if err := initializeCloudHome(c.home, id, c.copyDir); err != nil {
 		return nil, err
 	}
 	// Resolve macOS /tmp aliases once; every tool and persisted workdir uses this root.
@@ -211,7 +216,7 @@ func (c *cloudUsers) Close() {
 	}
 }
 
-func initializeCloudHome(serviceHome, id string) error {
+func initializeCloudHome(serviceHome, id, copyDir string) error {
 	base := filepath.Join(serviceHome, "laxcode")
 	if err := os.MkdirAll(base, 0700); err != nil {
 		return err
@@ -256,7 +261,7 @@ func initializeCloudHome(serviceHome, id string) error {
 	}
 	defer root.RemoveAll(stage)
 	stageHome := filepath.Join(base, id, stage)
-	conf, err := config.LoadSettings(serviceHome, nil)
+	conf, err := config.LoadSettingsFromDir(copyDir, nil)
 	if err != nil {
 		return err
 	}
@@ -293,7 +298,7 @@ func initializeCloudHome(serviceHome, id string) error {
 	if err := os.WriteFile(layout.UserSettings(stageHome), append(data, '\n'), 0600); err != nil {
 		return err
 	}
-	if err := copyCloudSkills(layout.SkillsRoot(serviceHome), layout.SkillsRoot(stageHome)); err != nil {
+	if err := copyCloudSkills(layout.SkillsDir(copyDir), layout.SkillsRoot(stageHome)); err != nil {
 		return err
 	}
 	if err := root.WriteFile(filepath.Join(stage, ".initialized"), []byte("v1\n"), 0600); err != nil {

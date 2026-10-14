@@ -45,12 +45,13 @@
 ### 首次创建项目时在服务账户主目录下初始化 laxcode/{user_id}/agenthome 和用户共用 tmp
 
 - `cmd/run_sse/cloud.go`：`func (c *cloudUsers) user(id string, create bool) (*cloudUser, error)`
-- `cmd/run_sse/cloud.go`：`func initializeCloudHome(serviceHome, id string) error`
+- `cmd/run_sse/cloud.go`：`func initializeCloudHome(serviceHome, id, copyDir string) error`
 
-### 首次初始化只复制 API Key 模型配置和技能模板，通过临时目录及初始化标记发布 agenthome
+### 首次初始化从 -conf_copy_dir 指定目录复制 API Key 配置和技能模板，未指定时使用服务账户的 .laxcode，通过临时目录及标记发布 agenthome
 
-- `cmd/run_sse/cloud.go`：`func initializeCloudHome(serviceHome, id string) error`
+- `cmd/run_sse/cloud.go`：`func initializeCloudHome(serviceHome, id, copyDir string) error`
 - `cmd/run_sse/cloud.go`：`func copyCloudSkills(source, destination string) error`
+- `internal/infrastructure/config/config.go`：`func LoadSettingsFromDir(configDir string, args []string) (Conf, error)`
 
 ### 按用户加载 settings 而不修改服务进程环境，缓存独立模型管理器、SQLite 仓储和 HTTP 服务
 

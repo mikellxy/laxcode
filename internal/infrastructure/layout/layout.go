@@ -108,14 +108,20 @@ func TracingLog(homeDir, sessID string) string {
 // SkillsRoot 返回全局技能目录 ${homeDir}/.laxcode/skills，
 // 其发现规则见 infrastructure/skillrepo。
 func SkillsRoot(homeDir string) string {
-	return filepath.Join(Root(homeDir), SkillsDirName)
+	return SkillsDir(Root(homeDir))
 }
+
+// SkillsDir returns the skills directory within a configuration directory.
+func SkillsDir(configDir string) string { return filepath.Join(configDir, SkillsDirName) }
 
 // UserSettings 返回用户级配置文件 ${homeDir}/.laxcode/settings.json。
 // 与工作目录布局共用 RootDirName 但根不同，故单列一个函数而非复用 Root。
 func UserSettings(homeDir string) string {
-	return filepath.Join(homeDir, RootDirName, settingsFileName)
+	return SettingsFile(Root(homeDir))
 }
+
+// SettingsFile returns settings.json within a configuration directory.
+func SettingsFile(configDir string) string { return filepath.Join(configDir, settingsFileName) }
 
 // OAuthCredentials stores renewable credentials separately from model settings.
 func OAuthCredentials(homeDir string) string { return filepath.Join(Root(homeDir), "auth.json") }

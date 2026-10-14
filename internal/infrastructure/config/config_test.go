@@ -361,3 +361,38 @@ func TestCloudFlagAndSettingsDoNotApplyUserEnvironment(t *testing.T) {
 		t.Fatal("user env changed process environment")
 	}
 }
+
+func TestConfCopyDirFlag(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(t.TempDir(), "configuration source")
+	if err := os.Mkdir(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{source, relative} {
+		conf, err := LoadSettings(home, []string{"-cloud", "-conf_copy_dir=" + input})
+		if err != nil || conf.ConfCopyDir != source {
+			t.Fatalf("source %q: dir=%q err=%v", input, conf.ConfCopyDir, err)
+		}
+	}
+	conf, err := LoadSettings(home, []string{"-cloud"})
+	if err != nil || conf.ConfCopyDir != "" {
+		t.Fatalf("default copy dir: %+v %v", conf, err)
+	}
+	file := filepath.Join(home, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{file, filepath.Join(home, "missing")} {
+		if _, err := LoadSettings(home, []string{"-cloud", "-conf_copy_dir=" + invalid}); err == nil {
+			t.Fatalf("accepted invalid source %q", invalid)
+		}
+	}
+}

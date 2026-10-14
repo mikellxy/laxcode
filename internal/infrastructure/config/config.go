@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
@@ -43,6 +44,7 @@ type Conf struct {
 	Addr            string
 	Plan            bool
 	Cloud           bool
+	ConfCopyDir     string
 }
 
 type Provider struct {
@@ -95,6 +97,7 @@ type cliConf struct {
 	Addr          string `mapstructure:"addr"`
 	Plan          bool   `mapstructure:"plan"`
 	Cloud         bool   `mapstructure:"cloud"`
+	ConfCopyDir   string `mapstructure:"conf_copy_dir"`
 	ModelName     string `mapstructure:"model"`
 	OpenaiApiKey  string `mapstructure:"openai_api_key"`
 	OpenaiBaseUrl string `mapstructure:"openai_base_url"`
@@ -137,7 +140,12 @@ func Load(homeDir string, args []string) (Conf, error) {
 
 // LoadSettings reads settings and flags without changing process environment.
 func LoadSettings(homeDir string, args []string) (Conf, error) {
-	file, err := parseFile(homeDir)
+	return LoadSettingsFromDir(layout.Root(homeDir), args)
+}
+
+// LoadSettingsFromDir reads a configuration directory without applying env.conf.
+func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
+	file, err := parseFile(configDir)
 	if err != nil {
 		return Conf{}, err
 	}
@@ -148,8 +156,8 @@ func LoadSettings(homeDir string, args []string) (Conf, error) {
 	return merge(file, cli)
 }
 
-func parseFile(homeDir string) (fileConf, error) {
-	data, err := os.ReadFile(layout.UserSettings(homeDir))
+func parseFile(configDir string) (fileConf, error) {
+	data, err := os.ReadFile(layout.SettingsFile(configDir))
 	if errors.Is(err, os.ErrNotExist) {
 		return fileConf{}, nil
 	}
@@ -189,6 +197,7 @@ func parseCLI(args []string) (cliConf, error) {
 	flags.StringVar(&cli.Addr, "addr", DefaultSSEAddr, "Web backend listen address")
 	flags.BoolVar(&cli.Plan, "plan", false, "enable plan mode")
 	flags.BoolVar(&cli.Cloud, "cloud", false, "enable cloud prototype with per-user workspaces")
+	flags.StringVar(&cli.ConfCopyDir, "conf_copy_dir", "", "cloud initialization source containing settings.json and skills (default: service home/.laxcode)")
 	flags.StringVar(&cli.ModelName, "model", "", "upstream model name (requires API key and base URL)")
 	flags.StringVar(&cli.OpenaiApiKey, "openai_api_key", "", "API key for the CLI model")
 	flags.StringVar(&cli.OpenaiBaseUrl, "openai_base_url", "", "base URL for the CLI model")
@@ -209,6 +218,20 @@ func merge(file fileConf, cli cliConf) (Conf, error) {
 		conf.LlmRouterAddr = file.LlmRouterAddr
 	}
 	conf.Addr, conf.Plan, conf.Cloud = cli.Addr, cli.Plan, cli.Cloud
+	if cli.ConfCopyDir != "" {
+		dir, err := filepath.Abs(cli.ConfCopyDir)
+		if err != nil {
+			return Conf{}, fmt.Errorf("resolve conf_copy_dir: %w", err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			return Conf{}, fmt.Errorf("stat conf_copy_dir: %w", err)
+		}
+		if !info.IsDir() {
+			return Conf{}, errors.New("conf_copy_dir must be a directory")
+		}
+		conf.ConfCopyDir = dir
+	}
 	for _, provider := range conf.ProviderList {
 		if provider.ProviderName == CLIProviderName {
 			return Conf{}, fmt.Errorf("provider_name %q is reserved for CLI configuration", CLIProviderName)
