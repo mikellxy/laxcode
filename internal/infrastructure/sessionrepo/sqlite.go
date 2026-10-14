@@ -185,6 +185,16 @@ func (r *SqliteSessionRepo) migrate() error {
 					OR (message_type = 'in_memory' AND memory_generation >= 1)),
 				FOREIGN KEY (session_id) REFERENCES request_contexts(session_id) ON UPDATE CASCADE ON DELETE CASCADE
 			)`,
+			`CREATE TABLE IF NOT EXISTS chat_upsert_files (
+				session_id VARCHAR(128) NOT NULL,
+				chat_id VARCHAR(64) NOT NULL,
+				file_path TEXT NOT NULL,
+				change_type TEXT NOT NULL CHECK (change_type IN ('created', 'modified')),
+				created_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL,
+				PRIMARY KEY (session_id, chat_id, file_path),
+				FOREIGN KEY (session_id) REFERENCES request_contexts(session_id) ON DELETE CASCADE
+			)`,
 		}
 		for _, statement := range statements {
 			if err := tx.Exec(statement).Error; err != nil {
@@ -210,6 +220,10 @@ func (r *SqliteSessionRepo) migrate() error {
 			if err := tx.Exec("ALTER TABLE messages ADD COLUMN chat_id VARCHAR(64) NOT NULL DEFAULT ''").Error; err != nil {
 				return fmt.Errorf("add chat id column: %w", err)
 			}
+		}
+		if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_chat
+			ON messages(session_id, message_type, chat_id, role, seq)`).Error; err != nil {
+			return fmt.Errorf("create chat message index: %w", err)
 		}
 		if !tx.Migrator().HasColumn(&requestContextModel{}, "user_id") {
 			if err := tx.Exec("ALTER TABLE request_contexts ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''").Error; err != nil {
@@ -311,6 +325,9 @@ func (r *SqliteSessionRepo) DeleteSession(ctx context.Context, id, userID string
 			return ErrSessionBusy
 		}
 		// Explicitly delete every message generation, without relying on foreign-key settings.
+		if err := tx.Exec("DELETE FROM chat_upsert_files WHERE session_id = ?", id).Error; err != nil {
+			return fmt.Errorf("delete chat files: %w", err)
+		}
 		if err := tx.Where("session_id = ?", id).Delete(&messageModel{}).Error; err != nil {
 			return fmt.Errorf("delete session messages: %w", err)
 		}
@@ -475,12 +492,13 @@ func (r *SqliteSessionRepo) ListOriginalHistory(ctx context.Context, id string, 
 			case sharedkernel.RoleAssistant:
 				msg.Content = row.Content
 				msg.ReasoningContent = row.ReasoningContent
+				msg.ChatID = row.ChatID
 			case sharedkernel.RoleTool:
 				msg.ToolSummary = row.DisplayContent
 			}
 			page.Messages[i] = msg
 		}
-		return nil
+		return attachChatFiles(tx, id, page.Messages)
 	})
 	return page, found, err
 }

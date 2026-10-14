@@ -80,3 +80,18 @@ button { color: inherit; }
 .chatgpt-login button { border: 1px solid var(--ink); border-radius: 8px; padding: 10px 16px; background: var(--ink); color: #fff; cursor: pointer; }
 .chatgpt-login button:disabled { opacity: .6; cursor: default; }
 .chatgpt-login a { color: var(--ink); }
+
+.chat-files { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: #f7f7f2; }
+.message-body .chat-files header { justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.chat-files header span { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; }
+.chat-files small { color: var(--muted); font-size: 11px; }
+.chat-files ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.chat-files li { display: flex; align-items: baseline; gap: 12px; }
+.chat-files code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.file-change { flex-shrink: 0; padding: 2px 6px; border-radius: 4px; font-size: 10px; color: #8b6234; background: #f1e9db; }
+.file-change.created { color: #477756; background: #e7eee5; }
+.chat-files footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.chat-files button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; background: #fff; color: var(--ink); font-size: 11px; cursor: pointer; }
+.chat-files button:hover { border-color: var(--accent); }
+.chat-files button:disabled { opacity: .6; cursor: default; }
+.chat-files-error { margin: 10px 0 0; color: #b5482f; font-size: 12px; }

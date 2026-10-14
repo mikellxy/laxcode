@@ -14,7 +14,8 @@ type HistoryMessage struct {
 	Content          string
 	ReasoningContent string
 	ToolSummary      string
-	// ChatID 是 user 消息所属轮次的标识（messages.chat_id）；其余角色为空。
+	UpsertFiles      []ChatFile
+	// ChatID 标识用户轮次；cloud assistant 也携带它以关联文件清单。
 	ChatID    string
 	CreatedAt time.Time
 }

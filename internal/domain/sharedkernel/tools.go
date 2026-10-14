@@ -20,6 +20,7 @@ const (
 )
 
 type ToolResult struct {
+	ChangedFiles   []ChangedFile  `json:"-"`
 	Error          error          `json:"error"`
 	ToolCallID     string         `json:"tool_call_id"`
 	Output         string         `json:"output"`
@@ -28,4 +29,10 @@ type ToolResult struct {
 	Metadata       map[string]any `json:"metadata,omitempty"`
 	CompactContent string         `json:"compact_content,omitempty"`
 	Artifact       *ArtifactRef   `json:"artifact,omitempty"`
+}
+
+// ChangedFile describes a file actually written by a file tool.
+type ChangedFile struct {
+	Path    string
+	Created bool
 }

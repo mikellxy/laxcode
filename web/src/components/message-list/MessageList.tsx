@@ -30,7 +30,7 @@ export function MessageList({ messages, sessionID, hasMore, loading, initialLoad
       {hasMore && <button className="load-history" onClick={load} disabled={loading}>{loading ? <LoaderCircle className="spin" size={15} /> : <ArrowUp size={15} />}{loading ? "加载中…" : "查看更早消息"}</button>}
       {initialLoading ? <div className="center-state"><LoaderCircle className="spin" /><span>正在读取会话…</span></div> : messages.length === 0 && !error ? <div className="empty-state"><span className="empty-state-logo"><img src={laxcodeLogo} alt="LaxCode" /></span><h2>从一个想法开始</h2><p>描述你想分析、构建或修改的内容。LaxCode 会在当前工作区中协助你完成。</p></div> : groupMessages(messages).map((block) => block.kind === "tools"
         ? <ToolMessageBlock key={block.messages[0].id} messages={block.messages} />
-        : <MessageItem key={block.message.id} message={block.message} />)}
+        : <MessageItem key={block.message.id} message={block.message} sessionID={sessionID} />)}
       {error && <div className="retry-banner" role="alert"><span className="retry-icon"><CircleAlert size={18} /></span><div><strong>本轮执行未完成</strong><p>{error}</p></div>{retryAction && <button onClick={onRetry} disabled={retrying}>{retrying ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{retryAction === "resume" ? "继续执行" : "重新发送"}</button>}</div>}
     </div>
   </main>;

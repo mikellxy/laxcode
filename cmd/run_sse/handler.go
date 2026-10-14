@@ -433,13 +433,14 @@ func (s *server) handlePickDirectory(w http.ResponseWriter, r *http.Request) {
 }
 
 type historyMessageDTO struct {
-	Seq              uint64    `json:"seq"`
-	Role             string    `json:"role"`
-	Content          string    `json:"content,omitempty"`
-	ReasoningContent string    `json:"reasoning_content,omitempty"`
-	ToolSummary      string    `json:"tool_summary,omitempty"`
-	ChatID           string    `json:"chat_id,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
+	Seq              uint64             `json:"seq"`
+	Role             string             `json:"role"`
+	Content          string             `json:"content,omitempty"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	ToolSummary      string             `json:"tool_summary,omitempty"`
+	ChatID           string             `json:"chat_id,omitempty"`
+	UpsertFiles      []session.ChatFile `json:"upsert_files,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
 }
 
 // modelConfigDTO / providerModelsDTO / providerListModelDTO 是 GET /api/models
@@ -652,6 +653,7 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			Seq: msg.Seq, Role: msg.Role, Content: msg.Content,
 			ReasoningContent: msg.ReasoningContent, ToolSummary: msg.ToolSummary,
 			ChatID: msg.ChatID, CreatedAt: msg.CreatedAt,
+			UpsertFiles: msg.UpsertFiles,
 		}
 	}
 	if page.HasMore && len(page.Messages) > 0 {
