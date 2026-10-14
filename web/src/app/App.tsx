@@ -11,6 +11,7 @@ import { ConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { ChatComposer } from "../components/chat-composer/ChatComposer";
 import { ProjectOnboarding } from "../components/project-onboarding/ProjectOnboarding";
+import { CreateProjectDialog } from "../components/project-onboarding/CreateProjectDialog";
 import { EvaluationPanel } from "../components/evaluation-panel/EvaluationPanel";
 import { pickDirectory } from "../api/directory-picker";
 import { requestJSON } from "../api/client";
@@ -25,6 +26,7 @@ export function App() {
   const [sessionToDelete, setSessionToDelete] = useState<{ session: SessionDTO; label: string }>();
   const [deleteError, setDeleteError] = useState("");
   const [pickingProject, setPickingProject] = useState(false);
+  const [creatingCloudProject, setCreatingCloudProject] = useState(false);
   useEffect(() => { setApprovalError(""); setApprovalSubmitting(false); }, [workspace.stream.approval?.approval_id]);
   const answer = async (approved: boolean) => {
     if (approvalSubmitting) return;
@@ -34,17 +36,9 @@ export function App() {
   };
   const createProject = async () => {
     if (pickingProject || workspace.createProject.isPending || workspace.createSession.isPending) return;
+    if (cloud) { setCreatingCloudProject(true); return; }
     setPickingProject(true);
     try {
-      if (cloud) {
-        const name = window.prompt("请输入项目名称（字母、数字、中横线、下划线）")?.trim();
-        if (!name) return;
-        if (!/^[A-Za-z0-9_-]{1,120}$/.test(name) || ["agenthome", "tmp"].includes(name.toLowerCase())) throw new Error("项目名称只能包含字母、数字、中横线、下划线，且不能为 agenthome 或 tmp");
-        await workspace.createProject.mutateAsync({ name });
-        await models.refetch();
-        setSidebarOpen(false);
-        return;
-      }
       const { path: workDir } = await pickDirectory();
       if (!workDir) return;
       const suggestedName = workDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "新项目";
@@ -109,6 +103,12 @@ export function App() {
           : <p>{workspace.stream.approval.content}</p>}
       </ConfirmDialog>}
     </section>
+    {creatingCloudProject && <CreateProjectDialog pending={workspace.createProject.isPending} onCancel={() => setCreatingCloudProject(false)} onCreate={async (name) => {
+      await workspace.createProject.mutateAsync({ name });
+      setCreatingCloudProject(false);
+      setSidebarOpen(false);
+      void models.refetch();
+    }} />}
     {sessionToDelete && <ConfirmDialog variant="danger" title="删除这个会话？" description="会话历史和会话文件将被永久删除，此操作无法撤销。" confirmLabel="删除会话" cancelLabel="取消" pending={workspace.deleteSession.isPending} error={deleteError} onConfirm={() => void deleteSession()} onCancel={() => setSessionToDelete(undefined)}>
       <div className="confirm-session"><strong>{sessionToDelete.label}</strong><span>{sessionToDelete.session.work_dir}</span></div>
     </ConfirmDialog>}
