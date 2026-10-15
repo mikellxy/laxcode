@@ -95,3 +95,18 @@ button { color: inherit; }
 .chat-files button:hover { border-color: var(--accent); }
 .chat-files button:disabled { opacity: .6; cursor: default; }
 .chat-files-error { margin: 10px 0 0; color: #b5482f; font-size: 12px; }
+
+.composer { position: relative; }
+.skill-menu { position: absolute; z-index: 40; bottom: calc(100% + 10px); left: 0; right: 0; max-height: min(340px, 45vh); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 6px; list-style: none; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 12px 40px rgba(36,42,39,.15); }
+.skill-menu li { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border-radius: 9px; cursor: pointer; }
+.skill-menu li.active { background: #f0f4fa; }
+.skill-menu li > svg { flex-shrink: 0; margin-top: 2px; color: #3868ae; }
+.skill-menu li > div { min-width: 0; }
+.skill-menu strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.skill-menu li span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; white-space: normal; }
+.selected-skills { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 3px 8px; }
+.skill-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 5px 8px; border-radius: 7px; background: #edf3fd; color: #285ca8; font-size: 12px; overflow-wrap: anywhere; }
+.skill-chip > svg { flex-shrink: 0; }
+.skill-chip button { display: inline-flex; flex-shrink: 0; padding: 2px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.skill-chip button:hover { background: #dce8fa; }
+.skill-chip button:disabled { opacity: .4; cursor: default; }

@@ -152,6 +152,7 @@ func (s *server) routes() *http.ServeMux {
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
+	mux.HandleFunc("GET /skills", s.handleListSkills)
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
 	mux.HandleFunc("POST /api/sessions/{session_id}/approvals/{approval_id}", s.handleApproval)
 	mux.HandleFunc("POST /api/model", s.handleSwitchModel)

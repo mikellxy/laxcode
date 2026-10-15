@@ -148,5 +148,5 @@ func newHandler(assets fs.FS, backend *url.URL) http.Handler {
 
 func isBackendPath(requestPath string) bool {
 	return requestPath == "/api" || strings.HasPrefix(requestPath, "/api/") ||
-		requestPath == "/chat" || requestPath == "/healthz"
+		requestPath == "/chat" || requestPath == "/skills" || requestPath == "/healthz"
 }

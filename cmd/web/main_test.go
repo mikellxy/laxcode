@@ -42,7 +42,7 @@ func TestHandlerProxiesBackendRoutes(t *testing.T) {
 	backendURL, _ := url.Parse("http://127.0.0.1:1")
 	handler := newHandler(fstest.MapFS{"index.html": {Data: []byte("app")}}, backendURL)
 
-	for _, requestPath := range []string{"/api/sessions", "/chat", "/healthz"} {
+	for _, requestPath := range []string{"/api/sessions", "/chat", "/skills", "/healthz"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, requestPath, nil))
 		if response.Code != http.StatusBadGateway {

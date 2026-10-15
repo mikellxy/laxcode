@@ -148,6 +148,8 @@ func (c *cloudUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, `{"projects":[]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/models":
 			_, _ = io.WriteString(w, `{"current_model":"","providers":[]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/skills":
+			_, _ = io.WriteString(w, `{"skills":[]}`)
 		default:
 			writeJSONError(w, http.StatusNotFound, "create a project before using this workspace")
 		}

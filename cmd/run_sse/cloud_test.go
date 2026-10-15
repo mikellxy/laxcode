@@ -65,7 +65,7 @@ func TestCloudLifecycleAndUserIsolation(t *testing.T) {
 	users := newCloudUsers(home, nil)
 	defer users.Close()
 	first, second := uuid.NewString(), uuid.NewString()
-	for _, path := range []string{"/healthz", "/api/config", "/api/projects?user_id=" + first, "/api/models"} {
+	for _, path := range []string{"/healthz", "/api/config", "/api/projects?user_id=" + first, "/api/models", "/skills"} {
 		response := cloudRequest(t, users, first, "GET", path, nil)
 		if response.Code != 200 {
 			t.Fatalf("%s: %d %s", path, response.Code, response.Body.String())
@@ -97,6 +97,13 @@ func TestCloudLifecycleAndUserIsolation(t *testing.T) {
 	for _, name := range []string{layout.SessionDB(user.server.homeDir), layout.UserSettings(user.server.homeDir), filepath.Join(layout.SkillsRoot(user.server.homeDir), "demo", "SKILL.md"), user.server.tempDir} {
 		if _, err := os.Stat(name); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+	writeTestSkill(t, user.server.homeDir, "first-only", "private first skill")
+	for _, id := range []string{first, second} {
+		response := cloudRequest(t, users, id, "GET", "/skills", nil)
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "first-only") != (id == first) || strings.Contains(response.Body.String(), home) {
+			t.Fatalf("user %s skills: %d %s", id, response.Code, response.Body.String())
 		}
 	}
 	if got := cloudRequest(t, users, first, "POST", "/api/projects", map[string]string{"user_id": first, "name": "demo-project"}); got.Code != 409 {
