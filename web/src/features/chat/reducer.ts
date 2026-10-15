@@ -1,9 +1,10 @@
 import type { ApprovalRequiredData, RetryAction, StreamEvent } from "../../types/api";
 import type { ChatMessage } from "../../types/chat";
+import { randomUUID } from "../../utils/uuid";
 
 export type StreamState = { messages: ChatMessage[]; running: boolean; error?: string; errorCode?: string; retryAction?: RetryAction; task?: string; approval?: ApprovalRequiredData };
 export type StreamAction = { type: "send"; content: string } | { type: "retry" } | { type: "event"; event: StreamEvent } | { type: "approval_resolved"; approvalID: string } | { type: "failed"; message: string; code?: string; retryAction?: RetryAction } | { type: "reconciled"; preserveError: boolean } | { type: "clear" };
-const id = () => crypto.randomUUID();
+const id = randomUUID;
 const now = () => new Date().toISOString();
 
 function appendAssistant(messages: ChatMessage[], field: "content" | "reasoningContent", delta: string): ChatMessage[] {

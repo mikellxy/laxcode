@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { streamReducer, type StreamState } from "./reducer";
 
-vi.stubGlobal("crypto", { randomUUID: vi.fn(() => `id-${Math.random()}`) });
+beforeEach(() => vi.stubGlobal("crypto", { randomUUID: vi.fn(() => `id-${Math.random()}`) }));
+afterEach(() => vi.unstubAllGlobals());
 describe("streamReducer", () => {
   it("starts a new assistant after a tool call", () => {
     let state: StreamState = { messages: [], running: false };
@@ -40,5 +41,12 @@ describe("streamReducer", () => {
     state = streamReducer(state, { type: "approval_resolved", approvalID: "a" });
     expect(state.approval).toBeUndefined();
     expect(state.running).toBe(true);
+  });
+  it("creates chat messages on HTTP without randomUUID", () => {
+    vi.stubGlobal("crypto", { getRandomValues: (bytes: Uint8Array) => bytes.fill(0) });
+    let state = streamReducer({ messages: [], running: false }, { type: "send", content: "hello" });
+    state = streamReducer(state, { type: "event", event: { type: "message", data: { delta: "reply" } } });
+    expect(state.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(state.messages[0].id).toBe("00000000-0000-4000-8000-000000000000");
   });
 });
