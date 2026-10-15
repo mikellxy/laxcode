@@ -28,3 +28,4 @@ web/vite.config.d.ts
 
 # Retired knowledge pipeline local environments and data
 /knowledge-pipeline/
+/nas/
