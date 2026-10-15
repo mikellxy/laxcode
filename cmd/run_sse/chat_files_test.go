@@ -5,11 +5,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/session"
@@ -86,6 +91,72 @@ func TestCloudChatZIPCurrentVersionAndBoundaries(t *testing.T) {
 	if err != nil || string(data) != "current" {
 		t.Fatalf("ZIP content: %q %v", data, err)
 	}
+	previewEndpoint := strings.TrimSuffix(endpoint, "files.zip") + "file"
+	preview := func(userID, path string) *httptest.ResponseRecorder {
+		return cloudRequest(t, users, userID, "GET", previewEndpoint+"?"+url.Values{"path": {path}}.Encode(), nil)
+	}
+	if got := preview(id, "demo/a.txt"); got.Code != 200 || got.Body.String() != "current" || got.Header().Get("Content-Type") != "text/plain; charset=utf-8" || got.Header().Get("Cache-Control") != "no-store" || got.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("text preview: %d %s headers=%v", got.Code, got.Body.String(), got.Header())
+	}
+	for _, path := range []string{"demo/unlisted.txt", "../secret", target, "demo/../agenthome/settings.json", `demo\a.txt`, ""} {
+		if got := preview(id, path); got.Code != 404 || strings.Contains(got.Body.String(), user.server.userRoot) {
+			t.Fatalf("unlisted path %q: %d %s", path, got.Code, got.Body.String())
+		}
+	}
+	if got := preview(other, "demo/a.txt"); got.Code != 404 {
+		t.Fatalf("another user's preview: %d", got.Code)
+	}
+	if got := cloudRequest(t, users, id, "GET", strings.Replace(previewEndpoint, msg.ChatID, "wrong-chat", 1)+"?path=demo/a.txt", nil); got.Code != 404 {
+		t.Fatalf("another chat's preview: %d", got.Code)
+	}
+	if err := os.WriteFile(target, []byte(strings.Repeat("a", maxChatTextPreviewBytes-1)+"你后面"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(id, "demo/a.txt"); got.Code != 200 || got.Body.Len() != maxChatTextPreviewBytes-1 || !utf8.Valid(got.Body.Bytes()) || got.Header().Get("X-Preview-Truncated") != "true" {
+		t.Fatalf("truncated text: status=%d bytes=%d headers=%v", got.Code, got.Body.Len(), got.Header())
+	}
+	for _, content := range []string{"", "<html><script>alert('test')</script></html>", `<svg xmlns="http://www.w3.org/2000/svg"><script>alert('test')</script></svg>`} {
+		if err := os.WriteFile(target, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if got := preview(id, "demo/a.txt"); got.Code != 200 || got.Body.String() != content || got.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
+			t.Fatalf("literal text: %d %s", got.Code, got.Body.String())
+		}
+	}
+	for _, content := range [][]byte{{0, 1, 2}, {0xff, 0xfe}, []byte("%PDF-1.7\nexample")} {
+		if err := os.WriteFile(target, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if got := preview(id, "demo/a.txt"); got.Code != 415 {
+			t.Fatalf("binary preview: %d %s", got.Code, got.Body.String())
+		}
+	}
+	imagePath := filepath.Join(work, "image.PNG")
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, imageData.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := user.repo.UpsertChatFiles(ctx, sess.ID, msg.ChatID, []session.ChatFile{{Path: "demo/image.PNG", ChangeType: "created"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(id, "demo/image.PNG"); got.Code != 200 || got.Header().Get("Content-Type") != "image/png" || !bytes.Equal(got.Body.Bytes(), imageData.Bytes()) {
+		t.Fatalf("image preview: status=%d headers=%v", got.Code, got.Header())
+	}
+	if err := os.Truncate(imagePath, maxChatImagePreviewBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(id, "demo/image.PNG"); got.Code != 413 {
+		t.Fatalf("oversized image: %d", got.Code)
+	}
+	if err := os.WriteFile(imagePath, []byte("<html>not an image</html>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(id, "demo/image.PNG"); got.Code != 415 {
+		t.Fatalf("mislabeled image: %d", got.Code)
+	}
 	if got := cloudRequest(t, users, other, "GET", endpoint, nil); got.Code != 404 {
 		t.Fatalf("another user: %d", got.Code)
 	}
@@ -104,6 +175,9 @@ func TestCloudChatZIPCurrentVersionAndBoundaries(t *testing.T) {
 	if got := cloudRequest(t, users, id, "GET", endpoint, nil); got.Code != 409 || strings.Contains(got.Body.String(), user.server.userRoot) {
 		t.Fatalf("deleted: %d %s", got.Code, got.Body.String())
 	}
+	if got := preview(id, "demo/a.txt"); got.Code != 409 || strings.Contains(got.Body.String(), user.server.userRoot) {
+		t.Fatalf("deleted preview: %d %s", got.Code, got.Body.String())
+	}
 	outside := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(outside, []byte("secret"), 0600); err != nil {
 		t.Fatal(err)
@@ -114,6 +188,18 @@ func TestCloudChatZIPCurrentVersionAndBoundaries(t *testing.T) {
 	if got := cloudRequest(t, users, id, "GET", endpoint, nil); got.Code != 409 {
 		t.Fatalf("symlink: %d", got.Code)
 	}
+	if got := preview(id, "demo/a.txt"); got.Code != 409 {
+		t.Fatalf("symlink preview: %d", got.Code)
+	}
+	if err := os.Symlink(filepath.Dir(outside), filepath.Join(work, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := user.repo.UpsertChatFiles(ctx, sess.ID, msg.ChatID, []session.ChatFile{{Path: "demo/linked/secret", ChangeType: "created"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(id, "demo/linked/secret"); got.Code != 409 {
+		t.Fatalf("parent symlink preview: %d %s", got.Code, got.Body.String())
+	}
 	entries, err := os.ReadDir(user.server.tempDir)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("temporary ZIPs not cleaned: %+v %v", entries, err)
@@ -123,6 +209,9 @@ func TestCloudChatZIPCurrentVersionAndBoundaries(t *testing.T) {
 	}
 	if got := cloudRequest(t, users, id, "GET", endpoint, nil); got.Code != 403 {
 		t.Fatalf("non-project path: %d %s", got.Code, got.Body.String())
+	}
+	if got := preview(id, "agenthome/settings.json"); got.Code != 403 {
+		t.Fatalf("non-project preview: %d %s", got.Code, got.Body.String())
 	}
 	var tooMany []session.ChatFile
 	for i := 0; i <= maxChatDownloadFiles; i++ {
@@ -136,5 +225,8 @@ func TestCloudChatZIPCurrentVersionAndBoundaries(t *testing.T) {
 	}
 	if got := cloudRequest(t, (&server{}).routes(), "", "GET", endpoint, nil); got.Code != 403 {
 		t.Fatalf("local mode download: %d", got.Code)
+	}
+	if got := cloudRequest(t, (&server{}).routes(), "", "GET", previewEndpoint+"?path=demo/a.txt", nil); got.Code != 403 {
+		t.Fatalf("local mode preview: %d", got.Code)
 	}
 }

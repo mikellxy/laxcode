@@ -19,31 +19,86 @@ import (
 const maxChatDownloadBytes int64 = 100 << 20
 const maxChatDownloadFiles = 200
 
-func (s *server) handleDownloadChatFiles(w http.ResponseWriter, r *http.Request) {
+func (s *server) openChatFileProject(w http.ResponseWriter, r *http.Request) (*os.Root, string, []session.ChatFile) {
 	if s.userRoot == "" {
 		writeJSONError(w, http.StatusForbidden, "file downloads are only available in cloud mode")
-		return
+		return nil, "", nil
 	}
 	repo, ok := s.contextRepo.(session.ChatFilesRepository)
 	if !ok || s.catalog == nil {
 		writeJSONError(w, 500, "file repository is unavailable")
-		return
+		return nil, "", nil
 	}
 	sessionID, chatID := r.PathValue("session_id"), r.PathValue("chat_id")
 	selected, err := s.catalog.GetSession(r.Context(), sessionID)
 	if err != nil {
 		writeJSONError(w, 404, "session not found")
-		return
+		return nil, "", nil
 	}
 	files, err := repo.ListChatFiles(r.Context(), sessionID, chatID)
 	if errors.Is(err, sessionrepo.ErrChatNotFound) || (err == nil && len(files) == 0) {
 		writeJSONError(w, 404, "chat has no downloadable files")
-		return
+		return nil, "", nil
 	}
 	if err != nil {
 		writeJSONError(w, 500, "无法读取文件清单")
+		return nil, "", nil
+	}
+	root, err := os.OpenRoot(s.userRoot)
+	if err != nil {
+		writeJSONError(w, 500, "用户目录不可用")
+		return nil, "", nil
+	}
+	defer root.Close()
+	projectPath, err := filepath.Rel(s.userRoot, selected.WorkDir)
+	if err != nil || !fs.ValidPath(filepath.ToSlash(projectPath)) || projectPath == "." {
+		writeJSONError(w, 403, "项目目录越界")
+		return nil, "", nil
+	}
+	project, err := root.OpenRoot(projectPath)
+	if err != nil {
+		writeJSONError(w, 403, "项目目录不可用")
+		return nil, "", nil
+	}
+	return project, projectPath, files
+}
+
+func openChatFile(w http.ResponseWriter, project *os.Root, projectPath, path string) (*os.File, fs.FileInfo) {
+	if !fs.ValidPath(path) || strings.Contains(path, "\\") {
+		writeJSONError(w, 403, "文件路径越界")
+		return nil, nil
+	}
+	rel, err := filepath.Rel(projectPath, filepath.FromSlash(path))
+	if err != nil || !fs.ValidPath(filepath.ToSlash(rel)) || rel == "." {
+		writeJSONError(w, 403, "文件路径越界")
+		return nil, nil
+	}
+	info, err := project.Lstat(rel)
+	if err != nil || !info.Mode().IsRegular() {
+		writeJSONError(w, 409, "文件已删除或不是普通文件：/"+path)
+		return nil, nil
+	}
+	// Nonblocking open prevents a concurrent swap to a FIFO from hanging.
+	input, err := project.OpenFile(rel, downloadOpenFlags, 0)
+	if err != nil {
+		writeJSONError(w, 409, "文件不可读取：/"+path)
+		return nil, nil
+	}
+	info, err = input.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = input.Close()
+		writeJSONError(w, 409, "文件不是普通文件：/"+path)
+		return nil, nil
+	}
+	return input, info
+}
+
+func (s *server) handleDownloadChatFiles(w http.ResponseWriter, r *http.Request) {
+	project, projectPath, files := s.openChatFileProject(w, r)
+	if project == nil {
 		return
 	}
+	defer project.Close()
 	if len(files) > maxChatDownloadFiles {
 		writeJSONError(w, 413, "下载文件数量超过 200 个")
 		return
@@ -54,17 +109,6 @@ func (s *server) handleDownloadChatFiles(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer root.Close()
-	projectPath, err := filepath.Rel(s.userRoot, selected.WorkDir)
-	if err != nil || !fs.ValidPath(filepath.ToSlash(projectPath)) || projectPath == "." {
-		writeJSONError(w, 403, "项目目录越界")
-		return
-	}
-	project, err := root.OpenRoot(projectPath)
-	if err != nil {
-		writeJSONError(w, 403, "项目目录不可用")
-		return
-	}
-	defer project.Close()
 	tempPath, err := filepath.Rel(s.userRoot, s.tempDir)
 	if err != nil || !fs.ValidPath(filepath.ToSlash(tempPath)) || tempPath == "." {
 		writeJSONError(w, 500, "临时目录不可用")
@@ -91,31 +135,8 @@ func (s *server) handleDownloadChatFiles(w http.ResponseWriter, r *http.Request)
 		if r.Context().Err() != nil {
 			return
 		}
-		// Both the archive name and the opened file must remain in this project.
-		if !fs.ValidPath(file.Path) || strings.Contains(file.Path, "\\") {
-			writeJSONError(w, 403, "文件路径越界")
-			return
-		}
-		rel, err := filepath.Rel(projectPath, filepath.FromSlash(file.Path))
-		if err != nil || !fs.ValidPath(filepath.ToSlash(rel)) || rel == "." {
-			writeJSONError(w, 403, "文件路径越界")
-			return
-		}
-		info, err := project.Lstat(rel)
-		if err != nil || !info.Mode().IsRegular() {
-			writeJSONError(w, 409, "文件已删除或不是普通文件：/"+file.Path)
-			return
-		}
-		// Nonblocking open prevents a concurrent swap to a FIFO from hanging.
-		input, err := project.OpenFile(rel, downloadOpenFlags, 0)
-		if err != nil {
-			writeJSONError(w, 409, "文件不可读取：/"+file.Path)
-			return
-		}
-		info, err = input.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			_ = input.Close()
-			writeJSONError(w, 409, "文件不是普通文件：/"+file.Path)
+		input, info := openChatFile(w, project, projectPath, file.Path)
+		if input == nil {
 			return
 		}
 		if info.Size() > maxChatDownloadBytes-total {
