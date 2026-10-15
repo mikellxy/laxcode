@@ -59,8 +59,8 @@ func (in *AddModelInput) normalizeAndValidate() error {
 	return nil
 }
 
-// AddModelToSettings 将模型原子写入 ${home}/.laxcode/settings.json，并在写入
-// 成功后更新当前进程的模型目录。调用方必须与模型切换共用同一把写锁。
+// AddModelToSettings saves API keys in the host configs.db and other settings in JSON.
+// Runtime state is published only after both writes succeed.
 func (m *Manager) AddModelToSettings(input AddModelInput) (config.Model, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -95,7 +95,7 @@ func (m *Manager) AddModelToSettings(input AddModelInput) (config.Model, error) 
 		}
 	}
 	settingsPath := layout.UserSettings(m.homeDir)
-	document, err := readSettings(settingsPath)
+	document, err := config.ReadSettings(settingsPath)
 	if err != nil {
 		return config.Model{}, err
 	}
@@ -105,11 +105,14 @@ func (m *Manager) AddModelToSettings(input AddModelInput) (config.Model, error) 
 			return config.Model{}, fmt.Errorf("parse settings provider_list: %w", err)
 		}
 	} // 文件存在但缺 provider_list 键时按空目录处理
+	if err := config.LoadProviderAPIKeys(layout.Root(m.homeDir), diskProviders); err != nil {
+		return config.Model{}, err
+	}
 	diskProviders, err = appendModelToProviders(diskProviders, input, model)
 	if err != nil {
 		return config.Model{}, err
 	}
-	document["provider_list"], err = json.Marshal(diskProviders)
+	document["provider_list"], err = json.Marshal(config.WithoutProviderAPIKeys(diskProviders))
 	if err != nil {
 		return config.Model{}, fmt.Errorf("encode provider list: %w", err)
 	}
@@ -124,7 +127,10 @@ func (m *Manager) AddModelToSettings(input AddModelInput) (config.Model, error) 
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
 		return config.Model{}, fmt.Errorf("create settings dir: %w", err)
 	}
-	if err := writeSettingsAtomic(settingsPath, encoded); err != nil {
+	if err := config.SaveProviderAPIKeys(layout.Root(m.homeDir), diskProviders); err != nil {
+		return config.Model{}, err
+	}
+	if err := config.WriteSettingsAtomic(settingsPath, encoded); err != nil {
 		return config.Model{}, err
 	}
 	m.state = runtimeCandidate
@@ -163,69 +169,4 @@ func appendModelToProviders(providers []config.Provider, input AddModelInput, mo
 func credentialsEqual(provider *config.Provider, input AddModelInput) bool {
 	return provider.AuthType != "oauth" && strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
 		strings.TrimRight(strings.TrimSpace(provider.OpenaiBaseUrl), "/") == strings.TrimRight(input.BaseURL, "/")
-}
-
-// readSettings retains unrelated JSON fields and accepts legacy uppercase model
-// keys. Writes normalize only the keys owned by this package.
-func readSettings(path string) (map[string]json.RawMessage, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]json.RawMessage{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read settings: %w", err)
-	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(data, &document); err != nil {
-		return nil, fmt.Errorf("parse settings: %w", err)
-	}
-	if document == nil {
-		return nil, errors.New("settings must be a JSON object")
-	}
-	for key, value := range document {
-		for _, canonical := range []string{"provider_list", "model"} {
-			if key != canonical && strings.EqualFold(key, canonical) {
-				if _, exists := document[canonical]; !exists {
-					document[canonical] = value
-				}
-				delete(document, key)
-			}
-		}
-	}
-	return document, nil
-}
-
-func writeSettingsAtomic(path string, content []byte) (err error) {
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, ".settings-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temporary settings: %w", err)
-	}
-	tempPath := temp.Name()
-	defer func() {
-		_ = temp.Close()
-		if err != nil {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if err = temp.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary settings: %w", err)
-	}
-	if _, err = temp.Write(content); err != nil {
-		return fmt.Errorf("write temporary settings: %w", err)
-	}
-	if err = temp.Sync(); err != nil {
-		return fmt.Errorf("sync temporary settings: %w", err)
-	}
-	if err = temp.Close(); err != nil {
-		return fmt.Errorf("close temporary settings: %w", err)
-	}
-	if err = os.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("replace settings: %w", err)
-	}
-	if dirHandle, openErr := os.Open(dir); openErr == nil {
-		_ = dirHandle.Sync()
-		_ = dirHandle.Close()
-	}
-	return nil
 }

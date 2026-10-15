@@ -13,6 +13,7 @@ import (
 
 func TestSettingsWritesDoNotPersistCLIProvider(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	writeSettings(t, home, modelSettings("p", "main"))
 	conf, err := config.Load(home, []string{"-model=cli-model", "-openai_api_key=cli-secret", "-openai_base_url=https://cli.example/v1"})
 	if err != nil {
@@ -186,6 +187,12 @@ func TestAddModelToSettingsFirstModelCreatesSettingsAndActivates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(string(content), "sk-new") || strings.Contains(string(content), "openai_api_key") {
+		t.Fatal("new model persisted an API key in settings")
+	}
+	if err := parseTestSettings(); err != nil || testManager.Active().OpenaiApiKey != "sk-new" {
+		t.Fatalf("cannot reload the new model's API key: %v", err)
+	}
 	var document struct {
 		ProviderList []config.Provider `json:"provider_list"`
 	}
@@ -199,5 +206,29 @@ func TestAddModelToSettingsFirstModelCreatesSettingsAndActivates(t *testing.T) {
 	info, err := os.Stat(settingsPath)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("settings file stat: %v", err)
+	}
+}
+
+func TestAddModelDatabaseFailurePreservesSettingsAndRuntime(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".laxcode")
+	if err := os.MkdirAll(filepath.Join(dir, "configs.db"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, home, `{"custom":true}`)
+	models, err := New(home, config.Conf{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = models.AddModelToSettings(AddModelInput{Provider: "p", Model: "m", APIKey: "failed-secret", BaseURL: "https://example.com/v1", ContextWindow: 1000, MaxOutputTokens: 100})
+	if err == nil {
+		t.Fatal("database write failure was ignored")
+	}
+	if models.Active().Ref != "" || len(models.List()) != 0 {
+		t.Fatal("failed database write changed the runtime catalog")
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "settings.json")); err != nil || string(data) != `{"custom":true}` {
+		t.Fatal("failed database write changed settings")
 	}
 }

@@ -741,6 +741,7 @@ func TestSessionLocksSerializesSameID(t *testing.T) {
 // newTestServer isolates model state while retaining settings-based fixtures.
 func newTestServer(t *testing.T, home string, plan bool) *server {
 	t.Helper()
+	t.Setenv("HOME", home)
 	models, err := ai_models.New(home, config.Current)
 	if err != nil {
 		t.Fatal(err)

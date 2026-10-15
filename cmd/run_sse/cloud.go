@@ -265,7 +265,7 @@ func initializeCloudHome(serviceHome, id, copyDir string) error {
 	if err != nil {
 		return err
 	}
-	// Copy API-key defaults and skills, never OAuth credentials, MCP commands or history.
+	// Copy model defaults and skills; API keys go to the host configs.db, never agenthome.
 	providers := make([]config.Provider, 0, len(conf.ProviderList))
 	for _, provider := range conf.ProviderList {
 		if provider.AuthType != "oauth" {
@@ -288,7 +288,7 @@ func initializeCloudHome(serviceHome, id, copyDir string) error {
 	if !hasRef(conf.CompactionModel) {
 		conf.CompactionModel = ""
 	}
-	data, err := json.MarshalIndent(map[string]any{"model": conf.Model, "compaction_model": conf.CompactionModel, "provider_list": providers}, "", "  ")
+	data, err := json.MarshalIndent(map[string]any{"model": conf.Model, "compaction_model": conf.CompactionModel, "provider_list": config.WithoutProviderAPIKeys(providers)}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -308,6 +308,10 @@ func initializeCloudHome(serviceHome, id, copyDir string) error {
 	if _, err := root.Lstat("agenthome"); err == nil {
 		return errors.New("agenthome exists without an initialization marker")
 	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// Use the final configuration scope, not the temporary initialization directory.
+	if err := config.SaveProviderAPIKeys(layout.Root(filepath.Join(base, id, "agenthome")), providers); err != nil {
 		return err
 	}
 	return root.Rename(stage, "agenthome")

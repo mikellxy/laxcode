@@ -114,6 +114,9 @@ func SkillsRoot(homeDir string) string {
 // SkillsDir returns the skills directory within a configuration directory.
 func SkillsDir(configDir string) string { return filepath.Join(configDir, SkillsDirName) }
 
+// ConfigsDB contains API keys for all configurations owned by the host account.
+func ConfigsDB(hostHome string) string { return filepath.Join(Root(hostHome), "configs.db") }
+
 // UserSettings 返回用户级配置文件 ${homeDir}/.laxcode/settings.json。
 // 与工作目录布局共用 RootDirName 但根不同，故单列一个函数而非复用 Root。
 func UserSettings(homeDir string) string {

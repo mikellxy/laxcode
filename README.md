@@ -73,6 +73,13 @@ Windows PowerShell 直接运行启动脚本：
 
 新建会话时由页面传入工作目录，并与 `session_id`、`mode` 持久绑定。遇到需要确认的工具操作时，页面会暂停当前流并显示确认框。
 
+API Key 存放在运行账户的 `~/.laxcode/configs.db`（权限 `0600`）；模型、Base URL
+等配置仍保存在 `settings.json`。普通本地模式首次加载时会自动迁移旧 JSON 中的
+API Key，数据库提交成功后才从 JSON 删除明文。新增模型同样先保存 Key，再写入
+不含 Key 的 JSON；配置加载时从数据库补回内存。不同配置及 cloud 用户的同名
+`provider:model` 分开存储。CLI 参数指定的临时模型不持久化，OAuth 存储流程不变。
+备份或迁移实例时，需要同时保留 `configs.db` 和对应的 settings。
+
 后端默认启动 coding SSE 服务，支持 `-addr`、`-plan`，以及配套使用的 `-model`、`-openai_api_key`、`-openai_base_url` 启动参数。原 `-sse`、`-mode`、`-kb`、`-session` 参数已移除；会话通过 Web UI 创建和续接。已有 code 会话仍可使用，旧 RAG 会话不能作为 coding 会话续接；已有数据库中的遗留记忆表保留原数据。
 
 <a id="agent-session-evaluation"></a>
@@ -176,7 +183,10 @@ Go 的 GOPATH 位于用户 tmp/go，避免向镜像中的只读目录写入模�
 为保留名称），同一用户的重名项目返回 409。首次创建项目初始化
 `~/laxcode/{user_id}/agenthome/.laxcode`、用户 SQLite 与技能模板；项目工作目录是
 `~/laxcode/{user_id}/{project_name}`。默认 API Key 模型配置与 skills 从服务账户的
-`.laxcode` 复制，OAuth 凭据、历史和 MCP 配置不会复制；后续用户配置互相独立。
+`.laxcode` 读取。宿主机模板允许保留明文 API Key，复制时将 Key 按
+`user_id:provider:model` 写入宿主机的 `~/.laxcode/configs.db`（覆盖已有记录），
+用户 agenthome 下的 settings 不包含 Key。OAuth 凭据、历史和 MCP 配置不会复制；
+后续用户配置互相独立，已有用户 JSON 中的旧 Key 会在加载时迁移。
 可用 `./cloud.sh -conf_copy_dir="/srv/laxcode-defaults"` 指定初始化来源；该目录直接包含
 `settings.json` 和 `skills/`，不再追加 `.laxcode`。相对路径按后端启动目录解析；
 未指定时使用服务账户的 `~/.laxcode`。已有用户不会被重新复制或覆盖。

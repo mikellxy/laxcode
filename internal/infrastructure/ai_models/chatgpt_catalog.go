@@ -88,7 +88,7 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 			return err
 		}
 	}
-	document, err := readSettings(layout.UserSettings(m.homeDir))
+	document, err := config.ReadSettings(layout.UserSettings(m.homeDir))
 	if err != nil {
 		return err
 	}
@@ -98,11 +98,14 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 			return err
 		}
 	}
+	if err := config.LoadProviderAPIKeys(layout.Root(m.homeDir), providers); err != nil {
+		return err
+	}
 	providers, err = replace(providers)
 	if err != nil {
 		return err
 	}
-	document["provider_list"], err = json.Marshal(providers)
+	document["provider_list"], err = json.Marshal(config.WithoutProviderAPIKeys(providers))
 	if err != nil {
 		return err
 	}
@@ -117,7 +120,10 @@ func (m *Manager) SaveChatGPTModels(models []Model) error {
 	if err := os.MkdirAll(layout.Root(m.homeDir), 0700); err != nil {
 		return err
 	}
-	if err := writeSettingsAtomic(layout.UserSettings(m.homeDir), append(data, '\n')); err != nil {
+	if err := config.SaveProviderAPIKeys(layout.Root(m.homeDir), providers); err != nil {
+		return err
+	}
+	if err := config.WriteSettingsAtomic(layout.UserSettings(m.homeDir), append(data, '\n')); err != nil {
 		return err
 	}
 	m.state = candidate

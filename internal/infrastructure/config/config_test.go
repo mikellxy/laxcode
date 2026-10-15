@@ -74,6 +74,7 @@ func parseTestConfig() error {
 
 func TestLoadMergesFileAndCLI(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	writeSettings(t, home, `{"model":"p:file","compaction_model":"p:summary","llm_router_addr":"127.0.0.1:18080","llm_router_url":"https://ignored.example","addr":"ignored","plan":true,"provider_list":[{"provider_name":"p","openai_api_key":"file-key","openai_base_url":"https://file.example/v1","model_list":[{"model_name":"file","limit":{"context":128000,"output":8192}},{"model_name":"summary"}]}]}`)
 	conf, err := Load(home, []string{"-addr=127.0.0.1:9000", "-plan", "-model=cli-model", "-openai_api_key=cli-key", "-openai_base_url=https://cli.example/v1"})
 	if err != nil {
@@ -124,6 +125,7 @@ func TestParseCLIRejectsRemovedFlagsAndPositionalArguments(t *testing.T) {
 
 func TestLoadIgnoresRetiredModelEnvironmentAndGlobalLimits(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	writeSettings(t, home, `{"model":"p:chat","compaction_model":"p:summary","openai_context_window":1,"openai_max_output_tokens":999999,"compaction_openai_context_window":-1,"compaction_openai_max_output_tokens":999999,"provider_list":[{"provider_name":"p","openai_api_key":"file-key","openai_base_url":"https://file.example/v1","model_list":[{"model_name":"chat"},{"model_name":"summary","limit":{"context":128000,"output":8192}}]}]}`)
 	for _, key := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME", "OPENAI_CONTEXT_WINDOW", "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_COMPACTION_API_KEY", "OPENAI_COMPACTION_BASE_URL", "OPENAI_COMPACTION_MODEL_NAME", "COMPACTION_OPENAI_CONTEXT_WINDOW", "COMPACTION_OPENAI_MAX_OUTPUT_TOKENS", "COMPACTION_MODEL", "LLM_ROUTER_ADDR"} {
 		t.Setenv(key, "ignored-invalid-value")
@@ -156,6 +158,7 @@ func TestLoadRejectsInvalidModelsAndJSONStructure(t *testing.T) {
 
 func TestLoadParsesTypedProvidersAndDefaultsIndependently(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	writeSettings(t, home, `{"MODEL":"CaseSensitive:alias","PROVIDER_LIST":[{"provider_name":"CaseSensitive","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"alias","upstream_model":"actual","reasoning_effort":"","limit":{"context":100000,"output":8000}},{"model_name":"plain"},{"model_name":"other"}]}]}`)
 	conf, err := Load(home, nil)
 	if err != nil {
@@ -175,6 +178,7 @@ func TestLoadAppliesEnvFileWithoutModelOverrides(t *testing.T) {
 	t.Setenv("LAXCODE_ENVCONF_PROBE", "inherited")
 	t.Setenv("OPENAI_MODEL_NAME", "inherited-model")
 	home := writeEnvConf(t, "LAXCODE_ENVCONF_PROBE=from-file\nOPENAI_MODEL_NAME=ignored-model\n")
+	t.Setenv("HOME", home)
 	writeSettings(t, home, `{"model":"p:chat","provider_list":[{"provider_name":"p","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"chat"}]}]}`)
 	conf, err := Load(home, nil)
 	if err != nil {

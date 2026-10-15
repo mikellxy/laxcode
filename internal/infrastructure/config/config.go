@@ -140,12 +140,24 @@ func Load(homeDir string, args []string) (Conf, error) {
 	return LoadSettings(homeDir, args)
 }
 
-// LoadSettings reads settings and flags without changing process environment.
+// LoadSettings hydrates API keys and migrates legacy plaintext outside cloud templates.
+// It does not change the process environment.
 func LoadSettings(homeDir string, args []string) (Conf, error) {
-	return LoadSettingsFromDir(layout.Root(homeDir), args)
+	configDir := layout.Root(homeDir)
+	conf, err := LoadSettingsFromDir(configDir, args)
+	if err != nil {
+		return Conf{}, err
+	}
+	// The cloud host settings is a template and may retain plaintext keys.
+	if !conf.Cloud {
+		if err := migrateAPIKeys(configDir, conf.ProviderList); err != nil {
+			return Conf{}, err
+		}
+	}
+	return conf, nil
 }
 
-// LoadSettingsFromDir reads a configuration directory without applying env.conf.
+// LoadSettingsFromDir reads a template without rewriting it or applying env.conf.
 func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
 	file, err := parseFile(configDir)
 	if err != nil {
@@ -155,7 +167,16 @@ func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
 	if err != nil {
 		return Conf{}, err
 	}
-	return merge(file, cli)
+	conf, err := merge(file, cli)
+	if err != nil {
+		return Conf{}, err
+	}
+	// CLI credentials stay ephemeral; only file providers read from configs.db.
+	providers := conf.ProviderList[:len(file.ProviderList)]
+	if err := LoadProviderAPIKeys(configDir, providers); err != nil {
+		return Conf{}, err
+	}
+	return conf, nil
 }
 
 func parseFile(configDir string) (fileConf, error) {

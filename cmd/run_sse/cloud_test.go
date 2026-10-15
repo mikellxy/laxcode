@@ -15,8 +15,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
+	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 )
 
 type cloudNoRunShell struct{ t *testing.T }
@@ -45,6 +47,7 @@ func cloudRequest(t *testing.T, handler http.Handler, id, method, path string, b
 
 func TestCloudLifecycleAndUserIsolation(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	if err := os.MkdirAll(layout.Root(home), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +257,7 @@ func TestCloudConfCopyDir(t *testing.T) {
 	previous := config.Current
 	t.Cleanup(func() { config.Current = previous })
 	home, source := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
 	if err := os.MkdirAll(layout.Root(home), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -318,5 +322,72 @@ func TestCloudConfCopyDir(t *testing.T) {
 	created = cloudRequest(t, emptyUsers, emptyID, "POST", "/api/projects", map[string]string{"user_id": emptyID, "name": "empty"})
 	if created.Code != 201 || emptyUsers.users[emptyID].server.models.Active().Ref != "" {
 		t.Fatalf("empty source fallback: %d %s", created.Code, created.Body.String())
+	}
+}
+
+func TestCloudAPIKeysStayOnHostAndSurviveRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	previous := config.Current
+	config.Current = config.Conf{}
+	t.Cleanup(func() { config.Current = previous })
+	first, second := uuid.NewString(), uuid.NewString()
+	firstConfig := layout.Root(filepath.Join(home, "laxcode", first, "agenthome"))
+	// A retry must overwrite existing user:provider:model credentials with the template.
+	if err := config.SaveProviderAPIKeys(firstConfig, []config.Provider{{ProviderName: "p", OpenaiApiKey: "stale-key", ModelList: []config.Model{{ModelName: "main"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	template := `{"model":"p:main","provider_list":[{"provider_name":"p","openai_api_key":"template-secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"main"}]}]}`
+	if err := os.WriteFile(layout.UserSettings(home), []byte(template), 0600); err != nil {
+		t.Fatal(err)
+	}
+	users := newCloudUsers(home, nil)
+	defer users.Close()
+	for _, id := range []string{first, second} {
+		user, err := users.user(id, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if user.server.models.Active().OpenaiApiKey != "template-secret" {
+			t.Fatal("cloud initialization did not overwrite the stale key")
+		}
+		key := "user-key-" + id
+		if _, err := user.server.models.AddModelToSettings(ai_models.AddModelInput{
+			Provider: "mine", Model: "same-model", APIKey: key, BaseURL: "https://mine.example/v1", ContextWindow: 1000, MaxOutputTokens: 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		fs, err := workfs.NewRoot(user.server.userRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := tools.NewReadFileTool(user.server.userRoot, fs)
+		read.UserRoot = user.server.userRoot
+		args, _ := json.Marshal(map[string]string{"path": layout.UserSettings(user.server.homeDir)})
+		data, err := read.Execute(context.Background(), args)
+		if err != nil || strings.Contains(data, "openai_api_key") || strings.Contains(data, "template-secret") || strings.Contains(data, key) {
+			t.Fatalf("agent can read an API key from settings: %v", err)
+		}
+		args, _ = json.Marshal(map[string]string{"path": layout.ConfigsDB(home)})
+		if _, err := read.Execute(context.Background(), args); err == nil {
+			t.Fatal("agent can access the host configs database")
+		}
+		_ = fs.Close()
+	}
+	if data, err := os.ReadFile(layout.UserSettings(home)); err != nil || string(data) != template {
+		t.Fatal("cloud host template was modified")
+	}
+	users.Close()
+	users = newCloudUsers(home, nil)
+	defer users.Close()
+	for _, id := range []string{first, second} {
+		user, err := users.user(id, false)
+		if err != nil || user == nil {
+			t.Fatalf("cannot reload cloud user: %v", err)
+		}
+		model, err := user.server.models.Resolve("mine:same-model")
+		if err != nil || model.OpenaiApiKey != "user-key-"+id {
+			t.Fatalf("lost or mixed user credentials after restart: %v", err)
+		}
 	}
 }

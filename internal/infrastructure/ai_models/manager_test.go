@@ -27,6 +27,7 @@ func activeModelBudget() (int, int) {
 }
 func swapConfigGlobals(t *testing.T) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	previous := testManager
 	t.Cleanup(func() { testManager = previous })
 }
