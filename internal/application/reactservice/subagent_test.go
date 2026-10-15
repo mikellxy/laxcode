@@ -455,7 +455,8 @@ func TestCloudSubAgentPathDisplayRules(t *testing.T) {
 	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
 	sa := NewSubAgent(parent, work, SubAgentDeps{
 		WorkFS: workfs.New(), UserRoot: root, TempDir: filepath.Join(root, "tmp"),
-		NewShell: func() tools.ShellRunner { return shell.New() },
+		SkillsRoot: layout.SkillsRoot(filepath.Join(root, "agenthome")),
+		NewShell:   func() tools.ShellRunner { return shell.New() },
 	})
 	args, err := json.Marshal(map[string]string{"task": "inspect", "work_dir": childWork})
 	if err != nil {
@@ -469,6 +470,9 @@ func TestCloudSubAgentPathDisplayRules(t *testing.T) {
 	}
 	if out := childSysPrompt(t, repo); !strings.Contains(out, tools.CloudBashEnvironment) || !strings.Contains(out, tools.CloudBashOfflineHint) {
 		t.Fatal("child lacks cloud Bash guidance")
+	}
+	if out := childSysPrompt(t, repo); !strings.Contains(out, sa.deps.SkillsRoot) || !strings.Contains(out, "只读挂载") {
+		t.Fatal("child lacks read-only Skills mount path")
 	}
 }
 

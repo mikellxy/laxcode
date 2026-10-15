@@ -18,7 +18,7 @@ Docker CLI 通过 API 请求 Docker daemon，由后者管理容器。crun 则是
 |---|---|
 | 生命周期 | 每次 Bash 新建容器，正常退出自动删除，返回前还会显式清理 |
 | 网络与镜像 | `--network=none`，保留容器回环；`--pull=never`，运行时不拉取镜像 |
-| 文件与权限 | 只挂载项目和用户 tmp，保持相同绝对路径；非 root、只读根文件系统、清空 capabilities、禁止提权 |
+| 文件与权限 | 项目和用户 tmp 可写，用户 Skills 包只读执行，均保持相同绝对路径；非 root、只读根文件系统、清空 capabilities、禁止提权 |
 | 资源 | 2 CPU 配额、1 GiB 内存、无额外 swap 配额、256 个进程/线程；容器 `/tmp` 为 256 MiB tmpfs |
 | 输出与错误 | 合并 stdout/stderr，最多捕获 32 MiB；区分命令非零退出与执行异常；失败时附加离线说明 |
 
@@ -76,7 +76,7 @@ Docker 参数不能机械翻译成 OCI 字段。迁移时至少需要逐项核�
 | 目标 | crun/OCI 侧需要明确提供的内容 |
 |---|---|
 | 禁止外网，允许容器内回环 | 独立 network namespace，确认回环启用，不配置外部接口或路由 |
-| 目录隔离 | 独立 mount namespace，只读 rootfs，仅暴露项目和用户 tmp |
+| 目录隔离 | 独立 mount namespace，只读 rootfs，项目和用户 tmp 可写，Skills 包只读；其他 agenthome 文件不暴露 |
 | 最小进程权限 | 正确的 UID/GID、空 capabilities、`noNewPrivileges`，以及明确的附加组策略 |
 | 系统调用限制 | 适配目标架构并经过验证的 seccomp 配置 |
 | 基础系统环境 | 容器自己的 `/proc`、`/dev`、必要设备和需要的 tmpfs；屏蔽或只读处理敏感路径 |
@@ -88,7 +88,7 @@ Docker 在支持的环境中提供默认 seccomp 策略。直接运行 crun 时�
 
 ### 3.3 挂载、临时目录与路径语义
 
-建议保留当前目录约定：项目和用户 tmp 挂到容器中的相同绝对路径，`HOME` 位于临时文件系统，`GOPATH` 放在持久挂载的用户 tmp 下。这能继续使用现有工具路径和提示词。
+建议保留当前目录约定：项目和用户 tmp 可读写，用户 Skills 包只读，均挂到容器中的相同绝对路径；`HOME` 位于临时文件系统，`GOPATH` 放在持久挂载的用户 tmp 下。这能继续使用现有工具路径和提示词。
 
 如果改为统一的 `/project`，就需要处理模型命令、文件工具返回路径和工作目录之间的对应关系。单纯修改挂载目标容易造成“文件工具能读到，Bash 却找不到”的问题。
 
@@ -154,7 +154,7 @@ bundle 中的 `config.json`、运行状态和发布的 rootfs 应位于 Agent �
 
 最小验证范围应覆盖：
 
-1. 项目与用户 tmp 正常读写，agenthome 和宿主机敏感目录不可访问，符号链接不能扩大访问范围。
+1. 项目与用户 tmp 正常读写，Skills 脚本和资源只读执行；agenthome 中的配置、会话数据和宿主机敏感目录不可访问，符号链接不能扩大访问范围。
 2. 容器内 HTTP 回环测试成功，外部 IPv4/IPv6、DNS、宿主机回环服务不可访问；挂载目录也不得暴露可用于绕过隔离的宿主服务 socket。
 3. 非 root 身份、只读根文件系统、capabilities、禁止提权、CPU/内存/pids 限制实际生效。
 4. Go、Python、rg 及本地构建可用；不同调用之间只有项目和用户 tmp 保留。

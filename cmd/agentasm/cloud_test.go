@@ -10,6 +10,7 @@ import (
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
 func TestCloudToolBoundaries(t *testing.T) {
@@ -35,6 +36,14 @@ func TestCloudToolBoundaries(t *testing.T) {
 	for _, rule := range []string{tools.CloudBashEnvironment, tools.CloudBashOfflineHint} {
 		if !strings.Contains(assembled.Session.Messages[0].Content, rule) {
 			t.Fatal("cloud prompt lacks Bash environment rules")
+		}
+	}
+	if !strings.Contains(assembled.Session.Messages[0].Content, layout.SkillsRoot(home)) || !strings.Contains(assembled.Session.Messages[0].Content, "权限为只读") {
+		t.Fatal("cloud prompt lacks read-only Skills mount path")
+	}
+	for _, definition := range registry.GetAvailableTools() {
+		if definition.Name == tools.ToolBash && (!strings.Contains(definition.Description, "可以读取和执行其中的脚本") || strings.Contains(definition.Description, "不要用 Bash")) {
+			t.Fatal("cloud Bash description does not allow read-only Skill scripts")
 		}
 	}
 	run := func(name string, args any) *sharedkernel.ToolResult {

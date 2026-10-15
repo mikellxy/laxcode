@@ -130,7 +130,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	childSkills := prompt.LoadSkills(s.deps.SkillSrc, workDir, nil)
 	childSysPrompt := prompt.GetSysPrompt(workDir, childSkills, nil, s.deps.SkillsRoot)
 	if s.deps.UserRoot != "" {
-		childSysPrompt += fmt.Sprintf("\n用户文件范围：%s。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。", s.deps.UserRoot, s.deps.TempDir)
+		childSysPrompt += fmt.Sprintf("\n用户文件范围：%s。Skills 目录为 %s，在 Bash 容器中以相同绝对路径只读挂载。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。", s.deps.UserRoot, s.deps.SkillsRoot, s.deps.TempDir)
 		childSysPrompt += prompt.CloudPathDisplayRules(s.deps.UserRoot, s.workDir)
 		childSysPrompt += "\n" + tools.CloudBashEnvironment + "\n" + tools.CloudBashOfflineHint
 	}

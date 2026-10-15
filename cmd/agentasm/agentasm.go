@@ -195,7 +195,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	if in.Mode == ModeCode {
 		newShell := func() tools.ShellRunner {
 			if in.UserRoot != "" {
-				return shell.NewDocker(in.UserRoot, in.WorkDir, in.TempDir, config.Current.CloudBashImage)
+				return shell.NewDocker(in.UserRoot, in.WorkDir, in.TempDir, skillsRoot, config.Current.CloudBashImage)
 			}
 			return shell.New()
 		}
@@ -271,7 +271,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		sysPrompt = in.SystemPrompt
 	}
 	if in.UserRoot != "" {
-		sysPrompt += fmt.Sprintf("\n用户文件范围：%s。相对路径以 %s 为起点。Agent 配置目录为 %s，仅宿主机工具可访问，Bash 容器未挂载此目录。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。越界操作会直接返回错误。", in.UserRoot, in.WorkDir, in.HomeDir, in.TempDir)
+		sysPrompt += fmt.Sprintf("\n用户文件范围：%s。相对路径以 %s 为起点。Agent 配置目录为 %s；Bash 仅将其中的 Skills 目录 %s 挂载到相同绝对路径，权限为只读，其他配置和会话数据不挂载。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。越界操作会直接返回错误。", in.UserRoot, in.WorkDir, in.HomeDir, layout.SkillsRoot(in.HomeDir), in.TempDir)
 		sysPrompt += prompt.CloudPathDisplayRules(in.UserRoot, in.WorkDir)
 		sysPrompt += "\n" + tools.CloudBashEnvironment + "\n" + tools.CloudBashOfflineHint
 	}

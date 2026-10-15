@@ -152,15 +152,21 @@ LaxCode/
 账户的 UID/GID 读写。运行时禁止自动拉取镜像，Docker/镜像不可用时不会回退到宿主机 Bash。
 
 cloud 主 Agent 和子 Agent 每次 Bash 调用都使用一个新容器：`--rm --network=none
---pull=never`，保留本次容器内的 `127.0.0.1` 回环访问。仅将项目 WorkDir 和用户
-TempDir 挂载到容器相同的绝对路径；不挂载 UserRoot、agenthome 或 Docker socket。
+--pull=never`，保留本次容器内的 `127.0.0.1` 回环访问。项目 WorkDir 和用户
+TempDir 挂载到容器相同的绝对路径，权限为可读写；另将
+`agenthome/.laxcode/skills` 以相同绝对路径只读挂载，允许读取和执行包内脚本、资源。
+不挂载整个 UserRoot、agenthome、其他配置与会话数据或 Docker socket。
 容器根文件系统只读，删除全部 capabilities、禁止提权，限 2 CPU、1 GiB 内存、
 256 个进程；容器 `/tmp` 使用 256 MiB tmpfs，HOME 为 `/tmp/agenthome`。
 TMPDIR/TMP/TEMP 指向挂载的用户 tmp，Go 禁用依赖下载和自动工具链下载。
 Go 的 GOPATH 位于用户 tmp/go，避免向镜像中的只读目录写入模块缓存。
 超时、取消和 Runner.Close 显式清理容器；后台服务不会跨 Bash 调用保留，启动、
 等待就绪、测试和结束服务必须在同一次调用内完成。挂载目录中的文件保留，其他
-目录里的环境修改随容器删除。Skills 通过宿主机的 grep/glob/read_file 工具读取。
+目录里的环境修改随容器删除。Skills 定义优先通过宿主机的 grep/glob/read_file
+工具读取；包内脚本可通过 Bash 的真实绝对路径执行，生成文件和缓存必须写入
+项目或 `$TMPDIR`。HOME 仍为容器临时目录，不能用 `$HOME` 拼接 Skills 路径。
+只读挂载保留原有文件权限，直接执行脚本需要可执行位，也可用 bash/python3
+解释器读取脚本；依赖需要镜像预装，网络限制不变。
 非零退出和执行异常在模型正文、压缩摘要中都附带离线提示：用容器内的本地实现，
 不反复联网重试；受离线限制的验证应说明未验证项目、原因及用户自行验证命令。
 每次调用最多捕获 32 MiB 合并日志，超出部分丢弃并明确提示，Docker 日志驱动关闭。

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
 // Opt in on a non-root host with a prebuilt image; never pull during tests.
@@ -23,8 +25,11 @@ func TestDockerSandboxIntegration(t *testing.T) {
 	}
 	root := t.TempDir()
 	work, temp := filepath.Join(root, "demo"), filepath.Join(root, "tmp")
-	for _, dir := range []string{work, temp, filepath.Join(root, "agenthome")} {
-		if err := os.Mkdir(dir, 0700); err != nil {
+	home := filepath.Join(root, "agenthome")
+	skills := layout.SkillsRoot(home)
+	packageDir := filepath.Join(skills, "demo")
+	for _, dir := range []string{work, temp, packageDir, layout.SessionRoot(home)} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -34,7 +39,25 @@ func TestDockerSandboxIntegration(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "agenthome", "secret"), filepath.Join(work, "escape")); err != nil {
 		t.Fatal(err)
 	}
-	r := NewDocker(root, work, temp, image)
+	for _, path := range []string{layout.UserSettings(home), layout.SessionDB(home), filepath.Join(packageDir, "data.txt")} {
+		if err := os.WriteFile(path, []byte("skill-resource"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := `#!/bin/bash
+set -euo pipefail
+skill_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+test "$(cat "$skill_dir/data.txt")" = skill-resource
+printf 'skill-output' > skill-output.txt
+printf 'skill-output' > "$TMPDIR/skill-output.txt"
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "run.sh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(layout.UserSettings(home), filepath.Join(packageDir, "settings-link")); err != nil {
+		t.Fatal(err)
+	}
+	r := NewDocker(root, work, temp, skills, image)
 	defer r.Close()
 	var names []string
 	r.command = func(ctx context.Context, binary string, args ...string) *exec.Cmd {
@@ -57,7 +80,7 @@ func TestDockerSandboxIntegration(t *testing.T) {
 		return out.Output
 	}
 	probe := fmt.Sprintf(`python3 - <<'PY'
-import os, pathlib, socket, threading, http.server, http.client
+import os, pathlib, socket, threading, http.server, http.client, subprocess, errno
 assert os.getuid() == %d and os.getuid() != 0
 assert os.getgid() == %d
 assert os.environ['TMPDIR'] == %q
@@ -66,6 +89,27 @@ assert os.environ['HOME'] == '/tmp/agenthome'
 assert not pathlib.Path(%q).exists()
 assert not pathlib.Path('escape').exists()
 assert not pathlib.Path('/var/run/docker.sock').exists()
+skills = pathlib.Path(%q)
+package = skills / 'demo'
+assert not (skills.parent / 'settings.json').exists()
+assert not (skills.parent / 'sessions' / 'sessions.db').exists()
+assert not (package / 'settings-link').exists()
+assert (package / 'data.txt').read_text() == 'skill-resource'
+subprocess.run([str(package / 'run.sh')], check=True)
+assert pathlib.Path('skill-output.txt').read_text() == 'skill-output'
+assert pathlib.Path(os.environ['TMPDIR'], 'skill-output.txt').read_text() == 'skill-output'
+for mutate in [
+    lambda: (skills / 'new-file').write_text('changed'),
+    lambda: (package / 'data.txt').write_text('changed'),
+    lambda: (package / 'data.txt').unlink(),
+    lambda: (package / 'run.sh').chmod(0o600),
+]:
+    try:
+        mutate()
+    except OSError as e:
+        assert e.errno == errno.EROFS, e
+    else:
+        raise AssertionError('Skills mount is writable')
 assert pathlib.Path('/sys/fs/cgroup/memory.max').read_text().strip() == '1073741824'
 assert pathlib.Path('/sys/fs/cgroup/pids.max').read_text().strip() == '256'
 assert pathlib.Path('/sys/fs/cgroup/cpu.max').read_text().split()[0] != 'max'
@@ -88,9 +132,12 @@ pathlib.Path('persist.txt').write_text('project')
 pathlib.Path(os.environ['TMPDIR'],'persist.txt').write_text('temporary')
 pathlib.Path(os.environ['HOME'],'ephemeral.txt').write_text('ephemeral')
 print('isolation-and-loopback-ok')
-PY`, os.Getuid(), os.Getgid(), temp, filepath.Join(root, "agenthome", "secret"))
+PY`, os.Getuid(), os.Getgid(), temp, filepath.Join(root, "agenthome", "secret"), skills)
 	if out := run(probe); !strings.Contains(out, "isolation-and-loopback-ok") {
 		t.Fatal(out)
+	}
+	if data, err := os.ReadFile(filepath.Join(packageDir, "data.txt")); err != nil || string(data) != "skill-resource" {
+		t.Fatalf("host Skills changed: %q %v", data, err)
 	}
 	run(`test -f persist.txt && test -f "$TMPDIR/persist.txt" && test ! -f "$HOME/ephemeral.txt" && go version && python3 --version && rg --version`)
 	if info, err := os.Stat(filepath.Join(work, "persist.txt")); err != nil || info.Size() != 7 {
@@ -155,7 +202,7 @@ PY`, os.Getuid(), os.Getgid(), temp, filepath.Join(root, "agenthome", "secret"))
 			t.Fatalf("container leaked: %s: %s %v", name, output, err)
 		}
 	}
-	missing := NewDocker(root, work, temp, "laxcode-nonexistent-test-image:"+filepath.Base(root))
+	missing := NewDocker(root, work, temp, skills, "laxcode-nonexistent-test-image:"+filepath.Base(root))
 	defer missing.Close()
 	if _, err := missing.Run(context.Background(), work, "touch host-fallback", 10*time.Second); err == nil {
 		t.Fatal("missing image accepted")

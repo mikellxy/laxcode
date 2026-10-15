@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
 func TestDockerHelperProcess(t *testing.T) {
@@ -54,12 +57,13 @@ func testDockerRunner(t *testing.T, mode string) (*DockerRunner, string, string)
 	t.Helper()
 	root := t.TempDir()
 	work, temp := filepath.Join(root, "demo"), filepath.Join(root, "tmp")
-	for _, dir := range []string{work, temp} {
-		if err := os.Mkdir(dir, 0700); err != nil {
+	skills := layout.SkillsRoot(filepath.Join(root, "agenthome"))
+	for _, dir := range []string{work, temp, skills} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r := NewDocker(root, work, temp, "test-image:local")
+	r := NewDocker(root, work, temp, skills, "test-image:local")
 	r.uid, r.gid = 501, 20
 	log := filepath.Join(root, "docker.jsonl")
 	r.command = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
@@ -118,11 +122,34 @@ func TestDockerRunnerInvocationAndResults(t *testing.T) {
 			if args[len(args)-1] != command || slices.Contains(args, "--privileged") {
 				t.Fatal("command escaped its argument")
 			}
-			if slices.Index(args, "--mount") < 0 || slices.Contains(args, bindMount(r.userRoot)) || strings.Contains(strings.Join(args, "\n"), "docker.sock") {
+			if slices.Index(args, "--mount") < 0 || slices.Contains(args, bindMount(r.userRoot, false)) || strings.Contains(strings.Join(args, "\n"), "docker.sock") {
 				t.Fatal("unsafe mounts")
 			}
-			if !slices.Contains(args, bindMount(work)) || !slices.Contains(args, bindMount(r.tempDir)) {
-				t.Fatal("mount path changed")
+			mounts := 0
+			for i, arg := range args {
+				if arg != "--mount" {
+					continue
+				}
+				mounts++
+				options, err := csv.NewReader(strings.NewReader(args[i+1])).Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var source string
+				for _, option := range options {
+					if strings.HasPrefix(option, "src=") {
+						source = strings.TrimPrefix(option, "src=")
+					}
+				}
+				if !slices.Contains([]string{work, r.tempDir, r.skillsDir}, source) || !slices.Contains(options, "dst="+source) {
+					t.Fatalf("unexpected mount: %v", options)
+				}
+				if slices.Contains(options, "readonly") != (source == r.skillsDir) || !slices.Contains(options, "bind-recursive=disabled") || !slices.Contains(options, "bind-propagation=rprivate") {
+					t.Fatalf("unsafe mount options: %v", options)
+				}
+			}
+			if mounts != 3 {
+				t.Fatalf("mount count: %d", mounts)
 			}
 			if os.Getenv("HOME") != beforeHome || os.Getenv("TMPDIR") != beforeTemp {
 				t.Fatal("server environment changed")
@@ -136,7 +163,7 @@ func TestDockerRunnerInvocationAndResults(t *testing.T) {
 }
 
 func TestDockerRunnerRejectsUnsafeMountsBeforeLaunch(t *testing.T) {
-	for _, mode := range []string{"root", "outside-workdir", "home-mount", "tmp-symlink"} {
+	for _, mode := range []string{"root", "outside-workdir", "home-mount", "tmp-symlink", "skills-outside", "skills-home", "skills-symlink", "skills-missing"} {
 		t.Run(mode, func(t *testing.T) {
 			r, work, log := testDockerRunner(t, "success")
 			switch mode {
@@ -146,11 +173,25 @@ func TestDockerRunnerRejectsUnsafeMountsBeforeLaunch(t *testing.T) {
 				work = t.TempDir()
 			case "home-mount":
 				r.projectDir = filepath.Join(r.userRoot, "agenthome")
-				_ = os.Mkdir(r.projectDir, 0700)
 				work = r.projectDir
 			case "tmp-symlink":
 				_ = os.Remove(r.tempDir)
 				if err := os.Symlink(t.TempDir(), r.tempDir); err != nil {
+					t.Fatal(err)
+				}
+			case "skills-outside":
+				r.skillsDir = t.TempDir()
+			case "skills-home":
+				r.skillsDir = filepath.Join(r.userRoot, "agenthome")
+			case "skills-symlink":
+				if err := os.Remove(r.skillsDir); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(work, r.skillsDir); err != nil {
+					t.Fatal(err)
+				}
+			case "skills-missing":
+				if err := os.Remove(r.skillsDir); err != nil {
 					t.Fatal(err)
 				}
 			}

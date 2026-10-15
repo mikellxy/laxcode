@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
 const DefaultDockerImage = "laxcode-cloud-bash:local"
@@ -49,25 +50,25 @@ type dockerRun struct {
 	done   chan struct{}
 }
 
-// DockerRunner mounts only the selected project and user tmp, never agenthome.
+// DockerRunner mounts the project and user tmp writable, and only Skills from agenthome read-only.
 type DockerRunner struct {
-	userRoot, projectDir, tempDir, image string
-	uid, gid                             int
-	command                              func(context.Context, string, ...string) *exec.Cmd
-	mu                                   sync.Mutex
-	closed                               bool
-	active                               map[string]*dockerRun
+	userRoot, projectDir, tempDir, skillsDir, image string
+	uid, gid                                        int
+	command                                         func(context.Context, string, ...string) *exec.Cmd
+	mu                                              sync.Mutex
+	closed                                          bool
+	active                                          map[string]*dockerRun
 }
 
 var _ tools.ShellRunner = (*DockerRunner)(nil)
 
 func (*DockerRunner) BashSandboxed() bool { return true }
 
-func NewDocker(userRoot, projectDir, tempDir, image string) *DockerRunner {
+func NewDocker(userRoot, projectDir, tempDir, skillsDir, image string) *DockerRunner {
 	if image == "" {
 		image = DefaultDockerImage
 	}
-	return &DockerRunner{userRoot: userRoot, projectDir: projectDir, tempDir: tempDir, image: image,
+	return &DockerRunner{userRoot: userRoot, projectDir: projectDir, tempDir: tempDir, skillsDir: skillsDir, image: image,
 		uid: os.Getuid(), gid: os.Getgid(), command: exec.CommandContext, active: make(map[string]*dockerRun)}
 }
 
@@ -78,7 +79,7 @@ func (r *DockerRunner) validate(workDir string) error {
 	if r.image == "" || strings.HasPrefix(r.image, "-") || strings.ContainsAny(r.image, " \t\r\n") {
 		return errors.New("invalid cloud Bash image")
 	}
-	for _, path := range []string{r.userRoot, r.projectDir, r.tempDir, workDir} {
+	for _, path := range []string{r.userRoot, r.projectDir, r.tempDir, r.skillsDir, workDir} {
 		if !filepath.IsAbs(path) {
 			return errors.New("cloud Bash directories must be absolute")
 		}
@@ -93,10 +94,13 @@ func (r *DockerRunner) validate(workDir string) error {
 	if filepath.Clean(r.tempDir) != filepath.Join(filepath.Clean(r.userRoot), "tmp") {
 		return errors.New("cloud Bash tmp must be UserRoot/tmp")
 	}
+	if filepath.Clean(r.skillsDir) != layout.SkillsRoot(filepath.Join(filepath.Clean(r.userRoot), "agenthome")) {
+		return errors.New("cloud Bash Skills must be UserRoot/agenthome/.laxcode/skills")
+	}
 	if err := tools.ValidateUserPath(r.projectDir, workDir); err != nil {
 		return fmt.Errorf("Bash workdir must remain within its project: %w", err)
 	}
-	for _, path := range []string{r.userRoot, r.projectDir, r.tempDir, workDir} {
+	for _, path := range []string{r.userRoot, r.projectDir, r.tempDir, r.skillsDir, workDir} {
 		info, err := os.Lstat(path)
 		if err != nil || !info.IsDir() {
 			return errors.New("cloud Bash directory is missing or is a symbolic link")
@@ -105,10 +109,14 @@ func (r *DockerRunner) validate(workDir string) error {
 	return nil
 }
 
-func bindMount(path string) string {
+func bindMount(path string, readOnly bool) string {
 	var out strings.Builder
 	w := csv.NewWriter(&out)
-	_ = w.Write([]string{"type=bind", "src=" + path, "dst=" + path, "bind-recursive=disabled", "bind-propagation=rprivate"})
+	options := []string{"type=bind", "src=" + path, "dst=" + path, "bind-recursive=disabled", "bind-propagation=rprivate"}
+	if readOnly {
+		options = append(options, "readonly")
+	}
+	_ = w.Write(options)
 	w.Flush()
 	return strings.TrimSuffix(out.String(), "\n")
 }
@@ -118,7 +126,8 @@ func (r *DockerRunner) args(name, workDir, command string) []string {
 		"--init", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
 		"--cpus=2", "--memory=1g", "--memory-swap=1g", "--pids-limit=256", "--log-driver=none",
 		"--user", strconv.Itoa(r.uid) + ":" + strconv.Itoa(r.gid),
-		"--mount", bindMount(r.projectDir), "--mount", bindMount(r.tempDir), "--workdir", workDir,
+		"--mount", bindMount(r.projectDir, false), "--mount", bindMount(r.tempDir, false),
+		"--mount", bindMount(r.skillsDir, true), "--workdir", workDir,
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=268435456,mode=1777",
 		"--env", "HOME=/tmp/agenthome", "--env", "TMPDIR=" + r.tempDir,
 		"--env", "TMP=" + r.tempDir, "--env", "TEMP=" + r.tempDir,
