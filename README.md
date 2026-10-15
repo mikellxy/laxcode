@@ -8,9 +8,10 @@
   <span style="font-family: 'Arial Rounded MT Bold', 'Nunito', sans-serif; font-size: 24px; font-weight: 700; color: #8798E5;">Lax</span><span style="font-family: 'Arial Rounded MT Bold', 'Nunito', sans-serif; font-size: 24px; font-weight: 700; color: #58D2C2;">Code</span>
 </p>
 
-[![Tests](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml/badge.svg)](https://github.com/mikellxy/laxcode-cli/actions/workflows/test.yml)
-
 LaxCode 是一个用 Go 实现、通过 Web UI 使用的轻量 coding agent。需要 Go 版本 >= 1.26。
+
+![本地模式与 Cloud 模式的安全选型对比](./docs/images/local-cloud-security.png)
+
 ## 快速开始
 ```shell
 git clone https://github.com/mikellxy/laxcode.git && cd laxcode
