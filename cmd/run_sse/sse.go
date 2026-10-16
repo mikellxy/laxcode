@@ -32,6 +32,7 @@ const (
 const (
 	ErrorCodeInvalidRequest  = "INVALID_REQUEST"
 	ErrorCodeSessionBusy     = "SESSION_BUSY"
+	ErrorCodeServerBusy      = "SERVER_BUSY"
 	ErrorCodeModelRequired   = "MODEL_REQUIRED"
 	ErrorCodeAssemblyFailed  = "AGENT_ASSEMBLY_FAILED"
 	ErrorCodeChatFailed      = "CHAT_FAILED"

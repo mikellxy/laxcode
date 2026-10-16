@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/cmd/agentasm"
@@ -25,6 +26,9 @@ import (
 )
 
 var cloudProjectName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// N100 NAS: 4 CPUs and 8 GB RAM; each Bash sandbox may use 2 CPUs and 1 GiB.
+const cloudMaxInFlightChats int32 = 2
 
 func validateCloudProjectName(name string) error {
 	if len(name) > 120 || !cloudProjectName.MatchString(name) {
@@ -50,6 +54,20 @@ type cloudUsers struct {
 	tracer  telemetry.Tracer
 	mu      sync.Mutex
 	users   map[string]*cloudUser
+	// Shared across all users; held through SSE completion and file-scan cleanup.
+	inFlightChats atomic.Int32
+}
+
+func (c *cloudUsers) acquireChat() bool {
+	for {
+		active := c.inFlightChats.Load()
+		if active >= cloudMaxInFlightChats {
+			return false
+		}
+		if c.inFlightChats.CompareAndSwap(active, active+1) {
+			return true
+		}
+	}
 }
 
 func newCloudUsers(home string, tracer telemetry.Tracer) *cloudUsers {
@@ -117,6 +135,20 @@ func (c *cloudUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	resume := strings.HasPrefix(r.URL.Path, "/api/sessions/") && strings.HasSuffix(r.URL.Path, "/resume")
+	if r.Method == http.MethodPost && (r.URL.Path == "/chat" || resume) {
+		if !c.acquireChat() {
+			w.Header().Set("Retry-After", "5")
+			retryAction := RetryActionResend
+			if resume {
+				retryAction = RetryActionResume
+			}
+			writeJSONProtocolError(w, http.StatusTooManyRequests, ErrorCodeServerBusy,
+				fmt.Sprintf("服务繁忙：最多同时处理 %d 个对话请求，请稍后重试。", cloudMaxInFlightChats), retryAction)
+			return
+		}
+		defer c.inFlightChats.Add(-1)
 	}
 	create := r.Method == http.MethodPost && r.URL.Path == "/api/projects"
 	if create {

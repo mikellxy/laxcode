@@ -115,6 +115,7 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 
 	if config.Current.Cloud {
 		fmt.Printf("LaxCode cloud prototype listening on %s (users: %s)\n", actualAddr, filepath.Join(homeDir, "laxcode"))
+		fmt.Printf("Cloud Chat/Resume in-flight limit: %d\n", cloudMaxInFlightChats)
 	} else {
 		fmt.Printf("LaxCode SSE code listening on %s (data: %s)\n", actualAddr, layout.Root(homeDir))
 	}

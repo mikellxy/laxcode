@@ -6,7 +6,7 @@ BUILD_DIR := bin
 MAIN_PKG := ./cmd/main
 WINDOWS_BUILD_DIR := $(BUILD_DIR)/win
 
-.PHONY: all build build-web build-windows build-cloud-bash-image vet test clean
+.PHONY: all build build-web build-windows build-cloud build-cloud-bash-image vet test clean
 
 all: build
 
@@ -32,6 +32,10 @@ build-windows: build-web
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags=webdist -trimpath -ldflags="-s -w" -o $(WINDOWS_BUILD_DIR)/laxcode-web.exe ./cmd/web
 	@echo "built: $(WINDOWS_BUILD_DIR)/laxcode.exe"
 	@echo "built: $(WINDOWS_BUILD_DIR)/laxcode-web.exe"
+
+# Produce the complete Linux amd64 NAS bundle, preserving nas/defaults/.
+build-cloud: build-web
+	sh ./build-cloud.sh
 
 # 静态检查
 vet:

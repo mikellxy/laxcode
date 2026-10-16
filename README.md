@@ -149,15 +149,23 @@ LaxCode/
 
 ### 云端原型
 
+构建 NAS 的 Linux amd64 离线部署包：在安装 Go、Node/pnpm、Docker 的开发机上执行
+`make build-cloud`。产物位于 `nas/`，包括两个程序、内嵌前端、Bash 镜像 tar、
+启动脚本、构建信息和 SHA256 校验文件。已有 `nas/defaults/` 配置与 Skills 会保留；
+首次构建生成空配置，需自行放入模型配置与预置 Skills。部署步骤见 `nas/README.md`。
+
 运行 `./cloud.sh` 构建并启动后端和 Web UI。Web 默认监听 `0.0.0.0:5173`，可用
 `LAXCODE_CLOUD_PORT=5180 ./cloud.sh` 修改端口；后端只监听本机，并通过 Web 服务代理。
 直接启动后端时使用 `./bin/laxcode -cloud`，该参数由现有 config 解析流程处理。
 
 部署前在有网络的构建环境运行 `make build-cloud-bash-image`，生成
-`laxcode-cloud-bash:local`（Linux，Go 1.26.6、Python 3、rg、Bash）。镜像需预装在
+`laxcode-cloud-bash:local`（Linux，Go 1.26.6、Python 3、rg、jq、Bash）。镜像需预装在
 运行服务的 Docker daemon 上；可用 `./cloud.sh -cloud_bash_image="your-image:tag"`
 指定其他预制镜像。服务必须以可访问 Docker 的非 root 账户运行，挂载文件按服务
 账户的 UID/GID 读写。运行时禁止自动拉取镜像，Docker/镜像不可用时不会回退到宿主机 Bash。
+
+Cloud 模式全局最多同时处理 2 个 Chat/Resume 请求，名额覆盖整段 SSE 流和文件统计收尾。
+超出上限直接返回 HTTP 429（`SERVER_BUSY`），不排队；前端可稍后手动重试。本地模式不受此限制。
 
 cloud 主 Agent 和子 Agent 每次 Bash 调用都使用一个新容器：`--rm --network=none
 --pull=never`，保留本次容器内的 `127.0.0.1` 回环访问。项目 WorkDir 和用户
