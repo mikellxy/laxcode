@@ -10,12 +10,14 @@ package agentasm
 // 非 unix 文件一并解析，对架构约束来说这样更保守）。
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -188,11 +190,11 @@ func TestOtelImportsStayInTelemetryAndTracing(t *testing.T) {
 	}
 }
 
-// diskLayoutLiterals 是 .laxcode 磁盘布局的路径片段，以 Go 字符串字面量的形式
-// 匹配（带引号，故不会误命中提示词模板里的说明性路径）。它们只允许出现在
+// diskLayoutLiterals 是 .laxcode 磁盘布局的路径片段，只匹配完整的 Go 字符串
+// 字面量，忽略注释、结构体 JSON 标签及较长的提示词或 JSON 字符串。它们只允许出现在
 // infrastructure/layout：那是布局的单一真源。散落多份的后果是改一处忘一处——
 // 会话写到 A 目录、系统提示词却告诉模型 B 目录。
-var diskLayoutLiterals = []string{`".laxcode"`, `".session"`, `"sessions.db"`, `"tracing.log"`, `"settings.json"`, `"skills"`}
+var diskLayoutLiterals = []string{".laxcode", ".session", "sessions.db", "tracing.log", "settings.json", "skills"}
 
 const layoutHome = "internal/infrastructure/layout"
 
@@ -215,11 +217,21 @@ func TestDiskLayoutLiteralsStayInLayoutPkg(t *testing.T) {
 			}
 			scanned++
 			rel, _ := filepath.Rel(root, path)
-			for _, lit := range diskLayoutLiterals {
-				if strings.Contains(string(src), lit) {
-					t.Errorf("%s 硬编码了磁盘布局片段 %s：请改用 %s 的路径函数", filepath.ToSlash(rel), lit, layoutHome)
-				}
+			parsed, err := parser.ParseFile(token.NewFileSet(), path, src, 0)
+			if err != nil {
+				return err
 			}
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				lit, ok := node.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err == nil && slices.Contains(diskLayoutLiterals, value) {
+					t.Errorf("%s 硬编码了磁盘布局片段 %q：请改用 %s 的路径函数", filepath.ToSlash(rel), value, layoutHome)
+				}
+				return true
+			})
 			return nil
 		}
 		if err := filepath.WalkDir(base, walk); err != nil {
