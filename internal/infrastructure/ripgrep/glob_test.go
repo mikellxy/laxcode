@@ -19,7 +19,12 @@ func globTool(t *testing.T, root string) *tools.GlobTool {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg is not installed")
 	}
-	return tools.NewGlobTool(root, ripgrep.New())
+	runner, err := ripgrep.NewRoot(root, root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+	return tools.NewGlobTool(root, runner)
 }
 
 func runGlob(t *testing.T, g *tools.GlobTool, args map[string]any) (string, map[string]any, error) {
@@ -83,8 +88,8 @@ func TestGlobRejectsFilesAndEscapingPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _, err := runGlob(t, g, map[string]any{"pattern": "*.go", "path": alias})
-	if err != nil || out != filepath.Join(alias, "inside.go") {
-		t.Fatalf("allowed alias: output=%q error=%v", out, err)
+	if err == nil {
+		t.Fatalf("absolute symlink alias accepted: output=%q", out)
 	}
 }
 

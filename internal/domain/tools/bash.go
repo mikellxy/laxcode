@@ -29,7 +29,6 @@ const (
 )
 
 type BashTool struct {
-	Cloud   bool
 	WorkDir string
 	// Timeout 是未指定 timeout_ms 时的默认值，零值取 30s；最终最多 60s。
 	Timeout time.Duration
@@ -70,11 +69,7 @@ func (b *BashTool) Name() string {
 }
 
 func (b *BashTool) Definition() sharedkernel.ToolDefinition {
-	background := "需要后台进程（如启动服务器）时，务必重定向输出到日志文件并记录pid，例如: " +
-		"python3 server.py > /tmp/srv.log 2>&1 & echo \"pid=$!\"，之后用返回的pid执行 kill -9 <pid> 清理，也可 tail 日志文件排错"
-	if b.Cloud {
-		background = CloudBashEnvironment + "\n" + CloudBashOfflineHint
-	}
+	background := CloudBashEnvironment + "\n" + CloudBashOfflineHint
 	return sharedkernel.ToolDefinition{
 		Name: b.Name(),
 		Description: "在工作目录执行 bash 命令。timeout_ms 默认 30000，超过 60000 按 60000 执行。" +
@@ -202,7 +197,7 @@ func (b *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) *sha
 	if runErr != nil {
 		ret.Error = NewErrorWithPrompt(&BashExecuteError{}, runErr)
 	}
-	if b.Cloud && (runErr != nil || outcome.ExitCode != 0 || outcome.ExitErr != "") {
+	if runErr != nil || outcome.ExitCode != 0 || outcome.ExitErr != "" {
 		ret.Output += "\n" + CloudBashOfflineHint
 		ret.CompactContent += "\n" + CloudBashOfflineHint
 	}

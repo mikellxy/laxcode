@@ -21,7 +21,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	infrallm "github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
-	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 	_ "modernc.org/sqlite" // 注册 database/sql 驱动名 "sqlite"，测试直查数据库
 )
 
@@ -291,7 +290,7 @@ func TestChatAlignsMemorySessionWithSQLite(t *testing.T) {
 
 	llm := &countingLLM{}
 	reg := tools.NewDefaultRegistry(nil)
-	reg.Register(tools.NewReadFileTool(workDir, workfs.New()))
+	reg.Register(tools.NewReadFileTool(workDir, newTestFS(t, workDir)))
 	svc := NewReActService(session.NewSession(sessionID), repo, llm, nil, reg, func(*ReactEvent) {}, nil)
 	if err := svc.InitSession(ctx); err != nil {
 		t.Fatalf("InitSession: %v", err)
@@ -548,12 +547,12 @@ func TestChatCompactionPersistsGenerationsInSQLite(t *testing.T) {
 		t.Fatalf("打开 SQLite 仓储: %v", err)
 	}
 	// 压缩会把前置组的工具输出归档成 artifact，必须装配 artifact store。
-	artifacts := artifactstore.New(layout.SessionRoot(workDir))
+	artifacts := artifactstore.NewWithRoot(layout.SessionRoot(workDir), workDir)
 
 	// 第 2、7 次生成收束对话；其余调用返回工具调用。
 	llm := &compactionLLM{finalOnCalls: map[int]bool{2: true, 7: true}}
 	reg := tools.NewDefaultRegistry(nil)
-	reg.Register(tools.NewReadFileTool(workDir, workfs.New()))
+	reg.Register(tools.NewReadFileTool(workDir, newTestFS(t, workDir)))
 	svc := NewReActService(session.NewSession(sessionID), repo, llm, nil, reg, func(*ReactEvent) {}, nil, artifacts)
 	if err := svc.InitSession(ctx); err != nil {
 		t.Fatalf("InitSession: %v", err)
@@ -789,12 +788,12 @@ func TestChatLLMSummaryCompactionAlignsMemoryWithSQLite(t *testing.T) {
 		t.Fatalf("open sqlite repository: %v", err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	artifacts := artifactstore.New(layout.SessionRoot(workDir))
+	artifacts := artifactstore.NewWithRoot(layout.SessionRoot(workDir), workDir)
 	mainLLM := &summaryCompactionMainLLM{}
 	realSummaryLLM := infrallm.NewOpenApiProvider(apiKey, baseURL, model)
 	summaryLLM := &recordingSummaryLLM{inner: realSummaryLLM}
 	reg := tools.NewDefaultRegistry(nil)
-	reg.Register(tools.NewReadFileTool(workDir, workfs.New()))
+	reg.Register(tools.NewReadFileTool(workDir, newTestFS(t, workDir)))
 	svc := NewReActService(session.NewSession(sessionID), repo, mainLLM, summaryLLM,
 		reg, func(*ReactEvent) {}, nil, artifacts)
 	if err := svc.InitSession(ctx); err != nil {

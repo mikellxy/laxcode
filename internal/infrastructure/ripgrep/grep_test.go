@@ -19,7 +19,12 @@ func grepTool(t *testing.T, root string) *tools.GrepTool {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg is not installed")
 	}
-	return tools.NewGrepTool(root, ripgrep.New())
+	runner, err := ripgrep.NewRoot(root, root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+	return tools.NewGrepTool(root, runner)
 }
 
 func runGrep(t *testing.T, g *tools.GrepTool, args map[string]any) (string, map[string]any, error) {
@@ -58,7 +63,7 @@ func TestGrepSearchAndFileScope(t *testing.T) {
 	}
 
 	out, meta, err = runGrep(t, g, map[string]any{"pattern": "needle", "include": "*.go"})
-	if err != nil || meta["matches"] != 3 || !strings.Contains(out, ".hidden.go") || strings.Contains(out, "other.txt") || strings.Contains(out, "tracked.go") {
+	if err != nil || meta["matches"] != 2 || strings.Contains(out, ".hidden.go") || strings.Contains(out, "other.txt") || strings.Contains(out, "tracked.go") {
 		t.Fatalf("glob search: output=%q metadata=%v error=%v", out, meta, err)
 	}
 
@@ -111,8 +116,8 @@ func TestGrepPathBoundaryAndArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _, err := runGrep(t, g, map[string]any{"pattern": "needle", "path": alias})
-	if err != nil || !strings.Contains(out, filepath.Join(alias, "test.txt")) || strings.Contains(out, filepath.Join(realDir, "test.txt")) {
-		t.Fatalf("allowed alias path: output=%q error=%v", out, err)
+	if err == nil {
+		t.Fatalf("absolute symlink alias accepted: output=%q", out)
 	}
 
 	write(t, filepath.Join(root, "file.txt"), "needle")

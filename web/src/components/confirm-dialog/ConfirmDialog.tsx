@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
-import { CircleAlert, FolderPlus, LoaderCircle, ShieldCheck, Trash2, X } from "lucide-react";
+import { CircleAlert, FolderPlus, LoaderCircle, Trash2, X } from "lucide-react";
 
 type Props = {
   title: string;
   description: string;
   children?: ReactNode;
-  variant: "danger" | "approval" | "create";
+  variant: "danger" | "create";
   formID?: string;
   confirmLabel: string;
   cancelLabel: string;
@@ -37,9 +37,9 @@ export function ConfirmDialog({ title, description, children, variant, formID, c
   const cancel = () => { if (!pending) onCancel(); };
   return <dialog ref={ref} className={`confirm-dialog ${variant}`} aria-modal="true" aria-labelledby={titleID} aria-describedby={descriptionID} aria-busy={pending} onCancel={(event) => { event.preventDefault(); cancel(); }}>
     <header className="confirm-header">
-      <span className="confirm-icon" aria-hidden="true">{variant === "danger" ? <Trash2 size={23} strokeWidth={1.7} /> : variant === "create" ? <FolderPlus size={25} strokeWidth={1.7} /> : <ShieldCheck size={25} strokeWidth={1.7} />}</span>
+      <span className="confirm-icon" aria-hidden="true">{variant === "danger" ? <Trash2 size={23} strokeWidth={1.7} /> : <FolderPlus size={25} strokeWidth={1.7} />}</span>
       <button type="button" className="confirm-close" onClick={cancel} disabled={pending} aria-label={`关闭确认窗：${cancelLabel}`} title={cancelLabel}><X size={18} /></button>
-      <div><span className="confirm-eyebrow">{variant === "danger" ? "会话管理" : variant === "create" ? "项目管理" : "执行审批"}</span><h2 id={titleID}>{title}</h2><p id={descriptionID}>{description}</p></div>
+      <div><span className="confirm-eyebrow">{variant === "danger" ? "会话管理" : "项目管理"}</span><h2 id={titleID}>{title}</h2><p id={descriptionID}>{description}</p></div>
     </header>
     {children && <div className="confirm-body">{children}</div>}
     {error && <p className="confirm-error" role="alert"><CircleAlert size={16} /><span>{error}</span></p>}

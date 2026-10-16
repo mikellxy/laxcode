@@ -152,7 +152,7 @@ func (r *DockerRunner) Run(ctx context.Context, workDir, command string, timeout
 		return outcome, err
 	}
 	if timeout <= 0 {
-		timeout = fallbackTimeout
+		timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -176,7 +176,7 @@ func (r *DockerRunner) Run(ctx context.Context, workDir, command string, timeout
 		close(run.done)
 		r.mu.Unlock()
 	}()
-	output, err := os.CreateTemp(r.tempDir, tempFilePattern)
+	output, err := os.CreateTemp(r.tempDir, "laxbash-*")
 	if err != nil {
 		return outcome, err
 	}

@@ -60,10 +60,7 @@ func (s *server) handleDownloadEvaluationReport(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	anchorPath := s.homeDir
-	if s.userRoot != "" {
-		anchorPath = s.userRoot
-	}
+	anchorPath := s.userRoot
 	rel, err := filepath.Rel(anchorPath, layout.EvaluationRoot(s.homeDir))
 	if err != nil || !fs.ValidPath(filepath.ToSlash(rel)) || rel == "." {
 		writeJSONError(w, http.StatusForbidden, "invalid report directory")

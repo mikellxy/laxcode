@@ -20,7 +20,7 @@ import (
 )
 
 // coreAssembly owns the resources shared by every command-layer composition:
-// the global session repository, owned or injected tracer, providers, registry, and
+// the user session repository, owned or injected tracer, providers, registry, and
 // their cleanup order. Callers add mode-specific tools and prompts.
 type coreAssembly struct {
 	homeDir   string
@@ -33,10 +33,8 @@ type coreAssembly struct {
 
 func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager, suppliedRepo session.SessionRepository, userRoot string) (*coreAssembly, error) {
-	homeDir, err := resolveHomeDir(explicitHome)
-	if err != nil {
-		return nil, err
-	}
+	homeDir := explicitHome
+	var err error
 	if models == nil {
 		models, err = ai_models.New(homeDir, config.Conf{})
 		if err != nil {
@@ -71,28 +69,21 @@ func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string,
 	registry := tools.NewDefaultRegistry(tracer)
 	var artifacts tools.ArtifactStore
 	if withArtifacts {
-		artifacts = artifactstore.New(layout.SessionRoot(homeDir))
-		if userRoot != "" {
-			artifacts = artifactstore.NewWithRoot(layout.SessionRoot(homeDir), userRoot)
-		}
+		artifacts = artifactstore.NewWithRoot(layout.SessionRoot(homeDir), userRoot)
 	}
 
 	c := models.Compaction()
 	summaryProvider := llmprovider.NewOpenApiProvider(c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, c.ContextWindow, c.MaxOutputTokens).WithReasoningEffort(c.ReasoningEffort)
-	if c.AuthType == "oauth" {
-		summaryProvider.WithChatGPT(homeDir, c.CredentialRef)
-	}
 	service := reactservice.NewReActService(
 		sess,
 		repo,
-		newMainProvider(homeDir, models, userRoot != ""),
+		newMainProvider(models),
 		summaryProvider,
 		registry,
 		consumer,
 		tracer,
 		artifacts,
 	)
-	service.SetWorkDir(workDir)
 
 	var once sync.Once
 	cleanup := func() {

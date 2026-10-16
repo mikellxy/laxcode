@@ -126,11 +126,8 @@ func UserSettings(homeDir string) string {
 // SettingsFile returns settings.json within a configuration directory.
 func SettingsFile(configDir string) string { return filepath.Join(configDir, settingsFileName) }
 
-// OAuthCredentials stores renewable credentials separately from model settings.
-func OAuthCredentials(homeDir string) string { return filepath.Join(Root(homeDir), "auth.json") }
-
 // EnvConf 返回用户级进程环境注入文件 ${homeDir}/.laxcode/env.conf：每行
-// 一条 k=v，进程启动早期经 os.Setenv 注入，作为 bash 工具与 MCP server
+// 一条 k=v，进程启动早期经 os.Setenv 注入，作为服务基础设施
 // 子进程的环境基线（网络代理等）。
 func EnvConf(homeDir string) string {
 	return filepath.Join(homeDir, RootDirName, envConfFileName)

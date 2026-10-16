@@ -41,7 +41,7 @@ func TestGetSysPromptPersonalityAndWorkDir(t *testing.T) {
 			t.Errorf("系统提示应包含人格模板段落 %q", section)
 		}
 	}
-	for _, boundary := range []string{"系统提示明确提供额外目录", "只读目录（如全局 Skills）只能读取", "访问工作目录之外的路径不会被直接拒绝", "系统敏感文件（凭据、密钥等）无论能否确认都不应读取"} {
+	for _, boundary := range []string{"系统明确提供的用户根目录", "越界操作直接返回错误", "离线 Docker 沙箱", "Skills 目录只读", "系统敏感文件（凭据、密钥等）不应读取"} {
 		if !strings.Contains(out, boundary) {
 			t.Errorf("系统提示应包含额外目录权限边界 %q，实际输出:\n%s", boundary, out)
 		}

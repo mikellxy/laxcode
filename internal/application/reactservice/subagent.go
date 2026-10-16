@@ -141,16 +141,15 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// 命令执行端口按子 Agent 新建，以免回收波及父 Agent 的后台进程。
 	childReg := tools.NewDefaultRegistry(s.parent.tracer)
 	bash := tools.NewBashTool(workDir, s.deps.NewShell(), s.parent.Artifacts, childID)
-	bash.Cloud = s.deps.UserRoot != ""
 	childReg.Register(bash)
-	read := tools.NewReadFileTool(workDir, s.deps.WorkFS, s.deps.SkillsRoot)
+	read := tools.NewReadFileTool(workDir, s.deps.WorkFS)
 	read.UserRoot = s.deps.UserRoot
 	childReg.Register(read)
 	if s.deps.Ripgrep != nil {
-		grep := tools.NewGrepTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot)
+		grep := tools.NewGrepTool(workDir, s.deps.Ripgrep)
 		grep.UserRoot = s.deps.UserRoot
 		childReg.Register(grep)
-		glob := tools.NewGlobTool(workDir, s.deps.Ripgrep, s.deps.SkillsRoot)
+		glob := tools.NewGlobTool(workDir, s.deps.Ripgrep)
 		glob.UserRoot = s.deps.UserRoot
 		childReg.Register(glob)
 	}
@@ -163,13 +162,7 @@ func (s *SubAgent) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	// 子 Agent 中间过程静默，但人工确认必须交由父服务的交互前端处理。
 	childSvc := NewReActService(childSess, s.parent.SessRepo, childLLM,
-		s.parent.ContextSummaryLLMClient, childReg, func(event *ReactEvent) {
-			if event.Type == ReActEventTypeHumanInTheLoop {
-				s.parent.ReActEventConsumerF(event)
-			}
-		}, s.parent.tracer, s.parent.Artifacts)
-	childSvc.humanConfirmationEnabled = s.parent.humanConfirmationEnabled
-	childSvc.SetWorkDir(workDir)
+		s.parent.ContextSummaryLLMClient, childReg, nil, s.parent.tracer, s.parent.Artifacts)
 	childSvc.SetUserRoot(s.deps.UserRoot)
 	if err := childSvc.InitSession(ctx); err != nil {
 		return "", fmt.Errorf("init session: %w", err)

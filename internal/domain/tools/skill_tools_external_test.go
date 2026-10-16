@@ -3,8 +3,6 @@ package tools_test
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,7 +26,7 @@ func validSkill(name, description, body string) string {
 func TestCreateAndUpdateSkillTools(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	store := skillstore.New(root)
+	store := skillstore.NewWithRoot(root, root)
 	create := tools.NewCreateSkillTool(root, store)
 	createRaw := skillArgs(t, map[string]any{
 		"name":     "pdf-tools",
@@ -37,16 +35,6 @@ func TestCreateAndUpdateSkillTools(t *testing.T) {
 			"path": "scripts/render.sh", "content": "#!/bin/sh\necho ok\n", "executable": true,
 		}},
 	})
-	confirmation, err := create.Confirmation(ctx, createRaw)
-	if err != nil {
-		t.Fatalf("create Confirmation: %v", err)
-	}
-	if confirmation.Kind != "skill_write" || !strings.Contains(confirmation.Content, "pdf-tools") {
-		t.Fatalf("create confirmation = %+v", confirmation)
-	}
-	if _, err := os.Stat(filepath.Join(root, "pdf-tools")); !os.IsNotExist(err) {
-		t.Fatalf("preflight mutated filesystem: %v", err)
-	}
 	out, err := create.Execute(ctx, createRaw)
 	if err != nil {
 		t.Fatalf("create Execute: %v", err)
@@ -70,13 +58,6 @@ func TestCreateAndUpdateSkillTools(t *testing.T) {
 		}},
 		"create_files": []map[string]any{{"path": "references/checks.md", "content": "# Checks\n"}},
 	})
-	confirmation, err = update.Confirmation(ctx, updateRaw)
-	if err != nil {
-		t.Fatalf("update Confirmation: %v", err)
-	}
-	if confirmation.Kind != "skill_write" || !strings.Contains(confirmation.Content, "精确替换：2 处") {
-		t.Fatalf("update confirmation = %+v", confirmation)
-	}
 	out, err = update.Execute(ctx, updateRaw)
 	if err != nil {
 		t.Fatalf("update Execute: %v", err)
@@ -103,7 +84,7 @@ func TestCreateAndUpdateSkillTools(t *testing.T) {
 func TestSkillToolsRejectInvalidPathsAndDefinitionsWithoutMutation(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	store := skillstore.New(root)
+	store := skillstore.NewWithRoot(root, root)
 	create := tools.NewCreateSkillTool(root, store)
 	badPath := skillArgs(t, map[string]any{
 		"name": "demo", "skill_md": validSkill("demo", "描述", "正文"),

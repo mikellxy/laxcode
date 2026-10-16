@@ -2,7 +2,7 @@ package run_sse
 
 import (
 	"context"
-	"encoding/json"
+
 	"errors"
 	"fmt"
 	"net"
@@ -13,11 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mikellxy/laxcode/cmd/agentasm"
-	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
+	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
-	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
-	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 )
 
@@ -32,60 +29,34 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// Run 启动 sse server 并阻塞至收到 SIGINT/SIGTERM 优雅关闭。它是 main 启动的
-// HTTP 前端入口：装配（session/tracer/tools/provider/ReActService）经
-// cmd/agentasm 组合根按「每请求一次」完成（见
-// handler），本函数只负责 server 级配置、路由注册与生命周期管理。router 是
-// main 启动的本地 LLM 路由器，供模型切换端点替换其上游 client。
-func Run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) {
-	if err := run(router, codeInstance, models); err != nil {
+// Run serves per-user cloud workspaces until SIGINT/SIGTERM.
+func Run(codeInstance *CodeInstanceGuard) {
+	if err := run(codeInstance); err != nil {
 		fatal(err)
 	}
 }
 
-func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) error {
+func run(codeInstance *CodeInstanceGuard) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	s := newServer(homeDir, config.Current.Plan, models)
-	defer s.oauth.Close()
+	var tracer telemetry.Tracer
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
 		traceHandle, err := tracing.NewOTLP(context.Background())
 		if err != nil {
 			return fmt.Errorf("init tracing: %w", err)
 		}
-		s.tracer = traceHandle.Tracer
+		tracer = traceHandle.Tracer
 		defer func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = traceHandle.Shutdown(ctx)
 		}()
 	}
-	if !config.Current.Cloud {
-		s.switcher = agentasm.NewModelSwitcher(router, models)
-		historyRepo, err := sessionrepo.NewSqliteSessionRepo(
-			layout.SessionDB(homeDir), layout.SessionRoot(homeDir))
-		if err != nil {
-			return fmt.Errorf("init session history repository: %w", err)
-		}
-		defer historyRepo.Close()
-		s.history = historyRepo
-		s.catalog = historyRepo
-		s.projects = historyRepo
-		s.contextRepo = historyRepo
-		s.evaluations = historyRepo
-		if err := historyRepo.FailActiveEvaluationJobs(context.Background(), "evaluation interrupted by server restart"); err != nil {
-			return fmt.Errorf("reconcile evaluation jobs: %w", err)
-		}
-	}
-	mux := s.routes()
-	var handler http.Handler = mux
-	if config.Current.Cloud {
-		users := newCloudUsers(homeDir, s.tracer)
-		defer users.Close()
-		handler = users
-	}
+
+	users := newCloudUsers(homeDir, tracer)
+	defer users.Close()
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -96,29 +67,18 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 		return fmt.Errorf("listen SSE server on %s: %w", config.Current.Addr, err)
 	}
 	actualAddr := listener.Addr().String()
-	srv := &http.Server{Addr: actualAddr, Handler: handler}
+	srv := &http.Server{Addr: actualAddr, Handler: users}
 	if err := codeInstance.Publish("http://" + actualAddr); err != nil {
 		_ = listener.Close()
 		return err
-	}
-	// 每条 MCP 连接只在服务启动时初始化，完成后才接收请求。即使连接失败
-	// 也注入空池，避免每个请求重新启动坏 server。连接不绑定任何 chat context。
-	// ponytail: 暂不自动重连；运行中断线需重启服务恢复。
-	if !config.Current.Cloud {
-		s.mcpPool = agentasm.ConnectMCPServers(ctx)
-		defer s.mcpPool.Close()
 	}
 	if ctx.Err() != nil {
 		_ = listener.Close()
 		return nil
 	}
 
-	if config.Current.Cloud {
-		fmt.Printf("LaxCode cloud prototype listening on %s (users: %s)\n", actualAddr, filepath.Join(homeDir, "laxcode"))
-		fmt.Printf("Cloud Chat/Resume in-flight limit: %d\n", cloudMaxInFlightChats)
-	} else {
-		fmt.Printf("LaxCode SSE code listening on %s (data: %s)\n", actualAddr, layout.Root(homeDir))
-	}
+	fmt.Printf("LaxCode cloud prototype listening on %s (users: %s)\n", actualAddr, filepath.Join(homeDir, "laxcode"))
+	fmt.Printf("Cloud Chat/Resume in-flight limit: %d\n", cloudMaxInFlightChats)
 	fmt.Printf(">>> create a project and session, then POST /chat with its session_id\n")
 
 	// 监听在独立 goroutine：ListenAndServe 阻塞至服务关闭；ErrServerClosed 是
@@ -144,7 +104,6 @@ func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		_ = srv.Close()
 	}
-	s.stopEvaluations()
 	return serveErr
 }
 
@@ -155,14 +114,12 @@ func (s *server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /chat", s.handleChat)
 	mux.HandleFunc("GET /skills", s.handleListSkills)
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
-	mux.HandleFunc("POST /api/sessions/{session_id}/approvals/{approval_id}", s.handleApproval)
 	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
-	mux.HandleFunc("POST /api/directory-picker", s.handlePickDirectory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/chats/{chat_id}/files.zip", s.handleDownloadChatFiles)
 	mux.HandleFunc("GET /api/sessions/{session_id}/chats/{chat_id}/file", s.handlePreviewChatFile)
@@ -173,14 +130,7 @@ func (s *server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/sessions/{session_id}/evaluations/{job_id}/report", s.handleDownloadEvaluationReport)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("POST /api/models", s.handleAddModel)
-	mux.HandleFunc("POST /api/auth/chatgpt", s.handleChatGPTLogin)
-	mux.HandleFunc("GET /api/auth/chatgpt/{login_id}", s.handleChatGPTStatus)
-	mux.HandleFunc("DELETE /api/auth/chatgpt/{login_id}", s.handleChatGPTCancel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"cloud": s.userRoot != ""})
-	})
 
 	return mux
 }

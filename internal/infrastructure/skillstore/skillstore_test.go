@@ -13,7 +13,7 @@ import (
 
 func TestStoreCreateLoadAndReplace(t *testing.T) {
 	root := t.TempDir()
-	store := New(root)
+	store := newTestStore(t, root)
 	ctx := context.Background()
 	initial := []tools.SkillPackageFile{
 		{Path: "SKILL.md", Content: []byte("skill")},
@@ -70,13 +70,13 @@ func TestStoreRejectsSymlinkPackageEntries(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(dir, "SKILL.md")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	if _, err := New(root).Load(context.Background(), "demo"); err == nil {
+	if _, err := newTestStore(t, root).Load(context.Background(), "demo"); err == nil {
 		t.Fatal("Load must reject a symlink inside a skill package")
 	}
 }
 
 func TestStoreRejectsInvalidPackagePath(t *testing.T) {
-	err := New(t.TempDir()).Create(context.Background(), "demo", []tools.SkillPackageFile{{
+	err := newTestStore(t, t.TempDir()).Create(context.Background(), "demo", []tools.SkillPackageFile{{
 		Path: "../escape", Content: []byte("x"),
 	}})
 	if err == nil {

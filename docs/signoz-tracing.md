@@ -95,7 +95,7 @@ chat
 ```
 
 `chat` 从 HTTP handler 入口计时，包含请求校验、装配、ReAct 和清理。
-`agent-assemble` 覆盖技能/MCP 加载、会话恢复和系统提示词初始化；每轮
+`agent-assemble` 覆盖技能加载、会话恢复和系统提示词初始化；每轮
 `context-prepare` 覆盖工具定义准备、token 计数和必要的上下文压缩。
 
 `agent-assemble` 的阶段耗时直接记录为属性，不额外创建子 span：
@@ -104,29 +104,12 @@ chat
 | --- | --- |
 | `laxcode.assemble.repo_init_ms` | 打开 SQLite、设置连接和 schema 检查/迁移 |
 | `laxcode.assemble.skills_load_ms` | 技能发现、读取与解析 |
-| `laxcode.assemble.mcp_register_ms` | 后端请求使用共享 MCP 连接，只注册工具 |
-| `laxcode.assemble.mcp_connect_ms` | 未注入共享连接的独立装配：连接 MCP server、获取和注册工具 |
 | `laxcode.assemble.session_restore_ms` | 从数据库读取工作集并恢复会话 |
 | `laxcode.assemble.sys_prompt_init_ms` | 构造系统提示词并持久化工作集 |
 
 单位为毫秒，保留小数以区分不足 1ms 的步骤。阶段失败时也会记录已耗时间；
 尚未执行或不适用的阶段不填写。阶段耗时不包含失败后的资源清理，也未覆盖
 全部对象构造等零散步骤，因此其和不要求等于 span 总耗时。
-
-每个 MCP server 的连接尝试会在 `log/laxcode.log` 写入一条 JSON 日志，
-`msg` 为 `mcp_connect`，包含 `chat_id`、`server_name`、`duration_ms`、
-`tool_count` 和 `status`（`connected`、`failed` 或 `no_tools`）。失败时还包含
-`error`；有有效追踪上下文时附带 `trace_id` 和 `span_id`。耗时覆盖连接与工具
-发现，成功但没有工具的连接随后会被关闭。后端在服务启动时建立连接，请求
-只复用连接；启动日志的 `chat_id` 为空串，不属于某次 chat。独立装配时，
-日志沿用调用上下文的 chat ID。
-
-后端启动连接按 server 名检索，独立装配可按 chat ID 检索：
-
-```shell
-jq -c 'select(.msg == "mcp_connect" and .server_name == "ov-mcp-server")' log/laxcode.log
-jq -c 'select(.msg == "mcp_connect" and .chat_id == "你的-chat-id")' log/laxcode.log
-```
 
 根 span 的 `laxcode.operation` 为 `send` 或 `resume`，`laxcode.request_id`
 每次请求独立生成。`laxcode.chat_id` 只在根 span 上记录，并随 user message

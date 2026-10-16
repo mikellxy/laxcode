@@ -27,7 +27,7 @@ func TestCompactionSnapshotAndArtifactSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	artifacts := artifactstore.New(historyRoot)
+	artifacts := artifactstore.NewWithRoot(historyRoot, historyRoot)
 	s := session.NewSession("resume")
 	llm := &scriptedLLM{budget: llmprovider.ContextBudget{ContextWindow: 100, ReservedOutputTokens: 10}, countFn: func(msgs []sharedkernel.Message, _ []sharedkernel.ToolDefinition) (int, error) {
 		if strings.Contains(msgs[2].Content, "read_artifact") {

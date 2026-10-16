@@ -1,22 +1,14 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/cmd/run_sse"
-	applicationrouter "github.com/mikellxy/laxcode/internal/application/llm_router"
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
-	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
-
-const llmRouterShutdownTimeout = 5 * time.Second
 
 func main() {
 	if err := config.Parse(); err != nil {
@@ -25,72 +17,22 @@ func main() {
 		}
 		panic(err)
 	}
-	// One browser coding backend per user; publish its address after listening.
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	var models *ai_models.Manager
-	if !config.Current.Cloud {
-		models, err = agentasm.NewModels(homeDir)
-		if err != nil {
-			panic(err)
-		}
+		os.Exit(1)
 	}
 	codeInstance, err := run_sse.AcquireCodeInstanceGuard(homeDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return
+		os.Exit(1)
 	}
 	defer codeInstance.Close()
-
 	logFile, err := configureSlog(appLogPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "initialize log %s: %v\n", appLogPath, err)
 		os.Exit(1)
 	}
 	defer logFile.Close()
-
-	if config.Current.Cloud {
-		run_sse.Run(nil, codeInstance, nil)
-		return
-	}
-
-	// 模型路由器独立使用 llmrouter.log；先在 goroutine 中启动
-	// 本地 HTTP server，再把实际端点写入运行时配置供 agentasm 注入 provider。
-	routerLogger, routerLogFile, err := newFileLogger(llmRouterLogPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "initialize log %s: %v\n", llmRouterLogPath, err)
-		_ = logFile.Close()
-		os.Exit(1)
-	}
-	var client domainrouter.StreamClient
-	if ref := models.Active().Ref; ref != "" {
-		client, err = models.StreamClient(ref)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
-	routerServer := applicationrouter.NewHTTPServer(client, routerLogger)
-	runningRouter, err := routerServer.Start(config.Current.LlmRouterAddr)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		_ = routerLogFile.Close()
-		_ = logFile.Close()
-		os.Exit(1)
-	}
-	config.Current.LlmRouterURL = runningRouter.Endpoint()
-	shutdownRouter := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), llmRouterShutdownTimeout)
-		defer cancel()
-		if err := runningRouter.Shutdown(ctx); err != nil {
-			routerLogger.Error("llmrouter_shutdown_failed", "error", err)
-		}
-		_ = routerLogFile.Close()
-	}
-	defer shutdownRouter()
-
-	run_sse.Run(routerServer, codeInstance, models)
+	run_sse.Run(codeInstance)
 }

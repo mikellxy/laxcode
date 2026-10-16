@@ -11,7 +11,7 @@ import (
 
 // lockOffsetHigh places the one-byte ownership lock at 4 GiB, well beyond the
 // small status record stored at the beginning of the file. Windows byte-range
-// locks are mandatory, so locking byte zero would prevent web.ps1 from reading
+// locks are mandatory, so locking byte zero would prevent the web launcher from reading
 // the PID and URL while the server is running.
 const lockOffsetHigh = 1
 

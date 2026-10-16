@@ -223,10 +223,4 @@ func TestCloudChatZIPCurrentVersionAndBoundaries(t *testing.T) {
 	if got := cloudRequest(t, users, id, "GET", endpoint, nil); got.Code != 413 {
 		t.Fatalf("too many files: %d", got.Code)
 	}
-	if got := cloudRequest(t, (&server{}).routes(), "", "GET", endpoint, nil); got.Code != 403 {
-		t.Fatalf("local mode download: %d", got.Code)
-	}
-	if got := cloudRequest(t, (&server{}).routes(), "", "GET", previewEndpoint+"?path=demo/a.txt", nil); got.Code != 403 {
-		t.Fatalf("local mode preview: %d", got.Code)
-	}
 }

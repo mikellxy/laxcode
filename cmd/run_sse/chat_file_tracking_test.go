@@ -90,7 +90,7 @@ func TestProjectSnapshotDiffAndBoundaries(t *testing.T) {
 }
 
 type fileTrackingLLM struct {
-	approvalFlowLLM
+	cloudFlowLLM
 	generate func(context.Context) (*sharedkernel.Message, error)
 }
 
@@ -128,7 +128,7 @@ func newFileTrackingServer(t *testing.T) (*server, *sessionrepo.SqliteSessionRep
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { repo.Close(); s.oauth.Close(); s.stopEvaluations() })
+	t.Cleanup(func() { repo.Close(); s.stopEvaluations() })
 	s.contextRepo, s.history = repo, repo
 	s.catalog = catalogWithSession("files-session", work)
 	return s, repo, work
@@ -197,7 +197,6 @@ func TestCloudSnapshotChatFailureResumeAndNextChat(t *testing.T) {
 		}}, nil, in.SessionID))
 		sess := session.NewSession(in.SessionID, work)
 		svc := reactservice.NewReActService(sess, repo, llm, nil, reg, in.Consumer, nil)
-		svc.SetWorkDir(work)
 		svc.SetUserRoot(s.userRoot)
 		if err := svc.InitSession(ctx); err != nil {
 			bounded.Close()

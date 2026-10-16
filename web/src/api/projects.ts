@@ -1,10 +1,10 @@
 import { requestJSON } from "./client";
 import type { ProjectDTO, ProjectListDTO } from "../types/api";
 
-export const createProject = (userID: string, name: string, workDir?: string) =>
+export const createProject = (userID: string, name: string) =>
   requestJSON<ProjectDTO>("/api/projects", {
     method: "POST",
-    body: JSON.stringify({ user_id: userID, name, work_dir: workDir }),
+    body: JSON.stringify({ user_id: userID, name }),
   });
 
 export const listProjects = (userID: string) => {

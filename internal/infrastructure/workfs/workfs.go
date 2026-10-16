@@ -2,7 +2,7 @@
 // 唯一的 os 触点。领域层只持有端口，故沙箱内文件的真实读写、父目录创建与
 // 权限位全部收口于此，os 错误原样透传（已满足 errors.Is(err, fs.ErrNotExist)）。
 //
-// 本地模式依赖领域层校验；云端 NewRoot 在实际文件操作时强制限制用户根，
+// NewRoot 在实际文件操作时强制限制用户根，
 // 避免校验后符号链接被替换导致越界。
 package workfs
 
@@ -26,49 +26,34 @@ type FS struct {
 	rootPath string
 }
 
-// New 返回本地文件系统实现。
-func New() *FS { return &FS{} }
-
 // OpenRead 打开 absPath 供顺序读取，调用方负责 Close。
 func (f FS) OpenRead(absPath string) (io.ReadCloser, error) {
-	if f.root != nil {
-		rel, err := f.relative(absPath)
-		if err != nil {
-			return nil, err
-		}
-		return f.root.Open(rel)
+	rel, err := f.relative(absPath)
+	if err != nil {
+		return nil, err
 	}
-	return os.Open(absPath)
+	return f.root.Open(rel)
 }
 
 // ReadFile 一次性读取 absPath 的全部内容。
 func (f FS) ReadFile(absPath string) ([]byte, error) {
-	if f.root != nil {
-		rel, err := f.relative(absPath)
-		if err != nil {
-			return nil, err
-		}
-		return f.root.ReadFile(rel)
+	rel, err := f.relative(absPath)
+	if err != nil {
+		return nil, err
 	}
-	return os.ReadFile(absPath)
+	return f.root.ReadFile(rel)
 }
 
 // WriteFile 写入 absPath，父目录不存在时自动创建。
 func (f FS) WriteFile(absPath string, content []byte) error {
-	if f.root != nil {
-		rel, err := f.relative(absPath)
-		if err != nil {
-			return err
-		}
-		if err := f.root.MkdirAll(filepath.Dir(rel), dirPerm); err != nil {
-			return err
-		}
-		return f.root.WriteFile(rel, content, filePerm)
+	rel, err := f.relative(absPath)
+	if err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(absPath), dirPerm); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
+	if err := f.root.MkdirAll(filepath.Dir(rel), dirPerm); err != nil {
+		return err
 	}
-	return os.WriteFile(absPath, content, filePerm)
+	return f.root.WriteFile(rel, content, filePerm)
 }
 
 // NewRoot holds the directory handle for the lifetime of a cloud agent.
@@ -80,10 +65,7 @@ func NewRoot(path string) (*FS, error) {
 	return &FS{root: root, rootPath: path}, nil
 }
 func (f *FS) Close() error {
-	if f.root != nil {
-		return f.root.Close()
-	}
-	return nil
+	return f.root.Close()
 }
 func (f FS) relative(path string) (string, error) {
 	rel, err := filepath.Rel(f.rootPath, path)

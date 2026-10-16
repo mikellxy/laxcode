@@ -5,63 +5,35 @@ import (
 	"sync"
 
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
-	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
-// ModelSwitcher serializes model changes against active Web requests.
 type ModelSwitcher struct {
 	mu     sync.RWMutex
-	router RouterClientReplacer
 	models *ai_models.Manager
-	direct bool
 }
 
-var ErrRouterUnavailable = errors.New("model switching requires a running LLM router")
+var ErrModelsUnavailable = errors.New("model manager is unavailable")
 
-func NewModelSwitcher(router RouterClientReplacer, models *ai_models.Manager) *ModelSwitcher {
-	return &ModelSwitcher{router: router, models: models}
+func NewModelSwitcher(models *ai_models.Manager) *ModelSwitcher {
+	return &ModelSwitcher{models: models}
 }
-
-// NewDirectModelSwitcher keeps cloud users independent of the shared router.
-func NewDirectModelSwitcher(models *ai_models.Manager) *ModelSwitcher {
-	return &ModelSwitcher{models: models, direct: true}
-}
-
 func (s *ModelSwitcher) RLock()   { s.mu.RLock() }
 func (s *ModelSwitcher) RUnlock() { s.mu.RUnlock() }
 func (s *ModelSwitcher) Lock()    { s.mu.Lock() }
 func (s *ModelSwitcher) Unlock()  { s.mu.Unlock() }
-
 func (s *ModelSwitcher) SwitchModel(ref string, effort ...string) error {
-	if s == nil || (s.router == nil && !s.direct) {
-		return ErrRouterUnavailable
+	if s == nil || s.models == nil {
+		return ErrModelsUnavailable
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.SwitchModelLocked(ref, effort...)
 }
 
-// SwitchModelLocked publishes a validated selection and its client under the
-// same lock used by agent assembly and Chat/Resume. Failure keeps both unchanged.
+// SwitchModelLocked publishes the selection under the same lock used by Chat/Resume.
 func (s *ModelSwitcher) SwitchModelLocked(ref string, effort ...string) error {
-	if s == nil || (s.router == nil && !s.direct) {
-		return ErrRouterUnavailable
+	if s == nil || s.models == nil {
+		return ErrModelsUnavailable
 	}
-	if s.direct {
-		return s.models.SetActiveModel(ref, effort...)
-	}
-	client, err := s.models.StreamClient(ref, effort...)
-	if err != nil {
-		return err
-	}
-	if err := s.models.SetActiveModel(ref, effort...); err != nil {
-		return err
-	}
-	s.router.ReplaceClient(client)
-	return nil
-}
-
-// NewModels wires settings inputs into the model manager at startup.
-func NewModels(homeDir string) (*ai_models.Manager, error) {
-	return ai_models.New(homeDir, config.Current)
+	return s.models.SetActiveModel(ref, effort...)
 }

@@ -5,16 +5,9 @@ import (
 	"testing"
 	"time"
 
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
-
-type recordingRouter struct{ clients []domainrouter.StreamClient }
-
-func (r *recordingRouter) ReplaceClient(client domainrouter.StreamClient) {
-	r.clients = append(r.clients, client)
-}
 
 func switchTestModels(t *testing.T) *ai_models.Manager {
 	t.Helper()
@@ -32,8 +25,8 @@ func switchTestModels(t *testing.T) *ai_models.Manager {
 
 func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
 	models := switchTestModels(t)
-	router := &recordingRouter{}
-	assembled, err := Assemble(context.Background(), Input{Models: models, Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
+
+	assembled, err := assembleTest(t, context.Background(), Input{Models: models, Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,16 +35,13 @@ func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
 	if budget := previousClient.ContextBudget(); budget.ContextWindow != 128_000 || budget.ReservedOutputTokens != 16_384 {
 		t.Fatalf("initial budget: %+v", budget)
 	}
-	if err := NewModelSwitcher(router, models).SwitchModel("second:model-2"); err != nil {
+	if err := NewModelSwitcher(models).SwitchModel("second:model-2"); err != nil {
 		t.Fatal(err)
-	}
-	if len(router.clients) != 1 {
-		t.Fatalf("router replacements=%d", len(router.clients))
 	}
 	if assembled.Service.LLMClient != previousClient || previousClient.ContextBudget().ContextWindow != 128_000 {
 		t.Fatal("existing request provider or limits changed")
 	}
-	next, err := Assemble(context.Background(), Input{Models: models, Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
+	next, err := assembleTest(t, context.Background(), Input{Models: models, Mode: ModeCode, WorkDir: t.TempDir(), HomeDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +59,8 @@ func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
 
 func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
 	models := switchTestModels(t)
-	router := &recordingRouter{}
-	switcher := NewModelSwitcher(router, models)
+
+	switcher := NewModelSwitcher(models)
 	switcher.RLock()
 	done := make(chan error, 1)
 	go func() { done <- switcher.SwitchModel("second:model-2") }()
@@ -91,16 +81,16 @@ func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
 	}
 }
 
-func TestFailedModelSwitchKeepsSelectionAndRouter(t *testing.T) {
+func TestFailedModelSwitchKeepsSelection(t *testing.T) {
 	models := switchTestModels(t)
-	router := &recordingRouter{}
+
 	before := models.Active()
 	for _, ref := range []string{"missing:model", "bad-reference"} {
-		if err := NewModelSwitcher(router, models).SwitchModel(ref); err == nil {
+		if err := NewModelSwitcher(models).SwitchModel(ref); err == nil {
 			t.Fatal("invalid switch succeeded")
 		}
 	}
-	if models.Active() != before || len(router.clients) != 0 {
+	if models.Active() != before {
 		t.Fatal("failed switch changed runtime state")
 	}
 }

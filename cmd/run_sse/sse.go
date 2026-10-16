@@ -17,16 +17,14 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 )
 
-// SSE 事件名：客户端按 event 名分流。approval_required 保持当前流打开，
-// 等待另一个 HTTP 请求提交决定后继续发送后续事件。
+// SSE event names.
 const (
-	EventStart            = "start"
-	EventReasoning        = "reasoning"
-	EventMessage          = "message"
-	EventToolCall         = "tool_call"
-	EventDone             = "done"
-	EventError            = "error"
-	EventApprovalRequired = "approval_required"
+	EventStart     = "start"
+	EventReasoning = "reasoning"
+	EventMessage   = "message"
+	EventToolCall  = "tool_call"
+	EventDone      = "done"
+	EventError     = "error"
 )
 
 const (
@@ -36,7 +34,6 @@ const (
 	ErrorCodeModelRequired   = "MODEL_REQUIRED"
 	ErrorCodeAssemblyFailed  = "AGENT_ASSEMBLY_FAILED"
 	ErrorCodeChatFailed      = "CHAT_FAILED"
-	ErrorCodeChatStopped     = "CHAT_STOPPED"
 	ErrorCodeResumeFailed    = "RESUME_FAILED"
 	ErrorCodeNothingToResume = "NOTHING_TO_RESUME"
 	ErrorCodeInternal        = "INTERNAL_ERROR"
@@ -72,16 +69,6 @@ type DoneData struct {
 	TokenUsed     sharedkernel.TokenStatistics `json:"token_used"`
 	WindowToken   sharedkernel.TokenStatistics `json:"window_token"`
 	ContextWindow int                          `json:"context_window"`
-}
-
-type ApprovalRequiredData struct {
-	ApprovalID string `json:"approval_id"`
-	SessionID  string `json:"session_id"`
-	Kind       string `json:"kind"`
-	Content    string `json:"content"`
-	Tool       string `json:"tool,omitempty"`
-	Risk       string `json:"risk,omitempty"`
-	Command    string `json:"command,omitempty"`
 }
 
 type ContextData struct {

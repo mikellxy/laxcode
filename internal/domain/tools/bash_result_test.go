@@ -153,7 +153,6 @@ func TestCloudBashOfflineHintsCoverNonzeroAndExecutionErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newTestBashTool(t, &fakeRunner{outcome: ShellOutcome{Output: "diagnostic", ExitCode: tc.exit}, err: tc.err})
-			b.Cloud = true
 			result := b.ExecuteResult(context.Background(), json.RawMessage(`{"command":"go test ./..."}`))
 			want := tc.exit != 0 || tc.err != nil
 			if strings.Contains(result.Output, CloudBashOfflineHint) != want || strings.Contains(result.CompactContent, CloudBashOfflineHint) != want {
@@ -163,10 +162,6 @@ func TestCloudBashOfflineHintsCoverNonzeroAndExecutionErrors(t *testing.T) {
 				t.Fatal("cloud tool describes persistent processes")
 			}
 		})
-	}
-	local := newTestBashTool(t, &fakeRunner{outcome: ShellOutcome{ExitCode: 1}})
-	if result := local.ExecuteResult(context.Background(), json.RawMessage(`{"command":"false"}`)); strings.Contains(result.Output, CloudBashOfflineHint) {
-		t.Fatal("local mode gained offline hint")
 	}
 }
 

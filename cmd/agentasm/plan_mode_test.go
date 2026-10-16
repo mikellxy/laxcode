@@ -12,9 +12,9 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
-func TestPlanModeWritesOnlyItsGlobalSessionDirectory(t *testing.T) {
+func TestPlanModeWritesItsUserSessionDirectory(t *testing.T) {
 	homeDir, workDir := t.TempDir(), t.TempDir()
-	assembled, err := Assemble(context.Background(), Input{
+	assembled, err := assembleTest(t, context.Background(), Input{
 		Mode: ModeCode, HomeDir: homeDir, WorkDir: workDir, SessionID: "plan-session", PlanMode: true,
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ func TestPlanModeWritesOnlyItsGlobalSessionDirectory(t *testing.T) {
 	result = assembled.Service.ToolRegistry.Execute(context.Background(), &sharedkernel.ToolCall{
 		ID: "write-skill", Name: tools.ToolWriteFile, Arguments: args,
 	})
-	if result.Error == nil {
-		t.Fatal("Plan Mode must not make the global skills directory writable")
+	if result.Error != nil {
+		t.Fatalf("cloud user skills must remain writable: %v", result.Error)
 	}
 }

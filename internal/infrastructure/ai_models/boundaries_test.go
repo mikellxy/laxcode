@@ -1,68 +1,14 @@
 package ai_models
 
 import (
-	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
-
-func TestManagerStreamClientKeepsItsModelAfterSelectionChanges(t *testing.T) {
-	swapConfigGlobals(t)
-	received := make(chan map[string]any, 2)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
-		}
-		received <- body
-		if r.Header.Get("Authorization") != "Bearer secret" {
-			t.Error("factory lost provider credentials")
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
-	}))
-	defer upstream.Close()
-	providers := []config.Provider{{ProviderName: "p", OpenaiApiKey: "secret", OpenaiBaseUrl: upstream.URL + "/v1", ModelList: []config.Model{{ModelName: "first"}, {ModelName: "second"}}}}
-	models, err := New(t.TempDir(), providersConf(providers))
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := models.StreamClient("p:first")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := models.SetActiveModel("p:second"); err != nil {
-		t.Fatal(err)
-	}
-	second, err := models.StreamClient("p:second")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, client := range []domainrouter.StreamClient{first, second} {
-		stream, err := client.GenerateStream(context.Background(), []byte(`{"model":"caller","input":[],"custom":{"enabled":true}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !stream.Next() {
-			t.Fatalf("missing stream event: %v", stream.Err())
-		}
-		if err := stream.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	firstRequest, secondRequest := <-received, <-received
-	if firstRequest["model"] != "first" || secondRequest["model"] != "second" || firstRequest["custom"] == nil {
-		t.Fatalf("factory requests: %+v %+v", firstRequest, secondRequest)
-	}
-}
 
 func TestManagersAndCatalogViewsAreIndependent(t *testing.T) {
 	swapConfigGlobals(t)
@@ -156,39 +102,5 @@ func TestEmptyProviderAndInvalidLimitAreRejected(t *testing.T) {
 		if _, err := New(t.TempDir(), fixtureConf(t, []byte(raw))); err == nil {
 			t.Fatal("invalid directory accepted")
 		}
-	}
-}
-
-func TestOAuthImportKeepsSelectedAPIKeyModelEffort(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	raw := json.RawMessage(`[{"provider_name":"p","openai_api_key":"secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"gpt-6.1-sol","reasoning_effort":"medium"}]}]`)
-	writeSettings(t, home, `{"PROVIDER_LIST":`+string(raw)+`,"MODEL":"p:gpt-6.1-sol","custom":true}`)
-	models, err := New(home, fixtureConf(t, raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := models.SetActiveModel("p:gpt-6.1-sol", "high"); err != nil {
-		t.Fatal(err)
-	}
-	if err := models.SaveChatGPTModels([]Model{{Slug: "gpt-6.1-sol"}}); err != nil {
-		t.Fatal(err)
-	}
-	if models.Active().ReasoningEffort != "high" || models.Compaction().ReasoningEffort != "high" {
-		t.Fatal("import reset active model effort")
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".laxcode", "settings.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc struct {
-		ProviderList []config.Provider `json:"provider_list"`
-		Custom       bool              `json:"custom"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if len(doc.ProviderList) != 2 || !doc.Custom || strings.Contains(string(data), "PROVIDER_LIST") {
-		t.Fatalf("import lost legacy provider or unrelated settings: %s", data)
 	}
 }

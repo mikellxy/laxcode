@@ -35,7 +35,6 @@ type evaluationJobDTO struct {
 	SourceSessionID string     `json:"source_session_id"`
 	Requirement     string     `json:"requirement"`
 	Status          string     `json:"status"`
-	ReportPath      string     `json:"report_path,omitempty"`
 	Error           string     `json:"error,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
@@ -49,12 +48,8 @@ type evaluationJobListDTO struct {
 func (s *server) evaluationToDTO(job evaluation.Job) evaluationJobDTO {
 	dto := evaluationJobDTO{
 		ID: job.ID, SourceSessionID: job.SourceSessionID, Requirement: job.Requirement,
-		Status: job.Status, ReportPath: job.ReportPath, Error: job.Error,
+		Status: job.Status, Error: strings.ReplaceAll(job.Error, s.userRoot, ""),
 		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt, CompletedAt: job.CompletedAt,
-	}
-	if s.userRoot != "" {
-		dto.ReportPath = ""
-		dto.Error = strings.ReplaceAll(dto.Error, s.userRoot, "")
 	}
 	return dto
 }
@@ -214,7 +209,6 @@ func (s *server) runEvaluation(ctx context.Context, job evaluation.Job) error {
 	assembled, err := s.assembleEvaluation(ctx, agentasm.Input{
 		Models: s.models, Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
 		UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo,
-		ReadRoots: []string{snapshotDir}, SessionID: job.ID,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(job.SnapshotHistory),
 	})
 	if err != nil {
@@ -377,4 +371,27 @@ func writeEvaluationReport(path, content string) error {
 		return err
 	}
 	return os.Rename(tempPath, path)
+}
+
+// normalizeWorkDir validates the persisted session workspace before evaluation.
+func normalizeWorkDir(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("work_dir is required")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", errors.New("work_dir must be an absolute path")
+	}
+	workDir, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve work_dir: %w", err)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return "", fmt.Errorf("stat work_dir: %w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("work_dir must be a directory")
+	}
+	return filepath.Clean(workDir), nil
 }

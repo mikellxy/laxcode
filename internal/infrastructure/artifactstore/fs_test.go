@@ -9,7 +9,7 @@ import (
 )
 
 func TestFileStoreRoundTripAndPaging(t *testing.T) {
-	store := New(t.TempDir())
+	store := newTestStore(t, t.TempDir())
 	content := "你好🙂 artifact"
 	ref, err := store.PutArtifact(context.Background(), "s1", content)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestFileStoreRoundTripAndPaging(t *testing.T) {
 
 func TestFileStoreRejectsInvalidIDsAndCorruption(t *testing.T) {
 	root := t.TempDir()
-	store := New(root)
+	store := newTestStore(t, root)
 	for _, id := range []string{"../escape", "", strings.Repeat("z", 64)} {
 		if _, err := store.ReadArtifact(context.Background(), "s1", id, 0, 1); err == nil {
 			t.Fatalf("accepted invalid artifact id %q", id)

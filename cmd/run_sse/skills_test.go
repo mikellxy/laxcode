@@ -26,7 +26,7 @@ func writeTestSkill(t *testing.T, home, name, description string) {
 
 func TestListSkills(t *testing.T) {
 	home := t.TempDir()
-	s := &server{homeDir: home}
+	s := &server{homeDir: home, userRoot: home}
 	request := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
 		s.routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/skills", nil))

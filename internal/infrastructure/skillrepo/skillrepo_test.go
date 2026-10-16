@@ -32,7 +32,7 @@ func writeSkillFile(t *testing.T, root, dirName, fileName, content string) {
 // （端口契约本身不保证顺序）。
 func listSorted(t *testing.T, homeDir string) []prompt.SkillFile {
 	t.Helper()
-	got := New(homeDir).List("ignored")
+	got := newTestStore(t, homeDir).List("ignored")
 	sort.Slice(got, func(i, j int) bool { return got[i].DirName < got[j].DirName })
 	return got
 }
@@ -48,7 +48,7 @@ func dirNames(files []prompt.SkillFile) []string {
 
 func TestListMissingSkillsDir(t *testing.T) {
 	// skills 目录不存在视为没有技能：返回空且不报错（规范要求静默）
-	if got := New(t.TempDir()).List("ignored"); len(got) != 0 {
+	if got := newTestStore(t, t.TempDir()).List("ignored"); len(got) != 0 {
 		t.Errorf("skills 目录不存在时应返回空，实际 %+v", got)
 	}
 }
@@ -90,7 +90,7 @@ func TestListDoesNotRecurse(t *testing.T) {
 	}
 
 	// 只扫恰好一层：foo/bar/SKILL.md 不被发现，foo 自身也没有 SKILL.md
-	if got := New(root).List("ignored"); len(got) != 0 {
+	if got := newTestStore(t, root).List("ignored"); len(got) != 0 {
 		t.Errorf("二层目录内的 SKILL.md 不应被发现，实际 %+v", got)
 	}
 }
@@ -105,7 +105,7 @@ func TestListIgnoresLooseFiles(t *testing.T) {
 		t.Fatalf("写入散置文件失败: %v", err)
 	}
 
-	if got := New(root).List("ignored"); len(got) != 0 {
+	if got := newTestStore(t, root).List("ignored"); len(got) != 0 {
 		t.Errorf("skills 根下的散置文件应被忽略，实际 %+v", got)
 	}
 }
@@ -117,7 +117,7 @@ func TestListIgnoresFileNameCaseMismatch(t *testing.T) {
 	root := t.TempDir()
 	writeSkillFile(t, root, "foo", "skill.md", "---\nname: foo\ndescription: d\n---\n")
 
-	if got := New(root).List("ignored"); len(got) != 0 {
+	if got := newTestStore(t, root).List("ignored"); len(got) != 0 {
 		t.Errorf("skill.md（大小写不符）应被忽略，实际 %+v", got)
 	}
 }
@@ -140,7 +140,7 @@ func TestSourceIgnoresWorkDir(t *testing.T) {
 	writeSkillFile(t, home, "a", "SKILL.md", "A")
 	writeSkillFile(t, other, "b", "SKILL.md", "B")
 
-	src := New(home)
+	src := newTestStore(t, home)
 	for _, workDir := range []string{"", other, t.TempDir()} {
 		if got := src.List(workDir); len(got) != 1 || got[0].DirName != "a" {
 			t.Errorf("workdir %q: List() = %+v, want 只发现全局技能 a", workDir, got)

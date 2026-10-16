@@ -89,7 +89,6 @@ func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agen
 	}
 	in.Models = s.models
 	in.Tracer = t.tracer
-	in.MCPPool = s.mcpPool
 	return s.assemble(ctx, in)
 }
 

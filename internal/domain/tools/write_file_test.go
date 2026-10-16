@@ -6,14 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 )
 
 func TestWriteFileTool(t *testing.T) {
 	workDir := t.TempDir()
 	ctx := context.Background()
-	w := NewWriteFileTool(workDir, workfs.New())
+	w := NewWriteFileTool(workDir, newTestFS(t))
 
 	t.Run("创建新文件并自动创建父目录", func(t *testing.T) {
 		args, _ := json.Marshal(map[string]string{"path": "a/b/c.txt", "content": "hello"})

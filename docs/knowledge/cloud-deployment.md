@@ -6,16 +6,16 @@
 
 - `cloud.sh`
 
-### 解析 -cloud 启动参数，云端模式跳过共享模型管理器和本地 LLM 路由器
+### 解析云端启动参数，后端默认运行用户分流服务
 
 - `internal/infrastructure/config/config.go`：`func parseCLI(args []string) (cliConf, error)`
 - `cmd/main/main.go`：`func main()`
 
-### 云端 SSE 服务使用用户分流处理器，跳过共享 SQLite 仓储和 MCP 连接
+### SSE 服务持有用户分流处理器和可选共享追踪器
 
-- `cmd/run_sse/run_sse.go`：`func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) error`
+- `cmd/run_sse/run_sse.go`：`func run(codeInstance *CodeInstanceGuard) error`
 
-### Web 服务通过 -cloud 允许非本机监听地址，向本机后端代理 API、chat 和健康检查请求
+### Web 服务默认监听所有网卡，向本机后端代理 API、chat 和健康检查请求
 
 - `cmd/web/main.go`：`func run() error`
 - `cmd/web/main.go`：`func newHandler(assets fs.FS, backend *url.URL) http.Handler`
@@ -76,11 +76,11 @@
 
 - `cmd/run_sse/handler.go`：`func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request)`
 
-### 云端模型切换只更新当前用户的模型选择，装配客户端时直连上游而不使用共享流式路由器
+### 模型切换只更新当前用户的模型选择，装配客户端时直连上游
 
-- `cmd/agentasm/model_switcher.go`：`func NewDirectModelSwitcher(models *ai_models.Manager) *ModelSwitcher`
+- `cmd/agentasm/model_switcher.go`：`func NewModelSwitcher(models *ai_models.Manager) *ModelSwitcher`
 - `cmd/agentasm/model_switcher.go`：`func (s *ModelSwitcher) SwitchModelLocked(ref string, effort ...string) error`
-- `cmd/agentasm/agentasm.go`：`func newMainProvider(homeDir string, models *ai_models.Manager, direct bool) *llmprovider.OpenApiProvider`
+- `cmd/agentasm/agentasm.go`：`func newMainProvider(models *ai_models.Manager) *llmprovider.OpenApiProvider`
 
 ### Chat 和 Resume 装配注入用户根、临时目录及用户仓储
 
@@ -112,8 +112,8 @@
 
 ### 相对文件路径从项目 workdir 解析，允许访问整个用户根，写入前校验符号链接指向
 
-- `internal/domain/tools/read_roots.go`：`func resolveReadTarget(workDir string, readRoots []string, input string, userRoots ...string) (requested, allowedRoot string, err error)`
-- `internal/domain/tools/read_roots.go`：`func resolveWriteTarget(workDir string, writeRoots []string, input string, userRoots ...string) (target, allowedRoot string, err error)`
+- `internal/domain/tools/read_roots.go`：`func resolveUserTarget(workDir, userRoot, input string) (string, string, error)`
+- `internal/domain/tools/read_roots.go`：`func resolveWriteTarget(workDir, userRoot, input string) (target, root string, err error)`
 - `internal/domain/tools/read_roots.go`：`func ValidateUserPath(userRoot, target string) error`
 
 ### 云端文件读取、写入和编辑越界时直接返回工具错误，不通过人工审批授权放行
@@ -138,20 +138,14 @@
 - `internal/infrastructure/ripgrep/root.go`：`func (r *RootRunner) Search(ctx context.Context, cwd, file, expression, include string, limit int) (tools.GrepSearchResult, error)`
 - `internal/infrastructure/ripgrep/root.go`：`func (r *RootRunner) Glob(ctx context.Context, cwd, glob string, limit int) (tools.GlobSearchResult, error)`
 
-### Bash 静态检查拒绝危险命令、动态参数和可识别的越界路径，检查不提供操作系统沙箱
+### Bash 调度只接受具备沙箱能力的执行器，每次调用使用离线 Docker 容器
 
-- `internal/domain/tools/bash_risk.go`：`func AssessBashRisk(command, workDir string, userRoots ...string) (reason string, risky bool)`
-- `internal/domain/tools/bash_risk.go`：`func assessCloudBashArgs(call *syntax.CallExpr, workDir, userRoot string) string`
 - `internal/application/reactservice/reactservice.go`：`func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.ToolCall) (*sharedkernel.ToolResult, error)`
-
-### Shell 输出临时文件写入用户 tmp，仅为子进程设置 HOME、TMPDIR、TMP 和 TEMP
-
-- `internal/infrastructure/shell/shell.go`：`func NewWithHome(homeDir, tempDir string) *Runner`
-- `internal/infrastructure/shell/shell.go`：`func (r *Runner) Run(ctx context.Context, workDir, command string, timeout time.Duration) (tools.ShellOutcome, error)`
+- `internal/infrastructure/shell/docker.go`：`func (r *DockerRunner) Run(ctx context.Context, workDir, command string, timeout time.Duration) (outcome tools.ShellOutcome, runErr error)`
 
 ## 用户技能与工具输出归档
 
-### 在用户根限制下发现 agenthome 中的技能，云端技能创建和更新跳过人工审批
+### 在用户根限制下发现 agenthome 中的技能并创建和更新技能包
 
 - `internal/infrastructure/skillrepo/skillrepo.go`：`func (s Source) listRooted(skillsRoot string) []prompt.SkillFile`
 - `internal/application/reactservice/reactservice.go`：`func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.ToolCall) (*sharedkernel.ToolResult, error)`
@@ -168,16 +162,16 @@
 
 ## Web 云端交互与退出清理
 
-### Web 读取 cloud 标记后以项目名称创建工作区，省略目录选择并刷新模型列表
+### Web 以项目名称创建工作区并刷新模型列表
 
 - `web/src/app/App.tsx`：`export function App()`
 - `web/src/hooks/use-workspace.ts`：`export function useWorkspace(userID: string)`
-- `web/src/api/projects.ts`：`export const createProject = (userID: string, name: string, workDir?: string) =>`
-- `web/src/components/project-onboarding/ProjectOnboarding.tsx`：`export function ProjectOnboarding({ cloud, creating, onCreate }: Props)`
+- `web/src/api/projects.ts`：`export const createProject = (userID: string, name: string) =>`
+- `web/src/components/project-onboarding/ProjectOnboarding.tsx`：`export function ProjectOnboarding({ creating, onCreate }: Props)`
 
 ### 云端添加模型界面只展示 API Key 和 Base URL 接入方式
 
-- `web/src/components/model-picker/AddModelDialog.tsx`：`export function AddModelDialog({ cloud, saving, error, onCancel, onSubmit, onConnected }: Props)`
+- `web/src/components/model-picker/AddModelDialog.tsx`：`export function AddModelDialog({ saving, error, onCancel, onSubmit }: Props)`
 
 ### 服务退出时停止每用户评估并关闭仓储，启动脚本退出时回收后端和 Web 子进程
 

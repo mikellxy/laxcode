@@ -47,14 +47,13 @@ type grepArgs struct {
 }
 
 type GrepTool struct {
-	UserRoot  string
-	WorkDir   string
-	ReadRoots []string
-	Runner    RipgrepRunner
+	UserRoot string
+	WorkDir  string
+	Runner   RipgrepRunner
 }
 
-func NewGrepTool(workDir string, runner RipgrepRunner, readRoots ...string) *GrepTool {
-	return &GrepTool{WorkDir: workDir, ReadRoots: append([]string(nil), readRoots...), Runner: runner}
+func NewGrepTool(workDir string, runner RipgrepRunner) *GrepTool {
+	return &GrepTool{UserRoot: workDir, WorkDir: workDir, Runner: runner}
 }
 
 func (g *GrepTool) Name() string { return ToolGrep }
@@ -62,12 +61,12 @@ func (g *GrepTool) Name() string { return ToolGrep }
 func (g *GrepTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        g.Name(),
-		Description: "用正则表达式搜索文件内容，返回匹配文件、行号和行文本。相对 path 限制在工作目录内；系统明确提供的只读目录可使用绝对路径。include 用 glob 筛选文件，如 *.go 或 *.{ts,tsx}。最多返回 100 行匹配；需要精确计数时使用 bash 中的 rg。",
+		Description: "用正则表达式搜索文件内容，返回匹配文件、行号和行文本。相对 path 以工作目录为起点，所有路径必须位于用户根内。include 用 glob 筛选文件，如 *.go 或 *.{ts,tsx}。最多返回 100 行匹配；需要精确计数时使用 bash 中的 rg。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "用于搜索文件内容的正则表达式"},
-				"path":    map[string]any{"type": "string", "description": "工作目录内的路径，或系统明确提供的只读绝对路径；默认工作目录"},
+				"path":    map[string]any{"type": "string", "description": "相对工作目录的路径，或用户根内的绝对路径；默认工作目录"},
 				"include": map[string]any{"type": "string", "description": "文件 glob，如 *.go 或 *.{ts,tsx}"},
 			},
 			"required": []string{"pattern"},
@@ -102,7 +101,7 @@ func (g *GrepTool) ExecuteResult(ctx context.Context, raw json.RawMessage) *shar
 		return &sharedkernel.ToolResult{Error: errors.New("grep runner is not configured")}
 	}
 
-	requested, allowedRoot, err := resolveReadTarget(g.WorkDir, g.ReadRoots, a.Path, g.UserRoot)
+	requested, allowedRoot, err := resolveUserTarget(g.WorkDir, g.UserRoot, a.Path)
 	if err != nil {
 		return &sharedkernel.ToolResult{Error: NewErrorWithPrompt(&FilePathError{}, err)}
 	}

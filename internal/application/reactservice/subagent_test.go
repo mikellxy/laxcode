@@ -12,19 +12,17 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
-	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
-	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 )
 
 // newTestSubAgent 构造子 Agent 并按组合根的真实装配方式注入端口：子工具集
 // 虽在本组用例中不会被执行，仍注入真实现，避免 nil 端口掩盖装配缺陷。
-func newTestSubAgent(parent *ReActService, workDir string) *SubAgent {
+func newTestSubAgent(t *testing.T, parent *ReActService, workDir string) *SubAgent {
 	homeDir := filepath.Join(workDir, "test-home")
 	return NewSubAgent(parent, workDir, SubAgentDeps{
-		WorkFS:     workfs.New(),
-		NewShell:   func() tools.ShellRunner { return shell.New() },
-		SkillSrc:   skillrepo.New(homeDir),
+		WorkFS:     newTestFS(t),
+		NewShell:   func() tools.ShellRunner { return &recordingShell{} },
+		SkillSrc:   skillrepo.NewWithRoot(homeDir, homeDir),
 		SkillsRoot: layout.SkillsRoot(homeDir),
 	})
 }
@@ -55,7 +53,7 @@ func sessionIDs[K any](m map[string]K) []string {
 
 func TestSubAgentNameAndDefinition(t *testing.T) {
 	parent := &ReActService{}
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 	if sa.Name() != tools.ToolRunSubAgent {
 		t.Errorf("Name 应为 run_sub_agent，实际 %q", sa.Name())
 	}
@@ -88,7 +86,7 @@ func TestSubAgentExecuteBadJSON(t *testing.T) {
 	repo := newMemRepo()
 	sess := newTestSession("parent", repo)
 	parent := NewReActService(sess, repo, &scriptedLLM{}, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	_, err := sa.Execute(context.Background(), json.RawMessage(`{bad json`))
 	if err == nil || !strings.Contains(err.Error(), "parsing sub-agent args") {
@@ -100,7 +98,7 @@ func TestSubAgentExecuteMissingTask(t *testing.T) {
 	repo := newMemRepo()
 	sess := newTestSession("parent", repo)
 	parent := NewReActService(sess, repo, &scriptedLLM{}, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	_, err := sa.Execute(context.Background(), json.RawMessage(`{"abstract":"x"}`))
 	if err == nil || !strings.Contains(err.Error(), "sub-agent task required") {
@@ -115,7 +113,7 @@ func TestSubAgentExecuteHappyPath(t *testing.T) {
 		{msg: assistantMsg("child result"), finishReason: sharedkernel.FinishReasonStop},
 	}}
 	parent := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	out, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"count files","abstract":"counting","work_dir":"/tmp/wd"}`))
 	if err != nil {
@@ -187,7 +185,7 @@ func TestSubAgentExecuteTruncatedReportIsPartial(t *testing.T) {
 		{msg: assistantMsg("6. **可观测"), finishReason: sharedkernel.FinishReasonMaxOutputTokens},
 	}}
 	parent := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	out, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"t","abstract":"x"}`))
 	if err != nil {
@@ -217,7 +215,7 @@ func TestSubAgentExecuteUsageUnavailableIsPartial(t *testing.T) {
 		{msg: assistantMsg("report"), finishReason: sharedkernel.FinishReasonUsageUnavailable},
 	}}
 	parent := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	out, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"t"}`))
 	if err != nil {
@@ -239,7 +237,7 @@ func TestSubAgentExecuteChildFailureReturnsString(t *testing.T) {
 		{err: errors.New("child llm failed")},
 	}}
 	parent := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	out, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
 	if err != nil {
@@ -266,7 +264,7 @@ func TestSubAgentExecuteCancelled(t *testing.T) {
 		{err: context.Canceled},
 	}}
 	parent := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/tmp/wd")
+	sa := newTestSubAgent(t, parent, "/tmp/wd")
 
 	out, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"t"}`))
 	if err != nil {
@@ -399,8 +397,8 @@ func TestSubAgentChildPromptIncludesSkills(t *testing.T) {
 		responses: []scriptedResp{{msg: assistantMsg("ok")}},
 	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
 	sa := NewSubAgent(parent, t.TempDir(), SubAgentDeps{
-		WorkFS: workfs.New(), NewShell: func() tools.ShellRunner { return shell.New() },
-		SkillSrc: skillrepo.New(homeDir), SkillsRoot: layout.SkillsRoot(homeDir),
+		WorkFS: newTestFS(t), NewShell: func() tools.ShellRunner { return &recordingShell{} },
+		SkillSrc: skillrepo.NewWithRoot(homeDir, homeDir), SkillsRoot: layout.SkillsRoot(homeDir),
 	})
 
 	args, err := json.Marshal(map[string]string{"task": "t", "work_dir": childWorkDir})
@@ -432,7 +430,7 @@ func TestSubAgentChildPromptNoSkillsNoIndex(t *testing.T) {
 	parent := NewReActService(sess, repo, &scriptedLLM{
 		responses: []scriptedResp{{msg: assistantMsg("ok")}},
 	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, t.TempDir())
+	sa := newTestSubAgent(t, parent, t.TempDir())
 
 	if _, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"t"}`)); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -454,9 +452,9 @@ func TestCloudSubAgentPathDisplayRules(t *testing.T) {
 		responses: []scriptedResp{{msg: assistantMsg("ok")}},
 	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
 	sa := NewSubAgent(parent, work, SubAgentDeps{
-		WorkFS: workfs.New(), UserRoot: root, TempDir: filepath.Join(root, "tmp"),
+		WorkFS: newTestFS(t), UserRoot: root, TempDir: filepath.Join(root, "tmp"),
 		SkillsRoot: layout.SkillsRoot(filepath.Join(root, "agenthome")),
-		NewShell:   func() tools.ShellRunner { return shell.New() },
+		NewShell:   func() tools.ShellRunner { return &recordingShell{} },
 	})
 	args, err := json.Marshal(map[string]string{"task": "inspect", "work_dir": childWork})
 	if err != nil {
@@ -477,7 +475,7 @@ func TestCloudSubAgentPathDisplayRules(t *testing.T) {
 }
 
 func TestSubAgentBeforeAfterExecInfo(t *testing.T) {
-	sa := newTestSubAgent(&ReActService{}, "/tmp/wd")
+	sa := newTestSubAgent(t, &ReActService{}, "/tmp/wd")
 
 	if got := sa.BeforeExecInfo(json.RawMessage(`{}`)); got != "sub agent run to explore..." {
 		t.Errorf("空 abstract 应返回占位文案，实际 %q", got)
@@ -503,7 +501,7 @@ func TestSubAgentChildUsesWorkDirOverride(t *testing.T) {
 	// work_dir 入参覆盖构造时目录——子工具集以覆盖目录为工作区，
 	// 由 child 注册表构造（bash/read_file）消费；无法直接观测目录，
 	// 这里验证覆盖路径不报错且结果协议正常即可
-	sa := newTestSubAgent(parent, "/default/wd")
+	sa := newTestSubAgent(t, parent, "/default/wd")
 	out, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"t","work_dir":"/custom/wd"}`))
 	if err != nil {
 		t.Fatalf("work_dir 覆盖执行失败：err=%v", err)
@@ -524,7 +522,7 @@ func TestSubAgentWithParentSessionRepo(t *testing.T) {
 	parent := NewReActService(sess, repo, &scriptedLLM{
 		responses: []scriptedResp{{msg: assistantMsg("result-1")}},
 	}, nil, tools.NewDefaultRegistry(nil), nil, nil)
-	sa := newTestSubAgent(parent, "/wd")
+	sa := newTestSubAgent(t, parent, "/wd")
 	if _, err := sa.Execute(context.Background(), json.RawMessage(`{"task":"t","work_dir":"/wd"}`)); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

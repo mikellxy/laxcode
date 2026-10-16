@@ -28,7 +28,7 @@ export function UserGuide({ onFinish }: { onFinish: () => void }) {
       <div className="guide-intro" aria-live="polite" aria-atomic="true">
         <span className="guide-eyebrow">{step === 0 ? "01 / 看见任务的执行效率" : "02 / 使用技能，带走成果"}</span>
         <h1>{step === 0 ? "每一轮对话，耗时一目了然" : "调用技能，下载任务成果"}</h1>
-        <p>{step === 0 ? "Cloud 模式下，选中会话，点击 Context 下方的「性能监控」，查看模型与工具的耗时。" : "输入 / 选择 Skill 辅助完成任务；Cloud 模式下，还能预览并下载 Agent 创建的产物。"}</p>
+        <p>{step === 0 ? "选中会话，点击 Context 下方的「性能监控」，查看模型与工具的耗时。" : "输入 / 选择 Skill 辅助完成任务；还可预览并下载 Agent 创建的产物。"}</p>
       </div>
       {step === 0 ? <section className="guide-performance" aria-label="性能监控使用方法">
         <figure className="guide-figure">

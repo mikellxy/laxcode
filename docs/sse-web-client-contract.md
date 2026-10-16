@@ -85,12 +85,8 @@ export default defineConfig(({ mode }) => {
 });
 ```
 
-`web.sh` 与 `web.ps1` 启动后端时使用 `127.0.0.1:0`，后端在持有
-用户目录下 `.laxcode/sse-code.instance` 排他锁的同时写入实际地址。两个脚本
-都会从该文件读取与子进程 PID 匹配的地址，并把地址作为 `-backend` 参数传给
-静态 Web 服务。macOS 的 `web.sh` 构建并启动 `bin/laxcode-web`；Windows 的
-`web.ps1` 启动预编译的 `bin/win/laxcode-web.exe`。该程序嵌入
-`web/dist/` 的生产资源，并代理 `/api`、`/chat` 和 `/healthz`。
+`cloud.sh` 构建前端和两个 Go 程序，以 `127.0.0.1:0` 启动后端，
+从 `.laxcode/sse-code.instance` 读取实际地址，再通过 `laxcode-web` 代理 API 和 SSE。
 
 前端 API 地址始终使用相对路径，例如 `/api/sessions` 和 `/chat`，不要在组件中硬编码主机或端口。
 
@@ -101,9 +97,8 @@ cd web
 npm run build
 ```
 
-构建产物固定输出到 `web/dist/`。Windows 发布构建通过 Go `embed` 将其写入
-`laxcode-web.exe`；`web/dist/` 本身仍不提交到 Git。`make build-windows` 会先构建
-前端，再使用 MinGW-w64 交叉编译依赖 CGO 的后端和不依赖 CGO 的 Web 服务程序。
+构建产物固定输出到 `web/dist/`，通过 Go `embed` 嵌入 Web 程序。
+`make build-cloud` 生成 Linux amd64 离线部署包；`web/dist/` 不提交到 Git。
 
 ## 1. 客户端身份
 
@@ -157,21 +152,6 @@ export type ChatMessage = {
 
 ## 3. 项目与 Session
 
-### 选择项目目录
-
-```http
-POST /api/directory-picker
-Content-Type: application/json
-```
-
-请求体为空对象 `{}`。服务在所在的原生主机（macOS / Windows）上打开系统目录选择器，成功时返回绝对路径：
-
-```json
-{"path":"/Users/example/project/"}
-```
-
-用户取消时返回 `{"path":null}`。同一时间只允许一个选择器；重复请求返回 `409 Conflict`。其他操作系统（如 Linux）返回 `501 Not Implemented`。该窗口出现在 Go 服务所在设备，因此本接口仅适用于本机 Web 模式。
-
 ### 新建项目
 
 ```http
@@ -182,12 +162,12 @@ Content-Type: application/json
 ```json
 {
   "user_id": "11111111-1111-4111-8111-111111111111",
-  "name": "LaxCode",
-  "work_dir": "/absolute/path/to/LaxCode"
+  "name": "LaxCode"
 }
 ```
 
-`work_dir` 必须是服务端本机已存在的绝对目录。成功返回 `201 Created`，响应包含
+服务端在当前用户根下创建项目目录；名称限制为 1–120 个英文字母、数字、中横线或下划线，
+`agenthome` 与 `tmp` 为保留名称，重名返回 409。成功返回 `201 Created`，响应包含
 `project_id`、`user_id`、`name`、`work_dir`、`created_at` 和 `updated_at`。
 
 ### 查询项目
@@ -424,12 +404,11 @@ GET /api/evaluations?session_id={session_id}
 }
 ```
 
-状态为 `queued | running | succeeded | failed`。本地模式保留成功任务的
-`report_path` 字段以兼容旧客户端，Cloud 模式省略该字段，并隐藏 `error` 中的
+状态为 `queued | running | succeeded | failed`。响应省略 `report_path` 字段，并隐藏 `error` 中的
 UserRoot 前缀。前端按 `status == succeeded` 显示下载按钮，不依赖报告路径；
 仅在存在活跃状态时轮询。
 
-下载完整评估报告（本地与 Cloud 均可用）：
+下载完整评估报告：
 
 ```http
 GET /api/sessions/{session_id}/evaluations/{job_id}/report
@@ -671,6 +650,5 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
 - 每个 Session 同时只允许一轮 `/chat`；并发请求返回 `409`。
 - 前端发送期间应禁用该 Session 的发送按钮，但其他 Session 可以并行对话。
 - 使用 `AbortController` 可以中断浏览器请求；连接断开会取消服务端当前请求。
-- 目录选择器打开期间前端应禁用“新项目”按钮；服务端也会拒绝并发的第二个选择请求。
 - 切换 Session 时可以让后台流继续并按 Session 保存状态，也可以显式 abort；两种策略必须保持一致。
 - `done` 或 `error` 后必须释放发送中状态，避免输入框永久锁定。

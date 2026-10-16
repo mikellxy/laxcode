@@ -40,7 +40,7 @@ func (in *AddModelInput) normalizeAndValidate() error {
 	if err := ValidateEffort(in.Model, in.ReasoningEffort); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidModelConfig, err)
 	}
-	if !validCatalogName(in.Provider) || in.Provider == config.CLIProviderName {
+	if !validCatalogName(in.Provider) {
 		return fmt.Errorf("%w: invalid or reserved provider name", ErrInvalidModelConfig)
 	}
 	if !validCatalogName(in.Model) {
@@ -167,6 +167,6 @@ func appendModelToProviders(providers []config.Provider, input AddModelInput, mo
 }
 
 func credentialsEqual(provider *config.Provider, input AddModelInput) bool {
-	return provider.AuthType != "oauth" && strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
+	return strings.TrimSpace(provider.OpenaiApiKey) == input.APIKey &&
 		strings.TrimRight(strings.TrimSpace(provider.OpenaiBaseUrl), "/") == strings.TrimRight(input.BaseURL, "/")
 }

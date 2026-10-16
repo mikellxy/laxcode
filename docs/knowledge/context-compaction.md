@@ -39,16 +39,15 @@
 
 ## 依赖装配
 
-### 从启动配置创建共享模型管理器，并传入请求的服务装配入口
+### 按用户配置创建模型管理器，并传入请求的服务装配入口
 
-- `cmd/agentasm/model_switcher.go`：`func NewModels(homeDir string) (*ai_models.Manager, error)`
+- `internal/infrastructure/ai_models/manager.go`：`func New(homeDir string, conf config.Conf) (*Manager, error)`
 - `cmd/run_sse/tracing.go`：`func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agentasm.Assembled, err error)`
 - `cmd/agentasm/agentasm.go`：`func Assemble(ctx context.Context, in Input) (*Assembled, error)`
 
 ### 按用户主目录创建会话，复用注入仓储或创建 SQLite 仓储以确定上下文的持久化位置
 
 - `cmd/agentasm/core.go`：`func assembleCore(ctx context.Context, workDir, explicitHome, sessionID string, consumer func(*reactservice.ReactEvent), withArtifacts bool, tracer telemetry.Tracer, models *ai_models.Manager, suppliedRepo session.SessionRepository, userRoot string) (*coreAssembly, error)`
-- `cmd/agentasm/agentasm.go`：`func resolveHomeDir(explicit string) (string, error)`
 - `internal/infrastructure/sessionrepo/sqlite.go`：`func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error)`
 
 ### 根据运行模式创建归档存储，并注册读取归档原文的工具
@@ -57,11 +56,10 @@
 - `cmd/agentasm/agentasm.go`：`func Assemble(ctx context.Context, in Input) (*Assembled, error)`
 - `internal/domain/tools/read_artifact.go`：`func NewReadArtifactTool(store ArtifactStore, sessionID string) *ReadArtifactTool`
 
-### 按当前主模型创建客户端并注入预算和认证，云端直连上游，本地使用流式路由器
+### 按当前主模型创建直连上游的客户端并注入预算和 API Key
 
-- `cmd/agentasm/agentasm.go`：`func newMainProvider(homeDir string, models *ai_models.Manager, direct bool) *llmprovider.OpenApiProvider`
-- `internal/infrastructure/llmprovider/openai_impl.go`：`func NewOpenApiProviderWithStreamGateway(apiKey, baseURL, model, streamGatewayURL string, budgetValues ...int) *OpenApiProvider`
-- `internal/infrastructure/llmprovider/openai_impl.go`：`func (p *OpenApiProvider) WithChatGPT(homeDir, credentialRef string) *OpenApiProvider`
+- `cmd/agentasm/agentasm.go`：`func newMainProvider(models *ai_models.Manager) *llmprovider.OpenApiProvider`
+- `internal/infrastructure/llmprovider/openai_impl.go`：`func NewOpenApiProvider(apiKey, baseURL, model string, budgetValues ...int) *OpenApiProvider`
 
 ### 按压缩模型创建独立摘要客户端，使用该模型自己的预算和连接
 
@@ -90,7 +88,7 @@
 - `internal/infrastructure/llmprovider/openai_impl.go`：`func (p *OpenApiProvider) ContextBudget() domainllm.ContextBudget`
 - `internal/domain/llmprovider/llm_client.go`：`func (b ContextBudget) MaxInputTokens() int`
 
-### 按完整请求统计输入 token，远端计数失败或使用 OAuth 时采用本地估算
+### 按完整请求统计输入 token，远端计数失败时采用本地估算
 
 - `internal/infrastructure/llmprovider/openai_impl.go`：`func (p *OpenApiProvider) CountInputTokens(ctx context.Context, msgs []sharedkernel.Message, toolsDefs []sharedkernel.ToolDefinition) (int, error)`
 - `internal/infrastructure/llmprovider/openai_impl.go`：`func (p *OpenApiProvider) buildResponseParams(msgs []sharedkernel.Message, toolsDefs []sharedkernel.ToolDefinition) responses.ResponseNewParams`

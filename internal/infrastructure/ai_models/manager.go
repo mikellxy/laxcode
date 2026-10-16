@@ -1,4 +1,4 @@
-// Package ai_models owns the model catalog, connection construction and OAuth.
+// Package ai_models owns each user's model catalog and runtime selections.
 package ai_models
 
 import (
@@ -6,12 +6,11 @@ import (
 	"strings"
 	"sync"
 
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 )
 
 // Manager is shared by the composition root and model management endpoints.
-// ModelSwitcher coordinates publishing selections with replacing the router client.
+// ModelSwitcher coordinates publishing selections with active requests.
 // ReActService receives only LLMClient instances with their own limit snapshots.
 type Manager struct {
 	mu      sync.RWMutex
@@ -129,25 +128,9 @@ func (m *Manager) SetActiveModel(ref string, effort ...string) error {
 	return m.state.setActiveModel(ref, effort...)
 }
 
-// StreamClient constructs a client without changing the current selection.
-// Token refresh is performed by the OAuth transport when a request is sent.
-func (m *Manager) StreamClient(ref string, effort ...string) (domainrouter.StreamClient, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	resolved, err := m.state.selection(ref, effort...)
-	if err != nil {
-		return nil, err
-	}
-	if resolved.AuthType == "oauth" {
-		return newChatGPTStreamClient(m.homeDir, resolved.CredentialRef, resolved.UpstreamModel).WithReasoningEffort(resolved.ReasoningEffort), nil
-	}
-	return newOpenAIStreamClient(resolved.OpenaiApiKey, resolved.OpenaiBaseUrl, resolved.UpstreamModel).WithReasoningEffort(resolved.ReasoningEffort), nil
-}
-
 // ProviderInfo deliberately omits credentials and endpoints from catalog reads.
 type ProviderInfo struct {
 	ProviderName string
-	AuthType     string
 	ModelList    []ModelInfo
 }
 
@@ -164,7 +147,7 @@ func (m *Manager) List() []ProviderInfo {
 	defer m.mu.RUnlock()
 	result := make([]ProviderInfo, 0, len(m.state.providers))
 	for _, p := range m.state.providers {
-		info := ProviderInfo{ProviderName: p.ProviderName, AuthType: p.AuthType, ModelList: make([]ModelInfo, 0, len(p.ModelList))}
+		info := ProviderInfo{ProviderName: p.ProviderName, ModelList: make([]ModelInfo, 0, len(p.ModelList))}
 		for _, model := range p.ModelList {
 			upstream := model.UpstreamModel
 			if upstream == "" {

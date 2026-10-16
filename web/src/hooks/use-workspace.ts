@@ -3,7 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { createSession, deleteSession, listAllSessions } from "../api/sessions";
 import { createProject, listProjects } from "../api/projects";
 import { listHistory } from "../api/history";
-import { answerApproval, resumeChat, streamChat } from "../api/chat-stream";
+import { resumeChat, streamChat } from "../api/chat-stream";
 import { getSessionContext } from "../api/context";
 import { ApiError } from "../api/client";
 import { streamReducer, type StreamState } from "../features/chat/reducer";
@@ -40,7 +40,7 @@ export function useWorkspace(userID: string) {
   const selectedProject = projects.data?.projects.find((project) => project.project_id === selectedProjectID);
 
   const createProjectMutation = useMutation({
-    mutationFn: ({ name, workDir }: { name: string; workDir?: string }) => createProject(userID, name, workDir),
+    mutationFn: ({ name }: { name: string }) => createProject(userID, name),
     onSuccess: async (created) => {
       client.setQueryData(["projects", userID], (old: Awaited<ReturnType<typeof listProjects>> | undefined) =>
         ({ projects: [created, ...(old?.projects ?? []).filter((project) => project.project_id !== created.project_id)] }));
@@ -159,14 +159,6 @@ export function useWorkspace(userID: string) {
     }
   }, [updateStream, reconcile, client]);
 
-  const approve = useCallback(async (approved: boolean) => {
-    if (!selectedID) return;
-    const approval = streams[selectedID]?.approval;
-    if (!approval) return;
-    await answerApproval(approval, approved);
-    updateStream(selectedID, { type: "approval_resolved", approvalID: approval.approval_id });
-  }, [selectedID, streams, updateStream]);
-
   const send = useCallback(async (task: string) => {
     if (!selection || !streamKey || !task.trim() || streams[streamKey]?.running || sending.current.has(streamKey)) return;
     let sendingKey = streamKey;
@@ -209,6 +201,6 @@ export function useWorkspace(userID: string) {
     selectedID, selectedProjectID, selectedProject, select, selectProject, startSession, history, historyMessages, contextUsage,
     stream: streamKey ? streams[streamKey] ?? emptyStream() : emptyStream(),
     runningSessionIDs: Object.keys(streams).filter((id) => streams[id].running),
-    send, retry, cancel, approve,
+    send, retry, cancel,
   };
 }

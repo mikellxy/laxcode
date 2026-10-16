@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ChevronRight, ChevronUp, Clock, Loader2, Settings } from "lucide-react";
 import { addModelRequest, listModels, modelProviders, splitModelRef, switchModelRequest } from "../../api/models";
@@ -8,7 +8,7 @@ import { AddModelDialog } from "./AddModelDialog";
 // ModelPicker 承载模型选择触发器与旁侧的「添加模型」齿轮按钮：齿轮直接打开
 // 添加表单；bounceKey 由父组件在用户点击被锁定的输入框时递增，驱动齿轮跳动
 // 引导配置模型。
-export function ModelPicker({ running, bounceKey, cloud }: { running: boolean; bounceKey: number; cloud: boolean }) {
+export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKey: number }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
@@ -74,7 +74,6 @@ export function ModelPicker({ running, bounceKey, cloud }: { running: boolean; b
 
   const current = models.data?.current_model;
   const selected = models.data?.providers.flatMap((provider) => provider.model_list).find((model) => model.model_ref === current);
-  const connected = useCallback(() => { void client.invalidateQueries({ queryKey: ["models"] }); setAdding(false); }, [client]);
   const providers = models.data ? modelProviders(models.data) : [];
   const expanded = providers.find((provider) => provider.provider_name === expandedProvider);
   const label = models.isError ? "模型列表不可用" : queued ?? (models.isPending ? "加载模型…" : current || "未配置模型");
@@ -126,6 +125,6 @@ export function ModelPicker({ running, bounceKey, cloud }: { running: boolean; b
       </div>}
       {switchModel.isError && <div className="model-menu-state error" role="alert">切换失败：{switchModel.error instanceof Error ? switchModel.error.message : "未知错误"}</div>}
     </div>}
-    {adding && <AddModelDialog cloud={cloud} saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} onConnected={connected} />}
+    {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} />}
   </div>;
 }

@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
-	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	tiktoken "github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
 )
@@ -49,11 +48,6 @@ func (p *OpenApiProvider) countInputTokensLocal(msgs []sharedkernel.Message, too
 	if err != nil {
 		return 0, fmt.Errorf("marshal params for local token count: %w", err)
 	}
-	if p.oauth {
-		data, err = ai_models.NormalizeRequest(data)
-		if err != nil {
-			return 0, err
-		}
-	}
+
 	return len(encoding.Encode(string(data), nil, nil)), nil
 }

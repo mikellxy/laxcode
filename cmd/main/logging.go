@@ -6,10 +6,7 @@ import (
 	"path/filepath"
 )
 
-const (
-	appLogPath       = "./log/laxcode.log"
-	llmRouterLogPath = "./log/llmrouter.log"
-)
+const appLogPath = "./log/laxcode.log"
 
 // configureSlog 使用标准库 JSON handler，把 INFO 及以上日志追加到文件。
 // 日志目录只在进程启动时创建，不引入额外日志框架或领域端口。
@@ -22,8 +19,7 @@ func configureSlog(path string) (*os.File, error) {
 	return f, nil
 }
 
-// newFileLogger 创建一个不修改 slog.Default 的独立 JSON logger，供模型路由器
-// 单独写入 llmrouter.log，避免和应用日志混在同一文件。
+// newFileLogger opens an append-only JSON application log.
 func newFileLogger(path string) (*slog.Logger, *os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, nil, err

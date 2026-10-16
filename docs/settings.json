@@ -23,7 +23,5 @@
       ]
     }
   ],
-  "compaction_model": "example:summary",
-  "llm_router_addr": "127.0.0.1:0",
-  "mcp_servers": {}
+  "compaction_model": "example:summary"
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,14 +106,5 @@ func TestCloudPerformanceEndpointAndBoundaries(t *testing.T) {
 	}
 	if response := cloudRequest(t, users, id, http.MethodGet, endpoint, nil); response.Code != http.StatusForbidden {
 		t.Fatalf("parent symlink: %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestPerformanceEndpointRejectsLocalMode(t *testing.T) {
-	s := newTestServer(t, t.TempDir(), false)
-	response := httptest.NewRecorder()
-	s.routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/sessions/"+uuid.NewString()+"/performance", nil))
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("local mode: %d %s", response.Code, response.Body.String())
 	}
 }

@@ -37,16 +37,15 @@ describe("performance rendering", () => {
     expect(html).not.toContain("0 ms");
   });
 
-  it("places the trigger below Context only in cloud mode and disables it without a session", () => {
-    const renderSidebar = (cloud: boolean, selectedID?: string) => renderToStaticMarkup(<SessionTabs
-      cloud={cloud} selectedID={selectedID} projects={[]} sessionsByProject={{}} creatingProject={false} runningSessionIDs={[]}
+  it("places the trigger below Context and disables it without a session", () => {
+    const renderSidebar = (selectedID?: string) => renderToStaticMarkup(<SessionTabs
+      selectedID={selectedID} projects={[]} sessionsByProject={{}} creatingProject={false} runningSessionIDs={[]}
       onSelect={() => {}} onSelectProject={() => {}} onDeleteSession={() => {}} onCreateProject={() => {}} onCreateSession={() => {}}
     />);
-    const cloud = renderSidebar(true, "session");
+    const cloud = renderSidebar("session");
     expect(cloud.indexOf("Context")).toBeLessThan(cloud.indexOf("性能监控"));
     expect(cloud.indexOf("性能监控")).toBeLessThan(cloud.indexOf("服务连接就绪"));
     expect(cloud).not.toContain('class="performance-trigger" disabled');
-    expect(renderSidebar(true)).toContain('class="performance-trigger" disabled');
-    expect(renderSidebar(false, "session")).not.toContain("性能监控");
+    expect(renderSidebar()).toContain('class="performance-trigger" disabled');
   });
 });

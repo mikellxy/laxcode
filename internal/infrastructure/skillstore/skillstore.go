@@ -37,8 +37,6 @@ type Store struct {
 	mu       sync.Mutex
 }
 
-func New(root string) *Store { return &Store{root: root} }
-
 var _ tools.SkillPackageStore = (*Store)(nil)
 
 func (s *Store) Load(ctx context.Context, name string) (tools.SkillPackageSnapshot, error) {
@@ -121,39 +119,25 @@ func (s *Store) Replace(ctx context.Context, name, expectedRevision string, file
 }
 
 func (s *Store) openRoot() (*os.Root, error) {
-	if s.userRoot != "" {
-		user, err := os.OpenRoot(s.userRoot)
-		if err != nil {
-			return nil, err
-		}
-		defer user.Close()
-		rel, err := filepath.Rel(s.userRoot, s.root)
-		if err != nil {
-			return nil, err
-		}
-		if err := user.MkdirAll(rel, dirPerm); err != nil {
-			return nil, err
-		}
-		root, err := user.OpenRoot(rel)
-		if err != nil {
-			return nil, err
-		}
-		if err := root.MkdirAll(tempDir, dirPerm); err != nil {
-			root.Close()
-			return nil, err
-		}
-		return root, nil
-	}
-	if err := os.MkdirAll(s.root, dirPerm); err != nil {
-		return nil, fmt.Errorf("create skills root: %w", err)
-	}
-	root, err := os.OpenRoot(s.root)
+	user, err := os.OpenRoot(s.userRoot)
 	if err != nil {
-		return nil, fmt.Errorf("open skills root: %w", err)
+		return nil, err
+	}
+	defer user.Close()
+	rel, err := filepath.Rel(s.userRoot, s.root)
+	if err != nil {
+		return nil, err
+	}
+	if err := user.MkdirAll(rel, dirPerm); err != nil {
+		return nil, err
+	}
+	root, err := user.OpenRoot(rel)
+	if err != nil {
+		return nil, err
 	}
 	if err := root.MkdirAll(tempDir, dirPerm); err != nil {
 		root.Close()
-		return nil, fmt.Errorf("create skill staging directory: %w", err)
+		return nil, err
 	}
 	return root, nil
 }

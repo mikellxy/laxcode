@@ -18,11 +18,11 @@ func TestAPIKeyMigrationAndReload(t *testing.T) {
 		{"provider_name":"oauth","auth_type":"oauth","credential_ref":"existing-ref","model_list":[{"model_name":"oauth-model"}]}
 	]}`
 	writeSettings(t, userHome, before)
-	conf, err := LoadSettings(userHome, []string{"-model=ephemeral", "-openai_api_key=cli-secret", "-openai_base_url=https://cli.example/v1"})
+	conf, err := LoadSettings(userHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conf.ProviderList[0].OpenaiApiKey != "migration-secret" || conf.ProviderList[1].CredentialRef != "existing-ref" || conf.ProviderList[2].OpenaiApiKey != "cli-secret" {
+	if conf.ProviderList[0].OpenaiApiKey != "migration-secret" || conf.ProviderList[1].AuthType != "oauth" {
 		t.Fatal("migration changed runtime credentials")
 	}
 	data, err := os.ReadFile(layout.UserSettings(userHome))
@@ -145,7 +145,7 @@ func TestCloudTemplatesAndOAuthAreNotMigrated(t *testing.T) {
 	template := `{"provider_list":[{"provider_name":"p","openai_api_key":"template-secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"m"}]}]}`
 	writeSettings(t, host, template)
 	for _, load := range []func() (Conf, error){
-		func() (Conf, error) { return LoadSettings(host, []string{"-cloud"}) },
+		func() (Conf, error) { return Load(host, nil) },
 		func() (Conf, error) { return LoadSettingsFromDir(layout.Root(host), nil) },
 	} {
 		conf, err := load()
@@ -163,7 +163,7 @@ func TestCloudTemplatesAndOAuthAreNotMigrated(t *testing.T) {
 	oauth := `{"provider_list":[{"provider_name":"oauth","auth_type":"oauth","credential_ref":"existing","model_list":[{"model_name":"m"}]}]}`
 	writeSettings(t, oauthHome, oauth)
 	conf, err := LoadSettings(oauthHome, nil)
-	if err != nil || conf.ProviderList[0].CredentialRef != "existing" {
+	if err != nil || conf.ProviderList[0].AuthType != "oauth" {
 		t.Fatalf("OAuth config changed: %v", err)
 	}
 	if data, err := os.ReadFile(layout.UserSettings(oauthHome)); err != nil || string(data) != oauth {

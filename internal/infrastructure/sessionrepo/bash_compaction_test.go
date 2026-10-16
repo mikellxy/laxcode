@@ -8,12 +8,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/compactor"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/tools"
 	"github.com/mikellxy/laxcode/internal/infrastructure/artifactstore"
-	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 )
 
 // 真实 Bash → Registry → Message → 压缩 → SQLite/JSONL → 重启后续读原始日志。
@@ -21,8 +21,8 @@ func TestBashArtifactAndCompactContentSurviveCompactionAndReload(t *testing.T) {
 	repo, root := newTestRepo(t)
 	ctx := context.Background()
 	s := createSystem(t, repo, "bash-output", "system")
-	store := artifactstore.New(filepath.Join(root, "artifacts"))
-	runner := shell.New()
+	store := artifactstore.NewWithRoot(filepath.Join(root, "artifacts"), root)
+	runner := &artifactShell{}
 	t.Cleanup(func() { _ = runner.Close() })
 	reg := tools.NewDefaultRegistry(nil)
 	reg.Register(tools.NewBashTool(root, runner, store, s.ID))
@@ -138,3 +138,10 @@ func TestMigrateAddsCompactContentToExistingDatabase(t *testing.T) {
 		t.Fatal("missing compact_content column")
 	}
 }
+
+type artifactShell struct{}
+
+func (*artifactShell) Run(context.Context, string, string, time.Duration) (tools.ShellOutcome, error) {
+	return tools.ShellOutcome{Output: strings.Repeat("0123456789", 1000) + "TAIL", ExitCode: 7, ExitErr: "exit status 7"}, nil
+}
+func (*artifactShell) Close() error { return nil }

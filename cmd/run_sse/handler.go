@@ -21,7 +21,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
-	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
@@ -38,7 +37,6 @@ const maxBodyBytes = 1 << 20
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
 	tracer             telemetry.Tracer
-	mcpPool            *mcpserver.Pool // 启动时建立，请求只读复用，退出时统一关闭。
 	userRoot           string
 	tempDir            string
 	projectMu          sync.Mutex
@@ -48,24 +46,18 @@ type server struct {
 	assembleEvaluation func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
 	locks              *sessionLocks
 	projectLocks       *sessionLocks
-	approvals          *approvalBroker
 	history            session.SessionHistoryRepository
 	contextRepo        session.SessionRepository
 	catalog            session.SessionCatalogRepository
 	projects           session.ProjectRepository
-	pickDirectory      func(context.Context) (string, error)
-	directoryPickerMu  sync.Mutex
 	evaluations        evaluation.Repository
 	evaluationLocks    *sessionLocks
 	evaluationCtx      context.Context
 	evaluationCancel   context.CancelFunc
 	evaluationWG       sync.WaitGroup
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
-	models           *ai_models.Manager
-	switcher         *agentasm.ModelSwitcher
-	oauth            *ai_models.LoginManager
-	oauthInstallMu   sync.Mutex
-	oauthInstalledID string
+	models   *ai_models.Manager
+	switcher *agentasm.ModelSwitcher
 }
 
 const (
@@ -110,28 +102,6 @@ func sessionToDTO(item session.Summary) sessionDTO {
 		SessionID: item.ID, Mode: item.Mode, UserID: item.UserID, ProjectID: item.ProjectID, Title: item.Title, WorkDir: item.WorkDir,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
-}
-
-func normalizeWorkDir(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", errors.New("work_dir is required")
-	}
-	if !filepath.IsAbs(raw) {
-		return "", errors.New("work_dir must be an absolute path")
-	}
-	workDir, err := filepath.Abs(raw)
-	if err != nil {
-		return "", fmt.Errorf("resolve work_dir: %w", err)
-	}
-	info, err := os.Stat(workDir)
-	if err != nil {
-		return "", fmt.Errorf("stat work_dir: %w", err)
-	}
-	if !info.IsDir() {
-		return "", errors.New("work_dir must be a directory")
-	}
-	return filepath.Clean(workDir), nil
 }
 
 func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -268,9 +238,8 @@ func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 type createProjectRequest struct {
-	UserID  string `json:"user_id"`
-	Name    string `json:"name"`
-	WorkDir string `json:"work_dir"`
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
 }
 
 type projectDTO struct {
@@ -317,52 +286,41 @@ func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var workDir string
-	if s.userRoot != "" {
-		s.projectMu.Lock()
-		defer s.projectMu.Unlock()
-		if err := validateCloudProjectName(name); err != nil {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		items, err := s.projects.ListProjects(r.Context(), userID)
-		if err != nil {
-			writeJSONError(w, 500, err.Error())
-			return
-		}
-		for _, item := range items {
-			if item.Name == name {
-				writeJSONError(w, 409, "project name already exists")
-				return
-			}
-		}
-		workDir = filepath.Join(s.userRoot, name)
-		root, err := os.OpenRoot(s.userRoot)
-		if err != nil {
-			writeJSONError(w, 500, err.Error())
-			return
-		}
-		defer root.Close()
-		if err := root.Mkdir(name, 0700); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				writeJSONError(w, 409, "project name already exists")
-			} else {
-				writeJSONError(w, 500, err.Error())
-			}
-			return
-		}
-	} else {
-		var err error
-		workDir, err = normalizeWorkDir(req.WorkDir)
-		if err != nil {
-			writeJSONError(w, 400, err.Error())
+	s.projectMu.Lock()
+	defer s.projectMu.Unlock()
+	if err := validateCloudProjectName(name); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := s.projects.ListProjects(r.Context(), userID)
+	if err != nil {
+		writeJSONError(w, 500, err.Error())
+		return
+	}
+	for _, item := range items {
+		if item.Name == name {
+			writeJSONError(w, 409, "project name already exists")
 			return
 		}
 	}
+	workDir = filepath.Join(s.userRoot, name)
+	root, err := os.OpenRoot(s.userRoot)
+	if err != nil {
+		writeJSONError(w, 500, err.Error())
+		return
+	}
+	defer root.Close()
+	if err := root.Mkdir(name, 0700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			writeJSONError(w, 409, "project name already exists")
+		} else {
+			writeJSONError(w, 500, err.Error())
+		}
+		return
+	}
 	created, err := s.projects.CreateProject(r.Context(), uuid.NewString(), userID, name, workDir)
 	if err != nil {
-		if s.userRoot != "" {
-			_ = os.Remove(workDir)
-		}
+		_ = os.Remove(workDir)
 		writeJSONError(w, http.StatusInternalServerError, "create project failed: "+err.Error())
 		return
 	}
@@ -394,43 +352,11 @@ func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-type directoryPickerResponse struct {
-	Path *string `json:"path"`
-}
-
 // modelMissing 在 switcher 读锁内检查是否尚无活跃模型（延迟配置场景）。
 func (s *server) modelMissing() bool {
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	return strings.TrimSpace(s.models.Active().Ref) == ""
-}
-
-func (s *server) handlePickDirectory(w http.ResponseWriter, r *http.Request) {
-	if s.pickDirectory == nil {
-		writeJSONError(w, http.StatusInternalServerError, "directory picker is unavailable")
-		return
-	}
-	if !s.directoryPickerMu.TryLock() {
-		writeJSONError(w, http.StatusConflict, "directory picker is already open")
-		return
-	}
-	defer s.directoryPickerMu.Unlock()
-
-	path, err := s.pickDirectory(r.Context())
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if errors.Is(err, errDirectoryPickerCancelled) {
-		_ = json.NewEncoder(w).Encode(directoryPickerResponse{})
-		return
-	}
-	if errors.Is(err, errDirectoryPickerUnsupported) {
-		writeJSONError(w, http.StatusNotImplemented, err.Error())
-		return
-	}
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = json.NewEncoder(w).Encode(directoryPickerResponse{Path: &path})
 }
 
 type historyMessageDTO struct {
@@ -459,7 +385,6 @@ type modelConfigDTO struct {
 
 type providerModelsDTO struct {
 	ProviderName string           `json:"provider_name"`
-	AuthType     string           `json:"auth_type,omitempty"`
 	ModelList    []modelConfigDTO `json:"model_list"`
 }
 
@@ -500,7 +425,7 @@ func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 				ModelRef:      model.Ref,
 			}
 		}
-		response.Providers[i] = providerModelsDTO{ProviderName: provider.ProviderName, AuthType: provider.AuthType, ModelList: models}
+		response.Providers[i] = providerModelsDTO{ProviderName: provider.ProviderName, ModelList: models}
 	}
 	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -589,7 +514,7 @@ func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 	currentEffort := s.models.Active().ReasoningEffort
 	s.switcher.Unlock()
 	if err != nil {
-		if errors.Is(err, agentasm.ErrRouterUnavailable) {
+		if errors.Is(err, agentasm.ErrModelsUnavailable) {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -674,15 +599,13 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
-	if s.userRoot != "" {
-		if _, err := s.catalog.GetSession(r.Context(), sessionID); err != nil {
-			if errors.Is(err, sessionrepo.ErrSessionNotFound) {
-				writeJSONError(w, 404, "session not found")
-			} else {
-				writeJSONError(w, 500, err.Error())
-			}
-			return
+	if _, err := s.catalog.GetSession(r.Context(), sessionID); err != nil {
+		if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+			writeJSONError(w, 404, "session not found")
+		} else {
+			writeJSONError(w, 500, err.Error())
 		}
+		return
 	}
 	contextState, err := s.contextRepo.GetRequestContext(r.Context(), sessionID)
 	if err != nil {
@@ -699,11 +622,9 @@ func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server {
 	evaluationCtx, evaluationCancel := context.WithCancel(context.Background())
 	return &server{
-		models:        models,
-		oauth:         ai_models.NewLoginManager(homeDir),
-		homeDir:       homeDir,
-		planMode:      planMode,
-		pickDirectory: pickNativeDirectory,
+		models:   models,
+		homeDir:  homeDir,
+		planMode: planMode,
 		assemble: func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 			in.Mode = agentasm.ModeCode
 			return agentasm.Assemble(ctx, in)
@@ -714,30 +635,7 @@ func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server
 		evaluationLocks:    newSessionLocks(),
 		evaluationCtx:      evaluationCtx,
 		evaluationCancel:   evaluationCancel,
-		approvals:          newApprovalBroker(),
-		switcher:           agentasm.NewModelSwitcher(nil, models),
-	}
-}
-
-func (s *server) eventConsumer(sw *sseWriter, sessionID *string, requestID string) func(*reactservice.ReactEvent) {
-	base := newEventConsumer(sw)
-	return func(event *reactservice.ReactEvent) {
-		if event.Type != reactservice.ReActEventTypeHumanInTheLoop {
-			base(event)
-			return
-		}
-		if event.HumanConfirmChan == nil {
-			return
-		}
-		id := s.approvals.register(*sessionID, requestID, event.HumanConfirmChan)
-		var detail *reactservice.ApprovalDetail
-		if event.Approval != nil {
-			detail = event.Approval
-		}
-		sw.Send(EventApprovalRequired, ApprovalRequiredData{
-			ApprovalID: id, SessionID: *sessionID, Kind: event.HumanConfirmKind, Content: event.Content,
-			Tool: detail.GetTool(), Risk: detail.GetRisk(), Command: detail.GetCommand(),
-		})
+		switcher:           agentasm.NewModelSwitcher(models),
 	}
 }
 
@@ -837,9 +735,6 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context() // 客户端断开即取消，驱动 Chat 从 LLM/工具调用收敛
-	requestID := trace.requestID
-	defer s.approvals.clearRequest(requestID)
-	var activeSessionID string
 
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
@@ -849,16 +744,12 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo,
 		SessionID: req.SessionID,
 		PlanMode:  s.planMode,
-		Consumer:  trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
+		Consumer:  trace.consumer(newEventConsumer(sw)),
 	})
 	if err != nil {
 		trace.err = err
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResend})
 		return
-	}
-	activeSessionID = assembled.Session.ID
-	if s.userRoot == "" {
-		defer assembled.Cleanup()
 	}
 
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
@@ -873,10 +764,6 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) {
-			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
-			return
-		}
 		retryAction := RetryActionResend
 		// recoverBeforeChat 可能先补写 tool result；只有 user 数量增加才能证明
 		// 本次 query 已提交，不能用总消息数判断。
@@ -973,22 +860,17 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context()
-	requestID := trace.requestID
-	defer s.approvals.clearRequest(requestID)
-	activeSessionID := sessionID
 	s.switcher.RLock()
 	defer s.switcher.RUnlock()
 	assembled, err := s.assembleAgent(trace, agentasm.Input{
-		WorkDir: selected.WorkDir, HomeDir: s.homeDir, UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo, SessionID: sessionID, PlanMode: s.planMode, Consumer: trace.consumer(s.eventConsumer(sw, &activeSessionID, requestID)),
+		WorkDir: selected.WorkDir, HomeDir: s.homeDir, UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo, SessionID: sessionID, PlanMode: s.planMode, Consumer: trace.consumer(newEventConsumer(sw)),
 	})
 	if err != nil {
 		trace.err = err
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResume})
 		return
 	}
-	if s.userRoot == "" {
-		defer assembled.Cleanup()
-	}
+
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
 	// 恢复同一用户输入；老数据没有 chat_id 时保持缺省，不生成新的 ID。
@@ -1009,10 +891,6 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) {
-			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
-			return
-		}
 		sw.Send(EventError, ErrorData{Code: ErrorCodeResumeFailed, Message: err.Error(), RetryAction: RetryActionResume})
 		return
 	}

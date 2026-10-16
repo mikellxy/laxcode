@@ -4,7 +4,7 @@
 
 ### 注册 POST /chat 路由，SSE 服务监听并在收到 SIGINT/SIGTERM 后等在途流收束
 
-- `cmd/run_sse/run_sse.go`：`func run(router agentasm.RouterClientReplacer, codeInstance *CodeInstanceGuard, models *ai_models.Manager) error`
+- `cmd/run_sse/run_sse.go`：`func run(codeInstance *CodeInstanceGuard) error`
 - `cmd/run_sse/run_sse.go`：`func (s *server) routes() *http.ServeMux`
 
 ## 请求前置校验（进入 SSE 流之前，失败返回普通 JSON 状态码）
@@ -32,11 +32,6 @@
 
 - `cmd/run_sse/sse.go`：`func newEventConsumer(sw *sseWriter) func(*reactservice.ReactEvent)`
 
-### 审批类事件注册 approval 记录并下发 approval_required 帧
-
-- `cmd/run_sse/handler.go`：`func (s *server) eventConsumer(sw *sseWriter, sessionID *string, requestID string) func(*reactservice.ReactEvent)`
-- `cmd/run_sse/approval.go`：`func (b *approvalBroker) register(sessionID, requestID string, reply chan<- string) string`
-
 ## 每请求装配与对话执行
 
 ### switcher 读锁持有期间按请求装配 ReActService，失败发 AGENT_ASSEMBLY_FAILED 帧并 Cleanup
@@ -53,11 +48,6 @@
 - `cmd/run_sse/handler.go`：`func doneData(assembled *agentasm.Assembled, msg *sharedkernel.Message) DoneData`
 
 ## 错误处理与重试语义
-
-### 本地模式危险命令被用户拒绝时终止本轮对话并发 CHAT_STOPPED 错误帧
-
-- `cmd/run_sse/handler.go`：`func (s *server) handleChat(w http.ResponseWriter, r *http.Request)`
-- `internal/application/reactservice/reactservice.go`：`ErrDangerousCommandDeclined`
 
 ### Chat 失败后按 user 消息数是否增加区分 resume 与 resend 重试动作
 

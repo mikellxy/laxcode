@@ -154,7 +154,7 @@ func TestDockerRunnerInvocationAndResults(t *testing.T) {
 			if os.Getenv("HOME") != beforeHome || os.Getenv("TMPDIR") != beforeTemp {
 				t.Fatal("server environment changed")
 			}
-			entries, _ := filepath.Glob(filepath.Join(r.tempDir, tempFilePattern))
+			entries, _ := filepath.Glob(filepath.Join(r.tempDir, "laxbash-*"))
 			if len(entries) != 0 {
 				t.Fatalf("output files leaked: %v", entries)
 			}

@@ -40,7 +40,7 @@ make -C "${repo_root}" build build-web
   go build -tags=webdist -o bin/laxcode-web ./cmd/web
 )
 
-"${repo_root}/bin/laxcode" -cloud -addr=127.0.0.1:0 "$@" &
+"${repo_root}/bin/laxcode" -addr=127.0.0.1:0 "$@" &
 backend_pid=$!
 
 backend_url=""
@@ -70,7 +70,7 @@ if [[ -z "${backend_url}" ]] || ! curl --silent --fail --max-time 1 "${backend_u
   exit 1
 fi
 
-"${repo_root}/bin/laxcode-web" -cloud -addr="0.0.0.0:${cloud_port}" -backend="${backend_url}" &
+"${repo_root}/bin/laxcode-web" -addr="0.0.0.0:${cloud_port}" -backend="${backend_url}" &
 web_pid=$!
 
 frontend_ready=false

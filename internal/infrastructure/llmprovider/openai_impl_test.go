@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
-	"github.com/openai/openai-go/v3"
+	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
 
@@ -37,8 +37,7 @@ func TestProviderToolCallArguments(t *testing.T) {
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{contentType}},
 						Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
 				})}
-				p := NewOpenApiProviderWithStreamGateway("test", "https://upstream.example/v1", "m", "http://127.0.0.1:1/openai/generate_stream")
-				p.httpClient = client
+				p := NewOpenApiProvider("test", "https://upstream.example/v1", "m")
 				p.client = openai.NewClient(option.WithAPIKey("test"), option.WithHTTPClient(client))
 				var msg *sharedkernel.Message
 				var err error
@@ -140,13 +139,13 @@ func TestBuildResponseParamsNormalizesNoInputToolSchema(t *testing.T) {
 	}
 }
 
-func TestGenerateStreamUsesLocalRouter(t *testing.T) {
+func TestGenerateStreamUsesConfiguredUpstream(t *testing.T) {
 	var received map[string]any
 	transport := providerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodPost || req.URL.String() != "http://127.0.0.1:18080/openai/generate_stream" {
-			t.Errorf("unexpected local router request: %s %s", req.Method, req.URL)
+		if req.Method != http.MethodPost || req.URL.String() != "https://upstream.example/v1/responses" {
+			t.Errorf("unexpected upstream request: %s %s", req.Method, req.URL)
 		}
-		if got := req.Header.Get("Accept"); got != "text/event-stream" {
+		if got := req.Header.Get("Accept"); got != "application/json" {
 			t.Errorf("Accept = %q", got)
 		}
 		if err := json.NewDecoder(req.Body).Decode(&received); err != nil {
@@ -165,10 +164,9 @@ func TestGenerateStreamUsesLocalRouter(t *testing.T) {
 		}, nil
 	})
 
-	p := NewOpenApiProviderWithStreamGateway(
-		"upstream-key", "https://upstream.example/v1", "configured-model",
-		"http://127.0.0.1:18080/openai/generate_stream", 1000, 100)
-	p.httpClient = &http.Client{Transport: transport}
+	p := NewOpenApiProvider(
+		"upstream-key", "https://upstream.example/v1", "configured-model", 1000, 100)
+	p.client = openai.NewClient(option.WithAPIKey("test"), option.WithBaseURL("https://upstream.example/v1/"), option.WithHTTPClient(&http.Client{Transport: transport}))
 
 	msg, err := p.GenerateStream(context.Background(), []sharedkernel.Message{{
 		Role: sharedkernel.RoleUser, Content: "hello",
@@ -325,10 +323,9 @@ func newStreamTestProvider(t *testing.T, sseBody string) *OpenApiProvider {
 			Request:    req,
 		}, nil
 	})
-	p := NewOpenApiProviderWithStreamGateway(
-		"sk-test", "https://upstream.example/v1", "m",
-		"http://127.0.0.1:1/openai/generate_stream", 1000, 100)
-	p.httpClient = &http.Client{Transport: transport}
+	p := NewOpenApiProvider(
+		"sk-test", "https://upstream.example/v1", "m", 1000, 100)
+	p.client = openai.NewClient(option.WithAPIKey("test"), option.WithBaseURL("https://upstream.example/v1/"), option.WithHTTPClient(&http.Client{Transport: transport}))
 	return p
 }
 

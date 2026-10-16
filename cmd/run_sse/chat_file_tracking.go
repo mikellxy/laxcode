@@ -108,20 +108,16 @@ func diffProjectFiles(project string, before, after map[string]projectFileState)
 	return files
 }
 
-// Only a shared cloud project is serialized; local mode retains session-level locking.
+// Serialize chats that share a project so file snapshots cannot overlap.
 func (s *server) lockChatProject(workDir string) (func(), bool) {
-	if s.userRoot == "" {
-		return func() {}, true
-	}
+
 	return s.projectLocks.TryLock(filepath.Clean(workDir))
 }
 
 // Runs once per HTTP chat/resume, so child agents and Bash outputs share one diff.
 func (s *server) runWithFileTracking(ctx context.Context, workDir string, assembled *agentasm.Assembled,
 	run func() (*sharedkernel.Message, error)) (msg *sharedkernel.Message, err error) {
-	if s.userRoot == "" {
-		return run()
-	}
+
 	cleanup := sync.OnceFunc(assembled.Cleanup)
 	defer cleanup()
 	defer func() {

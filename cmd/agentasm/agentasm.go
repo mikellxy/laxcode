@@ -6,10 +6,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mikellxy/laxcode/internal/application/reactservice"
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
@@ -18,7 +18,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/llmprovider"
-	mcpserver "github.com/mikellxy/laxcode/internal/infrastructure/mcp"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ripgrep"
 	"github.com/mikellxy/laxcode/internal/infrastructure/shell"
 	"github.com/mikellxy/laxcode/internal/infrastructure/skillrepo"
@@ -34,25 +33,18 @@ type Input struct {
 	Models *ai_models.Manager
 	// Tracer 由入口注入时，其生命周期归入口所有；nil 保留独立装配的默认追踪。
 	Tracer telemetry.Tracer
-	// MCPPool 由后端服务持有；非 nil 时仅注册工具，Cleanup 不关闭共享连接。
-	// nil 保留独立装配时连接并自行回收的行为。
-	MCPPool *mcpserver.Pool
 	// Mode selects the explicit agent capability profile.
 	Mode Mode
 	// WorkDir 是会话持久绑定的 Agent 工作目录（沙箱根）。
 	WorkDir string
-	// HomeDir 是全局数据根的用户主目录；空值使用 os.UserHomeDir。
-	// 测试可显式注入临时目录，避免触碰真实用户数据。
+	// HomeDir is the required per-user agenthome directory.
 	HomeDir string
-	// UserRoot enables cloud restrictions; WorkDir remains the relative-path base.
+	// UserRoot is the required user boundary; WorkDir is the relative-path base.
 	UserRoot string
 	// TempDir is passed explicitly to temporary-file APIs and child environments.
 	TempDir string
 	// Repository is borrowed from the HTTP server and is never closed by Cleanup.
 	Repository session.SessionRepository
-	// ReadRoots are additional absolute, read-only roots for command-specific
-	// workflows such as evaluating one immutable session history.
-	ReadRoots []string
 	// SessionID 为空则由 session 层以毫秒精度时间串新建；非空则续聊该会话。
 	SessionID string
 	// PlanMode 为真时在系统提示词追加 Plan Mode 工作流段。
@@ -71,10 +63,6 @@ const (
 	ModeEvaluate Mode = "evaluate"
 )
 
-type RouterClientReplacer interface {
-	ReplaceClient(domainrouter.StreamClient)
-}
-
 // Assembled 是装配产物。
 type Assembled struct {
 	// Service 是已完成会话初始化的主 Agent 服务（已注册 bash/write/read/edit、
@@ -90,18 +78,11 @@ type Assembled struct {
 
 // newMainProvider copies the selected model and its effective limits into a
 // request-scoped provider. ReActService reads them via LLMClient.ContextBudget.
-func newMainProvider(homeDir string, models *ai_models.Manager, direct bool) *llmprovider.OpenApiProvider {
+func newMainProvider(models *ai_models.Manager) *llmprovider.OpenApiProvider {
 	c := models.Active()
-	gateway := config.Current.LlmRouterURL
-	if direct {
-		gateway = ""
-	}
-	provider := llmprovider.NewOpenApiProviderWithStreamGateway(
-		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel, gateway,
+	provider := llmprovider.NewOpenApiProvider(
+		c.OpenaiApiKey, c.OpenaiBaseUrl, c.UpstreamModel,
 		c.ContextWindow, c.MaxOutputTokens).WithReasoningEffort(c.ReasoningEffort)
-	if c.AuthType == "oauth" {
-		provider.WithChatGPT(homeDir, c.CredentialRef)
-	}
 	return provider
 }
 
@@ -117,14 +98,8 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	if in.PlanMode && in.Mode != ModeCode {
 		return nil, fmt.Errorf("plan mode requires code mode")
 	}
-	if in.UserRoot != "" {
-		if err := tools.ValidateUserPath(in.UserRoot, in.WorkDir); err != nil {
-			return nil, err
-		}
-		if err := tools.ValidateUserPath(in.UserRoot, in.HomeDir); err != nil {
-			return nil, err
-		}
-		if err := tools.ValidateUserPath(in.UserRoot, in.TempDir); err != nil {
+	for _, path := range []string{in.WorkDir, in.HomeDir, in.TempDir} {
+		if err := tools.ValidateUserPath(in.UserRoot, path); err != nil {
 			return nil, err
 		}
 	}
@@ -138,82 +113,57 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	var skills []prompt.Skill
 	var skillSrc prompt.SkillSource
 	var skillsRoot string
-	readRoots := append([]string(nil), in.ReadRoots...)
-	var writeRoots []string
 	var plan *prompt.PlanMode
 	if in.Mode == ModeCode {
 		skillsStart := time.Now()
-		skillSrc = skillrepo.New(homeDir)
-		if in.UserRoot != "" {
-			skillSrc = skillrepo.NewWithRoot(homeDir, in.UserRoot)
-		}
+		skillSrc = skillrepo.NewWithRoot(homeDir, in.UserRoot)
 		skills = prompt.LoadSkills(skillSrc, in.WorkDir, warnSkillSkip)
 		skillsRoot = layout.SkillsRoot(homeDir)
-		readRoots = append([]string{skillsRoot}, readRoots...)
 		telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSkillsLoadMs.Float64(float64(time.Since(skillsStart)) / float64(time.Millisecond)))
 	}
 	if in.Mode == ModeCode && in.PlanMode {
 		planDir := layout.SessionDir(homeDir, sess.ID)
 		plan = &prompt.PlanMode{SessionDir: planDir}
-		readRoots = append(readRoots, planDir)
-		writeRoots = append(writeRoots, planDir)
 	}
 	// Evaluation receives read-only inspection tools; code receives the complete coding profile.
-	var workFS tools.WorkFS = workfs.New()
-	if in.UserRoot != "" {
-		bounded, err := workfs.NewRoot(in.UserRoot)
-		if err != nil {
-			cleanup()
-			return nil, err
-		}
-		workFS = bounded
-		baseCleanup := cleanup
-		cleanup = func() { baseCleanup(); _ = bounded.Close() }
-		core.service.SetUserRoot(in.UserRoot)
+	workFS, err := workfs.NewRoot(in.UserRoot)
+	if err != nil {
+		cleanup()
+		return nil, err
 	}
+	ripgrepRunner, err := ripgrep.NewRoot(in.UserRoot, in.HomeDir, in.TempDir)
+	if err != nil {
+		cleanup()
+		_ = workFS.Close()
+		return nil, err
+	}
+	cleanup = sync.OnceFunc(func() { core.cleanup(); _ = workFS.Close(); _ = ripgrepRunner.Close() })
+	core.service.SetUserRoot(in.UserRoot)
 	toolReg := core.registry
-	var ripgrepRunner tools.RipgrepRunner = ripgrep.New()
-	if in.UserRoot != "" {
-		bounded, err := ripgrep.NewRoot(in.UserRoot, in.HomeDir, in.TempDir)
-		if err != nil {
-			cleanup()
-			return nil, err
-		}
-		ripgrepRunner = bounded
-		baseCleanup := cleanup
-		cleanup = func() { baseCleanup(); _ = bounded.Close() }
-	}
-	read := tools.NewReadFileTool(in.WorkDir, workFS, readRoots...)
+	read := tools.NewReadFileTool(in.WorkDir, workFS)
 	read.UserRoot = in.UserRoot
 	toolReg.Register(read)
-	grep := tools.NewGrepTool(in.WorkDir, ripgrepRunner, readRoots...)
+	grep := tools.NewGrepTool(in.WorkDir, ripgrepRunner)
 	grep.UserRoot = in.UserRoot
 	toolReg.Register(grep)
-	glob := tools.NewGlobTool(in.WorkDir, ripgrepRunner, readRoots...)
+	glob := tools.NewGlobTool(in.WorkDir, ripgrepRunner)
 	glob.UserRoot = in.UserRoot
 	toolReg.Register(glob)
 	if in.Mode == ModeCode {
 		newShell := func() tools.ShellRunner {
-			if in.UserRoot != "" {
-				return shell.NewDocker(in.UserRoot, in.WorkDir, in.TempDir, skillsRoot, config.Current.CloudBashImage)
-			}
-			return shell.New()
+			return shell.NewDocker(in.UserRoot, in.WorkDir, in.TempDir, skillsRoot, config.Current.CloudBashImage)
 		}
 		shellRunner := newShell()
 		bash := tools.NewBashTool(in.WorkDir, shellRunner, core.artifacts, sess.ID)
-		bash.Cloud = in.UserRoot != ""
 		toolReg.Register(bash)
-		write := tools.NewWriteFileTool(in.WorkDir, workFS, writeRoots...)
+		write := tools.NewWriteFileTool(in.WorkDir, workFS)
 		write.UserRoot = in.UserRoot
 		toolReg.Register(write)
-		edit := tools.NewEditFileTool(in.WorkDir, workFS, writeRoots...)
+		edit := tools.NewEditFileTool(in.WorkDir, workFS)
 		edit.UserRoot = in.UserRoot
 		toolReg.Register(edit)
 		toolReg.Register(tools.NewReadArtifactTool(core.artifacts, sess.ID))
-		skillStore := skillstore.New(skillsRoot)
-		if in.UserRoot != "" {
-			skillStore = skillstore.NewWithRoot(skillsRoot, in.UserRoot)
-		}
+		skillStore := skillstore.NewWithRoot(skillsRoot, in.UserRoot)
 		toolReg.Register(tools.NewCreateSkillTool(skillsRoot, skillStore))
 		toolReg.Register(tools.NewUpdateSkillTool(skillsRoot, skillStore))
 		toolReg.Register(reactservice.NewSubAgent(core.service, in.WorkDir,
@@ -227,22 +177,7 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 				NewShell: newShell,
 				UserRoot: in.UserRoot, TempDir: in.TempDir,
 			}))
-		// 后端注入共享连接，装配只向本 Agent 的 registry 注册工具。
-		// 独立装配仍自行连接和回收；子 Agent 不接入 MCP 工具。
-		mcpStart := time.Now()
-		if in.UserRoot != "" {
-			// Cloud prototype does not expose shared, unrestricted MCP tools.
-		} else if in.MCPPool != nil {
-			in.MCPPool.Register(toolReg)
-			telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPRegisterMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
-		} else {
-			mcpCleanup := attachMCPServers(ctx, toolReg)
-			telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleMCPConnectMs.Float64(float64(time.Since(mcpStart)) / float64(time.Millisecond)))
-			if mcpCleanup != nil {
-				baseCleanup := cleanup
-				cleanup = func() { mcpCleanup(); baseCleanup() }
-			}
-		}
+
 	}
 
 	svc := core.service
@@ -270,11 +205,9 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 		}
 		sysPrompt = in.SystemPrompt
 	}
-	if in.UserRoot != "" {
-		sysPrompt += fmt.Sprintf("\n用户文件范围：%s。相对路径以 %s 为起点。Agent 配置目录为 %s；Bash 仅将其中的 Skills 目录 %s 挂载到相同绝对路径，权限为只读，其他配置和会话数据不挂载。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。越界操作会直接返回错误。", in.UserRoot, in.WorkDir, in.HomeDir, layout.SkillsRoot(in.HomeDir), in.TempDir)
-		sysPrompt += prompt.CloudPathDisplayRules(in.UserRoot, in.WorkDir)
-		sysPrompt += "\n" + tools.CloudBashEnvironment + "\n" + tools.CloudBashOfflineHint
-	}
+	sysPrompt += fmt.Sprintf("\n用户文件范围：%s。相对路径以 %s 为起点。Agent 配置目录为 %s；Bash 仅将其中的 Skills 目录 %s 挂载到相同绝对路径，权限为只读，其他配置和会话数据不挂载。临时文件必须放在 %s（$TMPDIR），不要使用宿主机 /tmp。越界操作会直接返回错误。", in.UserRoot, in.WorkDir, in.HomeDir, layout.SkillsRoot(in.HomeDir), in.TempDir)
+	sysPrompt += prompt.CloudPathDisplayRules(in.UserRoot, in.WorkDir)
+	sysPrompt += "\n" + tools.CloudBashEnvironment + "\n" + tools.CloudBashOfflineHint
 	err = svc.InitSysPrompt(ctx, sysPrompt)
 	telemetry.SpanFromContext(ctx).SetAttributes(telemetry.AttrAssembleSysPromptInitMs.Float64(float64(time.Since(sysPromptStart)) / float64(time.Millisecond)))
 	if err != nil {
@@ -289,79 +222,11 @@ func Assemble(ctx context.Context, in Input) (*Assembled, error) {
 	}, nil
 }
 
-func resolveHomeDir(explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
-	}
-	return homeDir, nil
-}
-
 // warnSkillSkip 是技能跳过警告的落点：写 stderr 而非 stdout，避免污染交互
 // 模式的输出，同时保留可诊断告警。
 // 不得把它改成空实现：技能 frontmatter 解析失败将被静默后，模型侧表现为
 // “技能没生效”而无任何线索。
 func warnSkillSkip(msg string) {
-	fmt.Fprintf(os.Stderr, "laxcode: %s\n", msg)
-}
-
-// attachMCPServers 连接 settings.json 声明的已启用 MCP server 并把其工具
-// 注册进 reg，返回关闭连接的 cleanup；未配置或全部不可用时返回 nil。
-// 连接/告警语义见 internal/infrastructure/mcp.Attach。
-func attachMCPServers(ctx context.Context, reg tools.Registry) func() {
-	servers := mcpServersFromConf()
-	if len(servers) == 0 {
-		return nil
-	}
-	return mcpserver.Attach(ctx, servers, reg, warnMCPSkip)
-}
-
-// ConnectMCPServers 在后端启动时连接当前配置的 MCP server；调用方持有并关闭 Pool。
-// 即使没有可用 server 也返回非 nil 空池，避免请求装配时重复尝试连接。
-func ConnectMCPServers(ctx context.Context) *mcpserver.Pool {
-	return mcpserver.Connect(ctx, mcpServersFromConf(), warnMCPSkip)
-}
-
-// mcpServersFromConf 把配置层的 MCPServerConf 过滤为已启用条目并转成
-// 传输层 ServerConfig；disabled 条目是用户意图，静默跳过。
-func mcpServersFromConf() map[string]mcpserver.ServerConfig {
-	conf := config.Current.MCPServers
-	if len(conf) == 0 {
-		return nil
-	}
-	servers := make(map[string]mcpserver.ServerConfig, len(conf))
-	for name, sc := range conf {
-		if !sc.IsEnabled() {
-			continue
-		}
-		servers[name] = mcpserver.ServerConfig{
-			Command: sc.Command,
-			Args:    append([]string(nil), sc.Args...),
-			Env:     append([]string(nil), sc.Env...),
-			URL:     sc.URL,
-			Headers: cloneStringMap(sc.Headers),
-		}
-	}
-	return servers
-}
-
-func cloneStringMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]string, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
-}
-
-// warnMCPSkip 与 warnSkillSkip 同语义：MCP server 接入失败/被跳过的告警
-// 写 stderr，不污染任何模式的 stdout 契约。
-func warnMCPSkip(msg string) {
 	fmt.Fprintf(os.Stderr, "laxcode: %s\n", msg)
 }
 

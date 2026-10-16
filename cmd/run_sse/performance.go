@@ -19,10 +19,7 @@ import (
 
 func (s *server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if s.userRoot == "" {
-		writeJSONError(w, http.StatusForbidden, "performance analysis is only available in cloud mode")
-		return
-	}
+
 	sessionID := r.PathValue("session_id")
 	if _, err := uuid.Parse(sessionID); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "session_id must be a UUID")

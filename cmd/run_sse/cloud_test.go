@@ -134,7 +134,7 @@ func TestCloudLifecycleAndUserIsolation(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		assembled.Service.LLMClient = &approvalFlowLLM{}
+		assembled.Service.LLMClient = &cloudFlowLLM{}
 		// HTTP unit tests keep an unsandboxed fixture behind the static guard.
 		assembled.Service.ToolRegistry.Register(tools.NewBashTool(in.WorkDir, cloudNoRunShell{t}, nil, in.SessionID))
 		return assembled, nil
@@ -149,7 +149,7 @@ func TestCloudLifecycleAndUserIsolation(t *testing.T) {
 	}
 	denied := false
 	for _, message := range snapshot.Messages {
-		if strings.Contains(message.Content, "cloud 模式拒绝 Bash") {
+		if strings.Contains(message.Content, "Bash requires a Docker sandbox") {
 			denied = true
 		}
 	}
@@ -210,12 +210,12 @@ func TestCloudResumeUsesUserRepository(t *testing.T) {
 	user := users.users[id]
 	// Supply a valid runtime catalog; this test exercises persistence, not the network.
 	stubActiveModel(t)
-	models, err := agentasm.NewModels(user.server.homeDir)
+	models, err := ai_models.New(user.server.homeDir, config.Current)
 	if err != nil {
 		t.Fatal(err)
 	}
 	user.server.models = models
-	user.server.switcher = agentasm.NewDirectModelSwitcher(models)
+	user.server.switcher = agentasm.NewModelSwitcher(models)
 	llm := &traceFlowLLM{}
 	user.server.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 		in.Mode = agentasm.ModeCode
@@ -285,7 +285,7 @@ func TestCloudConfCopyDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	var err error
-	config.Current, err = config.LoadSettings(home, []string{"-cloud", "-conf_copy_dir=" + source})
+	config.Current, err = config.LoadSettings(home, []string{"-conf_copy_dir=" + source})
 	if err != nil {
 		t.Fatal(err)
 	}

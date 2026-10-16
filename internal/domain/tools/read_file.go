@@ -21,45 +21,14 @@ type readFileToolArgs struct {
 const readFileToolMaxReadBytes = 50 * 1024
 
 type ReadFileTool struct {
-	UserRoot  string
-	WorkDir   string   `json:"work_dir"`
-	ReadRoots []string `json:"-"`
+	UserRoot string
+	WorkDir  string `json:"work_dir"`
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
 	FS WorkFS
 }
 
-func NewReadFileTool(workDir string, workFS WorkFS, readRoots ...string) *ReadFileTool {
-	return &ReadFileTool{WorkDir: workDir, ReadRoots: append([]string(nil), readRoots...), FS: workFS}
-}
-
-// Confirmation 对沙箱外的读取目标发起人工确认：解析后的真实路径落在
-// workDir 或任一 readRoot 内则返回 nil 不打扰；参数类错误交由 Execute 走
-// 标准错误路径（返回 nil, nil）。
-func (r *ReadFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
-	if r.UserRoot != "" {
-		return nil, nil
-	}
-	var a readFileToolArgs
-	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Path) == "" {
-		return nil, nil
-	}
-	requested, _, err := resolveReadTarget(r.WorkDir, r.ReadRoots, a.Path, r.UserRoot)
-	if err != nil {
-		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) {
-			return nil, nil
-		}
-		requested = ose.Requested
-	}
-	real, err := realPath(requested)
-	if err != nil {
-		// 目标无法定位（不存在等）：交由 Execute 返回标准文件错误
-		return nil, nil
-	}
-	if realPathWithinRoots(real, r.WorkDir, r.ReadRoots) {
-		return nil, nil
-	}
-	return confirmFileAccess("读取文件", requested, real), nil
+func NewReadFileTool(workDir string, workFS WorkFS) *ReadFileTool {
+	return &ReadFileTool{UserRoot: workDir, WorkDir: workDir, FS: workFS}
 }
 
 func (r *ReadFileTool) AfterExecInfo(message json.RawMessage) string {
@@ -85,13 +54,13 @@ func (r *ReadFileTool) Name() string {
 func (r *ReadFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        r.Name(),
-		Description: "读取文件内容。相对路径在工作目录内；系统明确提供的只读目录（如全局 skills）可使用绝对路径。工作目录之外的路径会请求用户确认后执行。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
+		Description: "读取文件内容。相对路径以工作目录为起点，绝对路径必须位于用户根内，越界访问直接拒绝。可通过 line_count 指定本次读取的总行数；不指定时不限制行数。单次内容不超过 50KB，输出末尾以 (...) 标注是否读完、最后一行行号及续读参数，未读完时按标注的 start_line_no/start_bytes 续读",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "工作目录内的相对路径，或系统明确提供的只读绝对路径",
+					"description": "相对工作目录的路径，或用户根内的绝对路径",
 				},
 				"start_line_no": map[string]any{
 					"type":        "integer",
@@ -124,15 +93,11 @@ func (r *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("path required"))
 	}
 
-	pathSafe, root, err := resolveReadTarget(r.WorkDir, r.ReadRoots, argsObj.Path, r.UserRoot)
+	pathSafe, root, err := resolveUserTarget(r.WorkDir, r.UserRoot, argsObj.Path)
 	if err != nil {
-		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) || r.UserRoot != "" || !GrantAllows(ctx, ose.Requested) {
-			return "", NewErrorWithPrompt(&FilePathError{}, err)
-		}
-		// 人工批准的沙箱外访问：放行确认过的目标
-		pathSafe = ose.Requested
-	} else if err := ensureRealPathWithin(root, pathSafe); err != nil && (r.UserRoot != "" || !GrantAllows(ctx, pathSafe)) {
+		return "", NewErrorWithPrompt(&FilePathError{}, err)
+	}
+	if err := ensureRealPathWithin(root, pathSafe); err != nil {
 		return "", NewErrorWithPrompt(&FilePathError{}, err)
 	}
 

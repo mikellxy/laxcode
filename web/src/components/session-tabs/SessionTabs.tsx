@@ -6,7 +6,6 @@ import { contextUsageLabel, sessionLabel, workDirLabel } from "./label";
 import { PerformanceMonitor } from "../performance-monitor/PerformanceMonitor";
 
 type Props = {
-  cloud: boolean;
   projects: ProjectDTO[];
   sessionsByProject: Record<string, SessionDTO[]>;
   selectedID?: string;
@@ -23,7 +22,7 @@ type Props = {
   onCreateSession: (projectID: string) => void;
 };
 
-export function SessionTabs({ cloud, projects, sessionsByProject, selectedID, selectedProjectID, contextUsage, creatingProject, creatingSessionProjectID, deletingSessionID, runningSessionIDs, onSelect, onSelectProject, onDeleteSession, onCreateProject, onCreateSession }: Props) {
+export function SessionTabs({ projects, sessionsByProject, selectedID, selectedProjectID, contextUsage, creatingProject, creatingSessionProjectID, deletingSessionID, runningSessionIDs, onSelect, onSelectProject, onDeleteSession, onCreateProject, onCreateSession }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
     setExpanded((current) => {
@@ -52,7 +51,7 @@ export function SessionTabs({ cloud, projects, sessionsByProject, selectedID, se
         const isExpanded = expanded.has(project.project_id);
         const isActive = selectedProjectID === project.project_id;
         return <section key={project.project_id} className={`project-group ${isActive ? "active" : ""}`}>
-          <div className={`project-row ${isActive ? "active" : ""}`} title={workDirLabel(project.work_dir, project.name, cloud)}>
+          <div className={`project-row ${isActive ? "active" : ""}`} title={workDirLabel(project.name)}>
             <button className="project-toggle" onClick={() => { toggle(project.project_id); onSelectProject(project.project_id); }} aria-expanded={isExpanded}>
               <ChevronRight className={isExpanded ? "expanded" : ""} size={15} />
               <Folder size={16} />
@@ -86,7 +85,7 @@ export function SessionTabs({ cloud, projects, sessionsByProject, selectedID, se
       <span>{contextUsage ? `${new Intl.NumberFormat("en-US").format(used)} tokens` : "— tokens"}</span>
       <span>{contextUsage ? contextUsageLabel(used, contextUsage.context_window) : "— used"}</span>
     </div>
-    {cloud && <PerformanceMonitor key={selectedID ?? "no-session"} sessionID={selectedID} />}
+    <PerformanceMonitor key={selectedID ?? "no-session"} sessionID={selectedID} />
     <div className="sidebar-foot"><span className="status-dot" /> 服务连接就绪</div>
   </aside>;
 }

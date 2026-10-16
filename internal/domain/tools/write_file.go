@@ -12,45 +12,14 @@ import (
 )
 
 type WriteFileTool struct {
-	UserRoot   string
-	WorkDir    string
-	WriteRoots []string
+	UserRoot string
+	WorkDir  string
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
 	FS WorkFS
 }
 
-func NewWriteFileTool(workDir string, workFS WorkFS, writeRoots ...string) *WriteFileTool {
-	return &WriteFileTool{WorkDir: workDir, WriteRoots: append([]string(nil), writeRoots...), FS: workFS}
-}
-
-// Confirmation 对沙箱外的写入目标发起人工确认：resolveWriteTarget 通过
-// （含 symlink 重定向探测）则返回 nil 不打扰；参数类错误交由 Execute 走
-// 标准错误路径（返回 nil, nil）。
-func (w *WriteFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
-	if w.UserRoot != "" {
-		return nil, nil
-	}
-	var argsMap map[string]string
-	if err := json.Unmarshal(raw, &argsMap); err != nil {
-		return nil, nil
-	}
-	path := argsMap["path"]
-	if strings.TrimSpace(path) == "" {
-		return nil, nil
-	}
-	_, _, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path, w.UserRoot)
-	if err == nil {
-		return nil, nil
-	}
-	var ose *OutsideSandboxError
-	if !errors.As(err, &ose) {
-		return nil, nil
-	}
-	real, err := realPath(ose.Requested)
-	if err != nil {
-		return nil, nil
-	}
-	return confirmFileAccess("写入文件", ose.Requested, real), nil
+func NewWriteFileTool(workDir string, workFS WorkFS) *WriteFileTool {
+	return &WriteFileTool{UserRoot: workDir, WorkDir: workDir, FS: workFS}
 }
 
 func (w *WriteFileTool) AfterExecInfo(message json.RawMessage) string {
@@ -77,13 +46,13 @@ func (w *WriteFileTool) Name() string {
 func (w *WriteFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        w.Name(),
-		Description: "写入完整文件内容，创建新文件或覆写已有文件。相对路径在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。工作目录之外的路径会请求用户确认后执行；修改全局 Skill 请使用 create_skill/update_skill 专用工具；若父目录不存在会自动创建",
+		Description: "写入完整文件内容，创建新文件或覆写已有文件。相对路径以工作目录为起点，绝对路径必须位于用户根内，越界访问直接拒绝；修改全局 Skill 请使用 create_skill/update_skill 专用工具；若父目录不存在会自动创建",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "工作目录内的相对路径，或 Plan Mode 明确提供的规划目录绝对路径",
+					"description": "相对工作目录的路径，或用户根内的绝对路径",
 				},
 				"content": map[string]any{
 					"type":        "string",
@@ -111,15 +80,9 @@ func (w *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", NewErrorWithPrompt(&ParamError{}, errors.New("content required"))
 	}
 
-	target, displayRoot, err := resolveWriteTarget(w.WorkDir, w.WriteRoots, path, w.UserRoot)
+	target, displayRoot, err := resolveWriteTarget(w.WorkDir, w.UserRoot, path)
 	if err != nil {
-		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) || w.UserRoot != "" || !GrantAllows(ctx, ose.Requested) {
-			return "", NewErrorWithPrompt(&FilePathError{}, err)
-		}
-		// 人工批准的沙箱外访问：放行确认过的目标
-		target = ose.Requested
-		displayRoot = w.WorkDir
+		return "", NewErrorWithPrompt(&FilePathError{}, err)
 	}
 
 	// 写入沙箱内目标路径，父目录不存在时由端口实现自动创建

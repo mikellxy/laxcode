@@ -7,8 +7,6 @@ import (
 )
 
 type ResolvedModel struct {
-	AuthType        string
-	CredentialRef   string
 	ReasoningEffort string
 	Ref             string
 	ProviderName    string
@@ -48,7 +46,7 @@ func (c *modelState) resolveModel(ref string) (ResolvedModel, error) {
 				upstreamModel = model.ModelName
 			}
 			resolved := ResolvedModel{
-				AuthType: provider.AuthType, CredentialRef: provider.CredentialRef, ReasoningEffort: model.ReasoningEffort,
+				ReasoningEffort: model.ReasoningEffort,
 				Ref:             ref,
 				ProviderName:    providerName,
 				ModelName:       modelName,
@@ -80,10 +78,7 @@ func (c *modelState) validateModelCatalog() error {
 			if strings.TrimSpace(provider.OpenaiApiKey) == "" || strings.TrimSpace(provider.OpenaiBaseUrl) == "" {
 				return fmt.Errorf("provider %q requires openai_api_key and openai_base_url", provider.ProviderName)
 			}
-		case "oauth":
-			if provider.CredentialRef != CredentialRef || strings.TrimRight(provider.OpenaiBaseUrl, "/") != strings.TrimRight(BaseURL, "/") || provider.OpenaiApiKey != "" {
-				return fmt.Errorf("provider %q requires a ChatGPT credential reference and the official endpoint", provider.ProviderName)
-			}
+
 		default:
 			return fmt.Errorf("unsupported auth_type %q", provider.AuthType)
 		}

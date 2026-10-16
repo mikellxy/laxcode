@@ -20,10 +20,7 @@ const maxChatDownloadBytes int64 = 100 << 20
 const maxChatDownloadFiles = 200
 
 func (s *server) openChatFileProject(w http.ResponseWriter, r *http.Request) (*os.Root, string, []session.ChatFile) {
-	if s.userRoot == "" {
-		writeJSONError(w, http.StatusForbidden, "file downloads are only available in cloud mode")
-		return nil, "", nil
-	}
+
 	repo, ok := s.contextRepo.(session.ChatFilesRepository)
 	if !ok || s.catalog == nil {
 		writeJSONError(w, 500, "file repository is unavailable")

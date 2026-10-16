@@ -24,41 +24,14 @@ type editFileArgs struct {
 }
 
 type EditFileTool struct {
-	UserRoot   string
-	WorkDir    string
-	WriteRoots []string
+	UserRoot string
+	WorkDir  string
 	// FS 是沙箱文件读写端口，经构造注入；实现见 infrastructure/workfs。
 	FS WorkFS
 }
 
-func NewEditFileTool(workDir string, workFS WorkFS, writeRoots ...string) *EditFileTool {
-	return &EditFileTool{WorkDir: workDir, WriteRoots: append([]string(nil), writeRoots...), FS: workFS}
-}
-
-// Confirmation 对沙箱外的编辑目标发起人工确认：resolveWriteTarget 通过
-// （含 symlink 重定向探测）则返回 nil 不打扰；参数类错误交由 Execute 走
-// 标准错误路径（返回 nil, nil）。
-func (e *EditFileTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
-	if e.UserRoot != "" {
-		return nil, nil
-	}
-	var a editFileArgs
-	if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Path) == "" {
-		return nil, nil
-	}
-	_, _, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, a.Path, e.UserRoot)
-	if err == nil {
-		return nil, nil
-	}
-	var ose *OutsideSandboxError
-	if !errors.As(err, &ose) {
-		return nil, nil
-	}
-	real, err := realPath(ose.Requested)
-	if err != nil {
-		return nil, nil
-	}
-	return confirmFileAccess("编辑文件", ose.Requested, real), nil
+func NewEditFileTool(workDir string, workFS WorkFS) *EditFileTool {
+	return &EditFileTool{UserRoot: workDir, WorkDir: workDir, FS: workFS}
 }
 
 func (e *EditFileTool) AfterExecInfo(message json.RawMessage) string {
@@ -84,13 +57,13 @@ func (e *EditFileTool) Name() string {
 func (e *EditFileTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name:        e.Name(),
-		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。相对路径在工作目录内；Plan Mode 明确提供的规划目录可使用绝对路径。工作目录之外的路径会请求用户确认后执行",
+		Description: "批量替换文件中已有的文本片段。每个 old_text 必须与文件原始字节精确一致、仅匹配一处且匹配区间互不重叠；行首和行尾空白数量、空格与 Tab、空行以及 LF/CRLF 均须完全一致。全部预检通过后按 offset 从后向前替换；若执行期间文件变化则保留已完成项、停止后续编辑并要求重新 read_file。文件必须已存在，新建文件请使用 write_file。相对路径以工作目录为起点，绝对路径必须位于用户根内，越界访问直接拒绝",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "工作目录内的相对路径，或 Plan Mode 明确提供的规划目录绝对路径",
+					"description": "相对工作目录的路径，或用户根内的绝对路径",
 				},
 				"edits": map[string]any{
 					"type":        "array",
@@ -139,15 +112,9 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		}
 	}
 
-	target, displayRoot, err := resolveWriteTarget(e.WorkDir, e.WriteRoots, argsObj.Path, e.UserRoot)
+	target, displayRoot, err := resolveWriteTarget(e.WorkDir, e.UserRoot, argsObj.Path)
 	if err != nil {
-		var ose *OutsideSandboxError
-		if !errors.As(err, &ose) || e.UserRoot != "" || !GrantAllows(ctx, ose.Requested) {
-			return "", err
-		}
-		// 人工批准的沙箱外访问：放行确认过的目标
-		target = ose.Requested
-		displayRoot = e.WorkDir
+		return "", err
 	}
 
 	b, err := e.FS.ReadFile(target)
@@ -197,7 +164,7 @@ func (e *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 // safeJoinWorkDir 将用户提供的相对路径安全地解析到工作目录内，
 // 防止 ../ 路径穿越或绝对路径逃逸到工作目录之外。
 func safeJoinWorkDir(rel string, workDir string) (string, error) {
-	target, _, err := resolveWriteTarget(workDir, nil, rel)
+	target, _, err := resolveWriteTarget(workDir, workDir, rel)
 	return target, err
 }
 

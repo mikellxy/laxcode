@@ -21,7 +21,7 @@ func TestCloudToolBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assembled, err := Assemble(context.Background(), Input{Mode: ModeCode, UserRoot: root, HomeDir: home, WorkDir: work, TempDir: temp})
+	assembled, err := assembleTest(t, context.Background(), Input{Mode: ModeCode, UserRoot: root, HomeDir: home, WorkDir: work, TempDir: temp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,13 +49,6 @@ func TestCloudToolBoundaries(t *testing.T) {
 	run := func(name string, args any) *sharedkernel.ToolResult {
 		raw, _ := json.Marshal(args)
 		call := &sharedkernel.ToolCall{ID: "test", Name: name, Arguments: raw}
-		confirmation, err := registry.Confirmation(context.Background(), call)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if confirmation != nil {
-			t.Fatal("cloud file tool requested approval")
-		}
 		return registry.Execute(context.Background(), call)
 	}
 	if got := run("write_file", map[string]string{"path": "../tmp/note.txt", "content": "hello cloud"}); got.IsError {
@@ -76,7 +69,7 @@ func TestCloudToolBoundaries(t *testing.T) {
 		for _, path := range []string{secret, "escape/secret.txt"} {
 			args := map[string]any{"path": path, "content": "overwrite", "pattern": "secret", "edits": []map[string]string{{"old_text": "secret", "new_text": "overwrite"}}}
 			raw, _ := json.Marshal(args)
-			got := registry.Execute(tools.WithApprovalGrants(context.Background(), []string{secret}), &sharedkernel.ToolCall{Name: name, Arguments: raw})
+			got := registry.Execute(context.Background(), &sharedkernel.ToolCall{Name: name, Arguments: raw})
 			if !got.IsError {
 				t.Fatalf("%s accepted escape %s: %+v", name, path, got)
 			}
@@ -96,5 +89,12 @@ func TestCloudToolBoundaries(t *testing.T) {
 	got = run("run_sub_agent", map[string]string{"work_dir": outside, "task": "read secret"})
 	if !got.IsError {
 		t.Fatalf("subagent accepted outside workdir: %+v", got)
+	}
+}
+
+func TestAssembleRequiresUserBoundary(t *testing.T) {
+	_, err := Assemble(context.Background(), Input{Mode: ModeCode, HomeDir: t.TempDir(), WorkDir: t.TempDir(), TempDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "absolute user root is required") {
+		t.Fatalf("missing user boundary: %v", err)
 	}
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // CodeInstanceGuard owns the process-wide browser code-mode lock. The same
-// file also publishes a small, versioned record for web.sh. A stale record is
+// file also publishes a small, versioned record for cloud.sh. A stale record is
 // harmless: ownership is determined by the OS lock, never by file contents.
 type CodeInstanceGuard struct {
 	file *os.File

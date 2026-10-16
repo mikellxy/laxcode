@@ -83,7 +83,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-./laxcode -cloud -addr=127.0.0.1:0 -cloud_bash_image="$image" \
+./laxcode -addr=127.0.0.1:0 -cloud_bash_image="$image" \
   -conf_copy_dir="$bundle_dir/defaults" "$@" &
 backend_pid=$!
 
@@ -106,7 +106,7 @@ while [ "$attempt" -lt 30 ]; do
 done
 [ -n "$backend_url" ] || { echo 'Backend did not publish its URL within 30 seconds.' >&2; exit 1; }
 
-./laxcode-web -cloud -addr="0.0.0.0:$port" -backend="$backend_url" &
+./laxcode-web -addr="0.0.0.0:$port" -backend="$backend_url" &
 web_pid=$!
 sleep 1
 kill -0 "$web_pid" 2>/dev/null || { echo 'Web server failed to start.' >&2; exit 1; }

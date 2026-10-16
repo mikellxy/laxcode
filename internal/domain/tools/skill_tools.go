@@ -17,10 +17,9 @@ import (
 )
 
 const (
-	skillConfirmationKind = "skill_write"
-	maxSkillFiles         = 64
-	maxSkillFileBytes     = 256 * 1024
-	maxSkillPackageBytes  = 1024 * 1024
+	maxSkillFiles        = 64
+	maxSkillFileBytes    = 256 * 1024
+	maxSkillPackageBytes = 1024 * 1024
 )
 
 type skillFileArgs struct {
@@ -66,7 +65,7 @@ func (*CreateSkillTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name: ToolCreateSkill,
 		Description: "创建新的全局 Skill 包。目标固定为系统 Skills 根目录下的 <name>/，" +
-			"不接受目标根路径且不会覆盖已有 Skill。SKILL.md 和所有 supporting_files 会统一校验后一次提交；持久化前需要用户确认。",
+			"不接受目标根路径且不会覆盖已有 Skill。SKILL.md 和所有 supporting_files 会统一校验后一次提交。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -88,16 +87,6 @@ func (t *CreateSkillTool) BeforeExecInfo(raw json.RawMessage) string {
 }
 
 func (*CreateSkillTool) AfterExecInfo(json.RawMessage) string { return "" }
-
-func (t *CreateSkillTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
-	name, files, err := t.prepare(ctx, raw)
-	if err != nil {
-		return nil, err
-	}
-	return &ToolConfirmation{Kind: skillConfirmationKind, Mandatory: true, Content: fmt.Sprintf(
-		"即将创建全局 Skill %q。\n目标：%s\n文件：%s\n该操作会影响后续 LaxCode 会话。输入 yes 创建；其他输入取消。",
-		name, filepath.Join(t.SkillsRoot, name), strings.Join(skillFileNames(files), "、"))}, nil
-}
 
 func (t *CreateSkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	name, files, err := t.prepare(ctx, raw)
@@ -158,7 +147,7 @@ func (*UpdateSkillTool) Definition() sharedkernel.ToolDefinition {
 	return sharedkernel.ToolDefinition{
 		Name: ToolUpdateSkill,
 		Description: "更新已有全局 Skill。edits 对已有 UTF-8 文本文件执行逐字节唯一匹配替换；" +
-			"create_files 只能新增文件。工具不支持删除、移动、重命名或无条件覆盖，完整预检和 Skill 校验通过后一次提交；持久化前需要用户确认。",
+			"create_files 只能新增文件。工具不支持删除、移动、重命名或无条件覆盖，完整预检和 Skill 校验通过后一次提交。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -207,16 +196,6 @@ type preparedSkillUpdate struct {
 	files      []SkillPackageFile
 	changed    []string
 	replaceOps int
-}
-
-func (t *UpdateSkillTool) Confirmation(ctx context.Context, raw json.RawMessage) (*ToolConfirmation, error) {
-	prepared, err := t.prepare(ctx, raw)
-	if err != nil {
-		return nil, err
-	}
-	return &ToolConfirmation{Kind: skillConfirmationKind, Mandatory: true, Content: fmt.Sprintf(
-		"即将更新全局 Skill %q。\n目标：%s\n变更文件：%s\n精确替换：%d 处\n该操作会影响后续 LaxCode 会话。输入 yes 更新；其他输入取消。",
-		prepared.name, filepath.Join(t.SkillsRoot, prepared.name), strings.Join(prepared.changed, "、"), prepared.replaceOps)}, nil
 }
 
 func (t *UpdateSkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {

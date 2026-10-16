@@ -52,15 +52,6 @@ func TestHandlerProxiesBackendRoutes(t *testing.T) {
 }
 
 func TestLoopbackValidation(t *testing.T) {
-	for _, addr := range []string{"127.0.0.1:5173", "[::1]:5173", "localhost:5173"} {
-		if err := validateLoopbackAddress(addr); err != nil {
-			t.Fatalf("validateLoopbackAddress(%q): %v", addr, err)
-		}
-	}
-	if err := validateLoopbackAddress("0.0.0.0:5173"); err == nil {
-		t.Fatal("validateLoopbackAddress accepted a non-loopback address")
-	}
-
 	if _, err := parseBackendURL("http://127.0.0.1:8090"); err != nil {
 		t.Fatalf("parseBackendURL: %v", err)
 	}

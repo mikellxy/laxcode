@@ -1,6 +1,5 @@
 // env.conf 支持：${home}/.laxcode/env.conf 每行一条 k=v，进程启动早期注入
-// os 环境，作为 bash 工具与 MCP server（stdio 派生进程与 Streamable HTTP
-// 的代理环境）的统一环境基线。解析与本包其余 viper 装配相互独立：格式刻意
+// os 环境，供上游 API 代理等基础设施使用。解析与本包其余 viper 装配相互独立：格式刻意
 // 保持最简（无变量展开、无 unset），错误一律 fail-fast 并携带行号。
 
 package config
@@ -69,13 +68,12 @@ func stripEnvQuotes(value string) string {
 
 // ApplyEnvFile 读取 ${home}/.laxcode/env.conf 并把其中的 k=v 逐条写入进程
 // 环境（os.Setenv，覆盖启动 shell 的继承值）。文件不存在是完全合法的
-// no-op；settings.json 的 mcp_servers.<name>.env 在派生 MCP stdio 进程时
-// 追加在本环境之后，优先级更高。
+// no-op；用户工作区加载不会调用此函数。
 //
 // 必须在进程首次出站 HTTP 请求之前调用：net/http 的 ProxyFromEnvironment
 // 经 sync.Once 在首次请求时缓存代理环境，之后注入 HTTP(S)_PROXY 不再生效。
 // 当前唯一调用点是 Load（main 最早期）。第三方包的初始化可能
-// 更早缓存代理环境；ChatGPT 使用独立 transport 读取此处注入后的配置。
+// 更早缓存代理环境。
 func ApplyEnvFile(homeDir string) error {
 	data, err := os.ReadFile(layout.EnvConf(homeDir))
 	if err != nil {

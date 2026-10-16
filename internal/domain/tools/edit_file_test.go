@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/mikellxy/laxcode/internal/infrastructure/workfs"
 )
 
 func marshalEditArgs(t *testing.T, path string, edits ...map[string]string) json.RawMessage {
@@ -25,7 +23,7 @@ func marshalEditArgs(t *testing.T, path string, edits ...map[string]string) json
 func TestEditFileToolBatchExact(t *testing.T) {
 	workDir := t.TempDir()
 	ctx := context.Background()
-	e := NewEditFileTool(workDir, workfs.New())
+	e := NewEditFileTool(workDir, newTestFS(t))
 
 	seed := func(rel, content string) string {
 		t.Helper()
@@ -288,7 +286,7 @@ func TestEditFileToolWriteFailureReportsUncertainPartialState(t *testing.T) {
 }
 
 func TestEditFileToolDefinitionAndParams(t *testing.T) {
-	e := NewEditFileTool(t.TempDir(), workfs.New())
+	e := NewEditFileTool(t.TempDir(), newTestFS(t))
 
 	def := e.Definition()
 	properties, ok := def.Parameters["properties"].(map[string]any)

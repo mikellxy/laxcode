@@ -37,75 +37,21 @@ cp docs/settings.json ~/.laxcode/settings.json
 未填写 `model` 时，默认选中目录中的第一个模型。`model_name` 是配置中的名称；
 可通过 `upstream_model` 指定实际请求的模型名。
 
-## 命令行覆盖
+## 云端启动参数
 
-启动配置先应用默认值，再读取 `~/.laxcode/settings.json`，最后应用命令行参数。
-`-addr` 设置 Web 后端监听地址（默认 `127.0.0.1:8090`），`-plan` 启用计划模式。
-这两个选项仅支持命令行；`llm_router_url` 由运行中的本地路由器生成。
+本分支启动后始终按用户隔离运行，支持：
 
-临时使用其他 API Key 模型时，以下三个参数必须一起传入：
+- `-addr`：后端监听地址，默认 `127.0.0.1:8090`。
+- `-plan`：启用计划模式。
+- `-conf_copy_dir`：新用户模板目录，直接包含 `settings.json` 与 `skills/`；默认使用服务账户的 `~/.laxcode`。
+- `-cloud_bash_image`：预装的 Docker Bash 镜像，默认 `laxcode-cloud-bash:local`。
 
-```shell
-go run ./cmd/main -model=chat -openai_api_key=YOUR_API_KEY -openai_base_url=https://api.example.com/v1
-```
+服务账户的 settings 是初始化模板，可保留明文 API Key；新用户的 Key 写入服务账户的
+`~/.laxcode/configs.db`，用户 `agenthome/.laxcode/settings.json` 不含 Key。
+已有用户的配置不会被模板覆盖，可在网页中新增和切换模型。
 
-此时保留文件中的模型目录，并新增临时 provider `env`，主模型选为 `env:chat`，
-使用默认模型 limit。它不会写入 `settings.json`；`env` 是保留名称，不能用于
-文件配置或 Web 新增 provider。文件中的 `compaction_model` 仍然有效。
-
-模型配置不再从 `OPENAI_*`、`COMPACTION_MODEL` 或 `LLM_ROUTER_ADDR` 环境变量覆盖。
-`env.conf` 继续向进程和子进程注入环境变量，供代理、Shell 工具和 MCP 使用。
-
-## 使用 ChatGPT 订阅
-
-在 Web 页面点击模型旁的齿轮，将认证方式切换为「ChatGPT 订阅」，再点击
-**Continue with ChatGPT**。在浏览器中完成登录和订阅使用授权后，后端会导入
-此账户可用的模型，前端通过原有模型列表和切换接口进行选择。API Key 模型
-仍可同时保留并切换。当前保存一个 ChatGPT 账户连接；再次登录用于续授权。
-
-授权回调监听本机 `127.0.0.1` 的随机空闲端口，不占用 Codex 的固定登录端口。
-登录有效期为 10 分钟；关闭添加窗口会取消待完成的登录。浏览器和后端应在
-同一台电脑运行，因为授权回调使用本机地址。
-
-后端的身份配置、公钥、凭证兑换与刷新、模型列表和模型请求统一使用进程中的
-`HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY`（也支持对应的小写变量）。可在
-`~/.laxcode/env.conf` 中设置，启动时会自动加载；这些 OpenAI HTTPS 请求使用
-`HTTPS_PROXY`。浏览器登录页面使用浏览器自己的代理设置。
-
-登录自动生成的 provider 配置形如：
-
-```json
-{
-  "provider_name": "openai-chatgpt",
-  "auth_type": "oauth",
-  "credential_ref": "chatgpt-main",
-  "openai_base_url": "https://api.openai.com/v1/",
-  "model_list": [
-    { "model_name": "gpt-6.1-sol", "reasoning_effort": "medium" }
-  ]
-}
-```
-
-模型清单以登录账户返回的目录为准。支持的模型会显示独立的「思考强度」
-选择器；目前 GPT-6.1 Sol 可选 `low`、`medium`、`high`、`xhigh`、`max`。
-其他模型保留上游默认强度。模型条目的 `reasoning_effort` 保存默认值，页面
-选择只影响当前进程；切换模型会采用目标模型的默认值，正在进行的对话结束
-后才生效。未指定压缩模型时，它同时继承主模型的认证方式和思考强度。
-
-OAuth 凭证单独保存在 `~/.laxcode/auth.json`，原子写入（Unix 权限 `0600`）。
-后端在请求前刷新即将过期的 access token，并串行保存轮换后的
-refresh token；凭证不通过模型列表返回，也不写进 `settings.json`。
-
-此路线使用公共 Responses API 的流式请求。`limit.output` 仍用于本地上下文
-预算，OAuth 请求不会发送不受支持的 `max_output_tokens`，因此它不是远端
-输出硬上限。Token 计数使用本地估算；上下文摘要也通过 OAuth 流式请求聚合。
-会话数据库会自动增加加密 reasoning 字段，以保存工具续轮需要的 opaque 状态。
-
-符合资格的 Plus 用户可授权使用订阅额度；可用性取决于账户、工作区和政策，
-Plus 的五小时额度在使用该订阅的应用间共享。额度或权限错误会直接返回，
-不会自动改用 API Key 计费。详见
-[官方接入文档](https://developers.openai.com/siwc/token-sharing-open-source) 和
-[订阅用量说明](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)。
+`~/.laxcode/env.conf` 在服务启动时注入进程环境，供上游 API 代理等基础设施使用；
+用户配置加载不会修改服务进程环境。模型与凭据由 settings 管理。
 
 ---
 
@@ -156,59 +102,3 @@ Plus 的五小时额度在使用该订阅的应用间共享。额度或权限错
 ```
 
 ---
-
-## 本地路由器
-
-> [!TIP]
-> 路由器默认监听本机随机端口用于模型热切换
-
-```json
-{
-  "llm_router_addr": "127.0.0.1:0"
-}
-```
-
----
-
-## MCP server（外部工具生态）
-
-> [!TIP]
-> `mcp_servers` 声明外部 MCP（Model Context Protocol）server；coding agent装配时接入其工具，工具以 `mcp__<server>__<tool>` 命名注册给模型
-
-```json
-{
-  "mcp_servers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/absolute/path/to/allow"],
-      "env": ["NODE_ENV=production"]
-    }
-  }
-}
-```
-
-Streamable HTTP server 可通过 `url` 接入，并用 `headers` 传递 Bearer Token
-等认证信息：
-
-```json
-{
-  "mcp_servers": {
-    "ov-mcp-server": {
-      "url": "https://api.vikingdb.cn-beijing.volces.com/openviking/mcp",
-      "headers": {
-        "Authorization": "Bearer xx.xx"
-      }
-    }
-  }
-}
-```
-
-- 每个已启用条目必须声明且仅声明一种传输形态：`command`（stdio）或 `url`（Streamable HTTP）。
-- `env` 是追加给子进程的环境变量，`K=V` 字符串数组（大小写敏感，后设置覆盖先设置）。
-- `headers` 仅用于 HTTP server，并会注入握手、工具调用、SSE 接收与连接关闭请求；敏感 header 不会转发到跨源重定向地址。
-- 顶层推荐使用 LaxCode 风格的 `mcp_servers`；同时兼容 MCP 生态常见的 `mcpServers` 写法。
-- `enabled` 缺省为 true（写配置即启用）；设为 false 可保留声明但暂停接入。
-- 后端在启动时连接 MCP server，多个 chat 共享连接，各 Agent 使用独立工具注册表；请求结束不会关闭连接，服务退出时统一关闭。
-- 单个 server 连接失败不会导致启动或会话失败：该 server 被跳过并在 stderr 告警（fail-open）。启动仍需等待连接尝试完成。
-- 配置在服务启动时读取，修改后需要重启。暂不自动重连；启动时连接失败或运行中连接断开后，重启服务恢复。
-- 注意：stdio MCP server 以子进程运行，其行为不受 laxcode 工作目录沙箱约束；HTTP MCP server 会收到配置的凭据和模型发起的工具调用。仅配置你信任的 server，且不要提交真实 Token。

@@ -33,15 +33,6 @@ describe("streamReducer", () => {
     state = streamReducer(state, { type: "reconciled", preserveError: true });
     expect(state).toMatchObject({ running: false, error: "boom", retryAction: "resume", task: "original", messages: [] });
   });
-  it("keeps the stream running while approval is pending", () => {
-    const approval = { approval_id: "a", session_id: "s", kind: "bash_command" as const, content: "approve?" };
-    let state: StreamState = { messages: [], running: true };
-    state = streamReducer(state, { type: "event", event: { type: "approval_required", data: approval } });
-    expect(state).toMatchObject({ running: true, approval });
-    state = streamReducer(state, { type: "approval_resolved", approvalID: "a" });
-    expect(state.approval).toBeUndefined();
-    expect(state.running).toBe(true);
-  });
   it("creates chat messages on HTTP without randomUUID", () => {
     vi.stubGlobal("crypto", { getRandomValues: (bytes: Uint8Array) => bytes.fill(0) });
     let state = streamReducer({ messages: [], running: false }, { type: "send", content: "hello" });

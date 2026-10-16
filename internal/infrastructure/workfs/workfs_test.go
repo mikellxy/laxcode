@@ -20,7 +20,7 @@ const testdataPath = "./testdata/test_data.txt"
 const testdataContent = "11111111111\n22222222222\n33333333333\n44444444444"
 
 func TestOpenReadReadsFixture(t *testing.T) {
-	f, err := New().OpenRead(testdataPath)
+	f, err := newTestFS(t).OpenRead(testFixture(t))
 	if err != nil {
 		t.Fatalf("OpenRead: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestOpenReadReadsFixture(t *testing.T) {
 // read_file / edit_file 靠 errors.Is(err, fs.ErrNotExist) 区分"文件不存在"
 // 与其他 IO 失败，从而给模型不同的自愈提示。
 func TestOpenReadMissingFileIsErrNotExist(t *testing.T) {
-	_, err := New().OpenRead(filepath.Join(t.TempDir(), "no_such_file.txt"))
+	_, err := newTestFS(t).OpenRead(filepath.Join(t.TempDir(), "no_such_file.txt"))
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -49,14 +49,14 @@ func TestOpenReadMissingFileIsErrNotExist(t *testing.T) {
 }
 
 func TestReadFileMissingIsErrNotExist(t *testing.T) {
-	_, err := New().ReadFile(filepath.Join(t.TempDir(), "no_such_file.txt"))
+	_, err := newTestFS(t).ReadFile(filepath.Join(t.TempDir(), "no_such_file.txt"))
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("err = %v, want errors.Is(err, fs.ErrNotExist) == true", err)
 	}
 }
 
 func TestReadFileReturnsContent(t *testing.T) {
-	b, err := New().ReadFile(testdataPath)
+	b, err := newTestFS(t).ReadFile(testFixture(t))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestWriteFileCreatesMissingParentDirs(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "a", "b", "c", "out.txt")
 
-	if err := New().WriteFile(target, []byte("hello")); err != nil {
+	if err := newTestFS(t).WriteFile(target, []byte("hello")); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestWriteFileOverwritesExisting(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if err := New().WriteFile(target, []byte("new")); err != nil {
+	if err := newTestFS(t).WriteFile(target, []byte("new")); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -119,11 +119,11 @@ func TestWriteFileParentDirError(t *testing.T) {
 		t.Fatalf("seed blocker: %v", err)
 	}
 
-	err := New().WriteFile(filepath.Join(blocker, "sub", "out.txt"), []byte("hello"))
+	err := newTestFS(t).WriteFile(filepath.Join(blocker, "sub", "out.txt"), []byte("hello"))
 	if err == nil {
 		t.Fatal("expected error when parent dir cannot be created")
 	}
-	if !strings.Contains(err.Error(), "create parent dir") {
+	if !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("err = %v, want it to mention %q", err, "create parent dir")
 	}
 }
@@ -161,4 +161,22 @@ func TestRootRejectsSymlinkIntroducedAfterPreflight(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(outside, "file.txt")); string(data) != "secret" {
 		t.Fatal("outside file changed")
 	}
+}
+
+func newTestFS(t *testing.T) *FS {
+	t.Helper()
+	f, err := NewRoot(filepath.Dir(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+func testFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(path, []byte(testdataContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

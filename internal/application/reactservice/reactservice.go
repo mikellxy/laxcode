@@ -24,18 +24,14 @@ type ReActService struct {
 	LLMClient llmprovider.LLMClient
 	// ContextSummaryLLMClient 只在确定性本地压缩无法达到目标时调用。
 	// 它不参与正常 ReAct 生成，且摘要请求不携带业务工具定义。
-	ContextSummaryLLMClient  llmprovider.LLMClient
-	ToolRegistry             tools.Registry
-	Artifacts                tools.ArtifactStore
-	ReActEventConsumerF      func(reactEvent *ReactEvent)
-	humanConfirmationEnabled bool
+	ContextSummaryLLMClient llmprovider.LLMClient
+	ToolRegistry            tools.Registry
+	Artifacts               tools.ArtifactStore
+	ReActEventConsumerF     func(reactEvent *ReactEvent)
 	// tracer 是 chat 及其子 span 的追踪注入点，经构造注入；nil 缺省
 	// noop，不产生任何观测输出。类型经 telemetry 别名持有，本包不直接
 	// 依赖 OTel（span 的开启与收尾均走 telemetry 辅助函数）。
-	tracer telemetry.Tracer
-	// workDir 是 bash 危险命令检查的基准目录：输出重定向只放行该目录、
-	// /tmp 与 /dev/null 内的目标。经 SetWorkDir 由组合根注入。
-	workDir  string
+	tracer   telemetry.Tracer
 	userRoot string
 }
 
@@ -45,23 +41,18 @@ var (
 	ErrPersistRequestContext = errors.New("reactservice: persist request context")
 	// ErrNothingToResume 表示会话尾部已经收束，或尚无用户消息。调用方应拒绝
 	// resume，避免在没有待完成输入时让模型重复生成。
-	ErrNothingToResume          = errors.New("reactservice: no interrupted chat to resume")
-	ErrRepeatedToolCall         = errors.New("连续 3 次相同工具调用，已中断本轮推理")
-	ErrDangerousCommandDeclined = errors.New("用户拒绝危险 Bash 命令，已终止本轮推理")
-	ErrSensitiveToolDeclined    = errors.New("用户拒绝敏感工具操作，已终止本轮推理")
+	ErrNothingToResume  = errors.New("reactservice: no interrupted chat to resume")
+	ErrRepeatedToolCall = errors.New("连续 3 次相同工具调用，已中断本轮推理")
 )
 
 const (
-	ReActEventTypeChunk          = "chunk"
-	ReActEventTypeToolCall       = "tool_call"
-	ReActEventTypeRecovery       = "recovery"
-	ReActEventTypeHumanInTheLoop = "human_in_the_loop"
-	HumanConfirmKindBashCommand  = "bash_command"
-	HumanConfirmKindSkillWrite   = "skill_write"
-	contextTriggerPercent        = 80
-	contextTargetPercent         = 60
-	recoveryToolResultPrompt     = "上一次工具调用未获得可确认的结果；它可能尚未执行，也可能已经执行但结果未被保存。请先检查当前状态，再决定是否重试。"
-	repeatedToolReminder         = "提醒：你已连续 5 次调用同一个工具。请检查当前目标、已有结果和调用参数，判断是否陷入循环；必要时换一种方法或向用户说明阻碍。"
+	ReActEventTypeChunk      = "chunk"
+	ReActEventTypeToolCall   = "tool_call"
+	ReActEventTypeRecovery   = "recovery"
+	contextTriggerPercent    = 80
+	contextTargetPercent     = 60
+	recoveryToolResultPrompt = "上一次工具调用未获得可确认的结果；它可能尚未执行，也可能已经执行但结果未被保存。请先检查当前状态，再决定是否重试。"
+	repeatedToolReminder     = "提醒：你已连续 5 次调用同一个工具。请检查当前目标、已有结果和调用参数，判断是否陷入循环；必要时换一种方法或向用户说明阻碍。"
 )
 
 // ContextUsage 是 tool_call 事件携带的上下文占用快照：此时最近一次模型轮次
@@ -73,44 +64,11 @@ type ContextUsage struct {
 	ContextWindow int                          `json:"context_window"`
 }
 
-// ApprovalDetail 是危险 Bash 命令确认的结构化载荷：前端按“工具与风险在上、
-// 命令原文在下”布局渲染，命令支持折叠展开与 shell 语法高亮。
-type ApprovalDetail struct {
-	Tool    string `json:"tool,omitempty"`
-	Risk    string `json:"risk,omitempty"`
-	Command string `json:"command,omitempty"`
-}
-
-// Get* 对 nil 接收者安全：SSE 装配侧无需先判空。
-func (d *ApprovalDetail) GetTool() string {
-	if d == nil {
-		return ""
-	}
-	return d.Tool
-}
-
-func (d *ApprovalDetail) GetRisk() string {
-	if d == nil {
-		return ""
-	}
-	return d.Risk
-}
-
-func (d *ApprovalDetail) GetCommand() string {
-	if d == nil {
-		return ""
-	}
-	return d.Command
-}
-
 type ReactEvent struct {
-	Type             string
-	Content          string                    // 工具执行提示或人工确认说明
-	ChunkEvent       *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
-	HumanConfirmChan chan<- string             // 人工确认回复通道，仅 human_in_the_loop 事件携带
-	HumanConfirmKind string                    // 人工确认类别，供前端区分危险命令和敏感工具操作
-	ContextUsage     *ContextUsage             // 上下文占用快照，仅 tool_call 事件携带
-	Approval         *ApprovalDetail           // 结构化审批载荷，仅 human_in_the_loop 事件携带
+	Type         string
+	Content      string                    // 工具执行提示或人工确认说明
+	ChunkEvent   *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
+	ContextUsage *ContextUsage             // 上下文占用快照，仅 tool_call 事件携带
 }
 
 // contextUsageSnapshot 读取当前会话窗口占用与模型上下文窗口。WindowToken 已
@@ -131,19 +89,17 @@ func NewReActService(sess *session.Session,
 	reActEventConsumerF func(reactEvent *ReactEvent),
 	tracer telemetry.Tracer,
 	artifactStores ...tools.ArtifactStore) *ReActService {
-	humanConfirmationEnabled := reActEventConsumerF != nil
 	if reActEventConsumerF == nil {
 		reActEventConsumerF = func(*ReactEvent) {}
 	}
 	r := &ReActService{
-		Session:                  sess,
-		SessRepo:                 sessRepo,
-		LLMClient:                llmClient,
-		ContextSummaryLLMClient:  contextSummaryLLMClient,
-		ToolRegistry:             toolRegistry,
-		ReActEventConsumerF:      reActEventConsumerF,
-		humanConfirmationEnabled: humanConfirmationEnabled,
-		tracer:                   telemetry.OrNoop(tracer),
+		Session:                 sess,
+		SessRepo:                sessRepo,
+		LLMClient:               llmClient,
+		ContextSummaryLLMClient: contextSummaryLLMClient,
+		ToolRegistry:            toolRegistry,
+		ReActEventConsumerF:     reActEventConsumerF,
+		tracer:                  telemetry.OrNoop(tracer),
 	}
 	// ArtifactStore 与数据库会话仓储相互独立；工具是组合根的职责，
 	// 构造函数只保留 store 供压缩流程使用。
@@ -151,50 +107,6 @@ func NewReActService(sess *session.Session,
 		r.Artifacts = artifactStores[0]
 	}
 	return r
-}
-
-// SetWorkDir 配置 bash 危险命令检查的基准目录（输出重定向只放行该目录、
-// /tmp 与 /dev/null 内的目标）。应仅在服务对外可见前由组合根调用，不应在
-// 并发 Chat 期间修改。
-func (r *ReActService) SetWorkDir(workDir string) { r.workDir = workDir }
-
-// requestHumanConfirmation 向交互前端发出一次人工确认请求，并等待回复或取消。
-// channel 由 ReActService 创建并持有；前端只获得发送端，不应关闭。容量为 1，
-// 避免取消与用户提交同时发生时让前端发送 goroutine 永久阻塞。
-func (r *ReActService) requestHumanConfirmation(ctx context.Context, content string) (string, error) {
-	return r.requestHumanConfirmationKind(ctx, "", content)
-}
-
-func (r *ReActService) requestHumanConfirmationKind(ctx context.Context, kind, content string) (string, error) {
-	return r.requestHumanConfirmationDetail(ctx, kind, content, nil)
-}
-
-// requestBashCommandConfirmation 发出危险命令确认：content 保留完整人读文案
-// （日志与降级渲染用），Approval 携带结构化字段供前端分块渲染。
-func (r *ReActService) requestBashCommandConfirmation(ctx context.Context, command, reason string) (string, error) {
-	return r.requestHumanConfirmationDetail(ctx, HumanConfirmKindBashCommand,
-		fmt.Sprintf("危险 Bash 命令：%s\n原因：%s\n输入 yes 执行；其他输入取消。", command, reason),
-		&ApprovalDetail{Tool: tools.ToolBash, Risk: reason, Command: command})
-}
-
-func (r *ReActService) requestHumanConfirmationDetail(ctx context.Context, kind, content string, detail *ApprovalDetail) (string, error) {
-	if !r.humanConfirmationEnabled {
-		return "", nil
-	}
-	confirmChan := make(chan string, 1)
-	r.ReActEventConsumerF(&ReactEvent{
-		Type:             ReActEventTypeHumanInTheLoop,
-		Content:          content,
-		HumanConfirmChan: confirmChan,
-		HumanConfirmKind: kind,
-		Approval:         detail,
-	})
-	select {
-	case confirmation := <-confirmChan:
-		return confirmation, nil
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
 }
 
 // InitSession 从数据库恢复最新工作集。
@@ -408,7 +320,6 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info, ContextUsage: r.contextUsageSnapshot()})
 
 			var result *sharedkernel.ToolResult
-			var stopErr error
 			if interrupted {
 				result = rejectedToolResult(tc.ID, "连续重复调用已触发中断，本组剩余工具未执行。")
 			} else {
@@ -419,28 +330,19 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 				} else {
 					var execErr error
 					result, execErr = r.executeToolCall(toolCtx, &tc)
-					if execErr != nil && !errors.Is(execErr, ErrDangerousCommandDeclined) {
+					if execErr != nil {
 						return nil, execErr
 					}
-					if errors.Is(execErr, ErrDangerousCommandDeclined) {
-						stopErr = execErr
-					}
 				}
-				if streak.toolCount == 5 && stopErr == nil {
+				if streak.toolCount == 5 {
 					result.Output += "\n" + repeatedToolReminder
 					result.CompactContent += "\n" + repeatedToolReminder
 				}
 			}
 			toolMsg := tools.ToolResultAsMsg(result)
 			toolMsg.DisplayContent = info
-			if stopErr != nil {
-				toolMsg.DisplayContent = result.Output
-			}
 			if err := r.handleTurnMsg(ctx, toolMsg); err != nil {
 				return nil, err
-			}
-			if stopErr != nil {
-				return nil, stopErr
 			}
 		}
 		if interrupted {
@@ -516,60 +418,11 @@ func rejectedToolResult(id, message string) *sharedkernel.ToolResult {
 }
 
 func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.ToolCall) (*sharedkernel.ToolResult, error) {
-	sandbox, ok := r.ToolRegistry.(interface{ BashSandboxed() bool })
-	cloudSandbox := r.userRoot != "" && ok && sandbox.BashSandboxed()
-	if call.Name == tools.ToolBash && !cloudSandbox {
-		var args struct {
-			Command string `json:"command"`
+	if call.Name == tools.ToolBash {
+		sandbox, ok := r.ToolRegistry.(interface{ BashSandboxed() bool })
+		if !ok || !sandbox.BashSandboxed() {
+			return rejectedToolResult(call.ID, "Bash requires a Docker sandbox; command was not executed."), nil
 		}
-		if json.Unmarshal(call.Arguments, &args) == nil && strings.TrimSpace(args.Command) != "" {
-			if reason, risky := tools.AssessBashRisk(args.Command, r.workDir, r.userRoot); risky {
-				if r.userRoot != "" {
-					return rejectedToolResult(call.ID, "cloud 模式拒绝 Bash 命令，命令未执行："+reason), nil
-				}
-				answer, err := r.requestBashCommandConfirmation(ctx, args.Command, reason)
-				if err != nil {
-					return nil, err
-				}
-				if !strings.EqualFold(strings.TrimSpace(answer), "yes") {
-					return rejectedToolResult(call.ID, "用户未批准危险 Bash 命令，命令未执行。"), ErrDangerousCommandDeclined
-				}
-			}
-		}
-	}
-	confirmation, confirmErr := r.ToolRegistry.Confirmation(ctx, call)
-	if confirmErr != nil {
-		message := "敏感工具操作审批预检失败，操作未执行：" + confirmErr.Error()
-		return &sharedkernel.ToolResult{
-			ToolCallID: call.ID, IsError: true, Error: confirmErr,
-			Output: message, CompactContent: message,
-		}, nil
-	}
-	if confirmation != nil && r.userRoot != "" {
-		if confirmation.Kind == HumanConfirmKindSkillWrite {
-			return r.ToolRegistry.Execute(ctx, call), nil
-		}
-		return rejectedToolResult(call.ID, "cloud 模式拒绝越界工具操作，操作未执行。"), nil
-	}
-	if confirmation != nil {
-		if !r.humanConfirmationEnabled {
-			// 强制型确认（全局 Skill 写入）无前端即无法批准，维持既有的拒绝终止
-			// 语义；放行型确认（沙箱外文件访问）无前端时按既有沙箱规则失败，
-			// 不终止本轮。
-			if confirmation.Mandatory {
-				return rejectedToolResult(call.ID, "用户未批准敏感工具操作，操作未执行。"), ErrSensitiveToolDeclined
-			}
-			return r.ToolRegistry.Execute(ctx, call), nil
-		}
-		answer, err := r.requestHumanConfirmationKind(ctx, confirmation.Kind, confirmation.Content)
-		if err != nil {
-			return nil, err
-		}
-		if !strings.EqualFold(strings.TrimSpace(answer), "yes") {
-			return rejectedToolResult(call.ID, "用户未批准敏感工具操作，操作未执行。"), ErrSensitiveToolDeclined
-		}
-		// 批准后把授权目标注入执行 ctx：工具据此放行确认过的越界操作
-		ctx = tools.WithApprovalGrants(ctx, confirmation.Grants)
 	}
 	return r.ToolRegistry.Execute(ctx, call), nil
 }
@@ -617,5 +470,5 @@ func (r *ReActService) commitNextMemoryGeneration(ctx context.Context, candidate
 	return nil
 }
 
-// SetUserRoot enables hard file boundaries and rejects risky commands without approval.
+// SetUserRoot hides the user-root prefix in display messages.
 func (r *ReActService) SetUserRoot(root string) { r.userRoot = root }

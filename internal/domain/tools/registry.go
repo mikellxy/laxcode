@@ -20,7 +20,6 @@ type Registry interface {
 	Execute(ctx context.Context, toolCall *sharedkernel.ToolCall) *sharedkernel.ToolResult
 	Register(tool BaseTool)
 	BeforeExecInfo(toolCall *sharedkernel.ToolCall) string
-	Confirmation(ctx context.Context, toolCall *sharedkernel.ToolCall) (*ToolConfirmation, error)
 }
 
 type BaseTool interface {
@@ -34,51 +33,6 @@ type BaseTool interface {
 // ResultTool 可同时返回正文、压缩文本及归档引用；其他工具继续使用 Execute。
 type ResultTool interface {
 	ExecuteResult(ctx context.Context, args json.RawMessage) *sharedkernel.ToolResult
-}
-
-// ToolConfirmation describes a single human approval requested immediately
-// before a persistent or otherwise sensitive tool mutation.
-type ToolConfirmation struct {
-	Kind    string
-	Content string
-	// Grants 是本次批准授予的具体目标（如解析后的文件绝对路径）。批准后由
-	// reactservice 注入执行 ctx，工具据此放行对应的越界操作；空表示批准不
-	// 携带额外授权（如全局 Skill 写入）。
-	Grants []string
-	// Mandatory 表示确认是操作的强制前置（如全局 Skill 写入）：无交互前端
-	// 时无法批准，应终止本轮；false（如沙箱外文件访问）表示确认只是放行
-	// 手段，无前端时按既有沙箱规则失败即可，本轮继续。
-	Mandatory bool
-}
-
-// ConfirmableTool performs a read-only preflight and supplies the approval
-// message. Execute repeats validation after approval so state changes cannot
-// bypass the tool's safety checks.
-type ConfirmableTool interface {
-	Confirmation(context.Context, json.RawMessage) (*ToolConfirmation, error)
-}
-
-type approvalGrantsKey struct{}
-
-// WithApprovalGrants 返回携带人工批准授权目标的 ctx。grants 是 Confirmation
-// 展示并获批准的具体目标；Execute 据此放行对应的越界操作，未列出的目标仍
-// 按沙箱规则拒绝。
-func WithApprovalGrants(ctx context.Context, grants []string) context.Context {
-	if len(grants) == 0 {
-		return ctx
-	}
-	set := make(map[string]struct{}, len(grants))
-	for _, grant := range grants {
-		set[grant] = struct{}{}
-	}
-	return context.WithValue(ctx, approvalGrantsKey{}, set)
-}
-
-// GrantAllows 报告 target 是否在本次人工批准的授权目标之内。
-func GrantAllows(ctx context.Context, target string) bool {
-	set, _ := ctx.Value(approvalGrantsKey{}).(map[string]struct{})
-	_, ok := set[target]
-	return ok
 }
 
 type DefaultRegistry struct {
@@ -118,18 +72,6 @@ func (d *DefaultRegistry) BeforeExecInfo(toolCall *sharedkernel.ToolCall) string
 		return ""
 	}
 	return tool.BeforeExecInfo(toolCall.Arguments)
-}
-
-func (d *DefaultRegistry) Confirmation(ctx context.Context, toolCall *sharedkernel.ToolCall) (*ToolConfirmation, error) {
-	tool, ok := d.db[toolCall.Name]
-	if !ok {
-		return nil, nil
-	}
-	confirmable, ok := tool.(ConfirmableTool)
-	if !ok {
-		return nil, nil
-	}
-	return confirmable.Confirmation(ctx, toolCall.Arguments)
 }
 
 func (d *DefaultRegistry) Execute(ctx context.Context, toolCall *sharedkernel.ToolCall) *sharedkernel.ToolResult {

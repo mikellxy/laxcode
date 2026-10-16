@@ -232,7 +232,7 @@ func (c *cloudUsers) user(id string, create bool) (*cloudUser, error) {
 	}
 	s := newServer(homeDir, config.Current.Plan, models)
 	s.userRoot, s.tempDir, s.tracer = userRoot, filepath.Join(userRoot, "tmp"), c.tracer
-	s.switcher = agentasm.NewDirectModelSwitcher(models)
+	s.switcher = agentasm.NewModelSwitcher(models)
 	s.history, s.catalog, s.projects, s.contextRepo, s.evaluations = repo, repo, repo, repo, repo
 	user := &cloudUser{server: s, handler: s.routes(), repo: repo}
 	c.users[id] = user
@@ -244,7 +244,6 @@ func (c *cloudUsers) Close() {
 	defer c.mu.Unlock()
 	for id, user := range c.users {
 		user.server.stopEvaluations()
-		user.server.oauth.Close()
 		_ = user.repo.Close()
 		delete(c.users, id)
 	}

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/mikellxy/laxcode/cmd/agentasm"
-	domainrouter "github.com/mikellxy/laxcode/internal/domain/llmrouter"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
@@ -36,6 +35,7 @@ func TestHandleSessionContext(t *testing.T) {
 	setTestProviders(t, []config.Provider{{ProviderName: "p", OpenaiApiKey: "key", OpenaiBaseUrl: "https://example.com/v1", ModelList: []config.Model{{ModelName: "main", Limit: &config.ModelLimit{Context: 128000, Output: 16384}}}}})
 	config.Current.Model = "p:main"
 	s := newTestServer(t, t.TempDir(), false)
+	s.catalog = catalogWithSession("s1", t.TempDir())
 	s.contextRepo = contextReaderStub{state: session.RequestContext{WindowToken: sharedkernel.TokenStatistics{TokenInput: 12000, TokenOutput: 932}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
@@ -237,10 +237,9 @@ func TestHandleCreateAndListProjects(t *testing.T) {
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 
-	workDir := t.TempDir()
 	created := httptest.NewRecorder()
 	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/projects",
-		strings.NewReader(`{"user_id":"`+userID+`","name":"LaxCode","work_dir":"`+workDir+`"}`)))
+		strings.NewReader(`{"user_id":"`+userID+`","name":"LaxCode"}`)))
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
 	}
@@ -248,7 +247,7 @@ func TestHandleCreateAndListProjects(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &project); err != nil {
 		t.Fatal(err)
 	}
-	if project.ProjectID == "" || project.Name != "LaxCode" || project.WorkDir != workDir {
+	if project.ProjectID == "" || project.Name != "LaxCode" || project.WorkDir != filepath.Join(s.userRoot, "LaxCode") {
 		t.Fatalf("project=%+v", project)
 	}
 
@@ -290,14 +289,6 @@ func TestSessionEndpointsRejectInvalidUserID(t *testing.T) {
 	}
 }
 
-type recordingModelRouter struct {
-	clients []domainrouter.StreamClient
-}
-
-func (r *recordingModelRouter) ReplaceClient(client domainrouter.StreamClient) {
-	r.clients = append(r.clients, client)
-}
-
 func setupSwitchModelCatalog(t *testing.T) {
 	t.Helper()
 	previous := config.Current
@@ -315,11 +306,11 @@ func setupSwitchModelCatalog(t *testing.T) {
 	config.Current.Model = "first:model-1"
 }
 
-func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
+func TestHandleSwitchModelUpdatesUserModels(t *testing.T) {
 	setupSwitchModelCatalog(t)
-	router := &recordingModelRouter{}
+
 	s := newTestServer(t, t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(router, s.models)
+	s.switcher = agentasm.NewModelSwitcher(s.models)
 
 	rec := httptest.NewRecorder()
 	s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
@@ -336,9 +327,6 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 	if got.ModelRef != "second:model-2" {
 		t.Fatalf("unexpected response: %+v", got)
 	}
-	if len(router.clients) != 1 {
-		t.Fatalf("router replacements=%d, want 1", len(router.clients))
-	}
 	if s.models.Active().Ref != "second:model-2" ||
 		s.models.Active().OpenaiApiKey != "key-2" ||
 		s.models.Active().UpstreamModel != "upstream-2" {
@@ -348,9 +336,9 @@ func TestHandleSwitchModelReplacesRouterAndConfig(t *testing.T) {
 
 func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 	setupSwitchModelCatalog(t)
-	router := &recordingModelRouter{}
+
 	s := newTestServer(t, t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(router, s.models)
+	s.switcher = agentasm.NewModelSwitcher(s.models)
 
 	cases := []struct {
 		name   string
@@ -369,16 +357,14 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s", tc.name, rec.Code, rec.Body.String())
 		}
 	}
-	if len(router.clients) != 0 {
-		t.Fatalf("router replaced on failed switch: %d", len(router.clients))
-	}
 
-	noRouter := newTestServer(t, t.TempDir(), false)
+	noModels := newTestServer(t, t.TempDir(), false)
+	noModels.switcher = agentasm.NewModelSwitcher(nil)
 	rec := httptest.NewRecorder()
-	noRouter.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
+	noModels.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
 		strings.NewReader(`{"provider":"first","model":"model-1"}`)))
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("nil router status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("nil model manager status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -746,7 +732,19 @@ func newTestServer(t *testing.T, home string, plan bool) *server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newServer(home, plan, models)
+	s := newServer(home, plan, models)
+	s.userRoot = filepath.Dir(home)
+	s.tempDir = filepath.Join(s.userRoot, "tmp")
+	if err := os.MkdirAll(s.tempDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := sessionrepo.NewSqliteSessionRepo(filepath.Join(home, "test-sessions.db"), filepath.Join(home, "test-history"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.contextRepo = repo
+	t.Cleanup(func() { s.stopEvaluations(); _ = repo.Close() })
+	return s
 }
 
 func setTestProviders(t *testing.T, providers []config.Provider) {

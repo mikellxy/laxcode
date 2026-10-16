@@ -31,14 +31,10 @@ func main() {
 }
 
 func run() error {
-	cloud := flag.Bool("cloud", false, "allow a non-loopback web UI listen address")
-	addr := flag.String("addr", "127.0.0.1:5173", "loopback address for the web UI")
+	addr := flag.String("addr", "0.0.0.0:5173", "web UI listen address")
 	backendValue := flag.String("backend", "", "LaxCode backend URL")
 	flag.Parse()
 
-	if err := validateLoopbackAddress(*addr); err != nil && !*cloud {
-		return err
-	}
 	backend, err := parseBackendURL(*backendValue)
 	if err != nil {
 		return err
@@ -48,7 +44,7 @@ func run() error {
 		return fmt.Errorf("load embedded web assets: %w", err)
 	}
 	if _, err := fs.Stat(assets, "index.html"); err != nil {
-		return errors.New("embedded web bundle is missing index.html; rebuild with `make build-windows`")
+		return errors.New("embedded web bundle is missing index.html; rebuild with `make build-web`")
 	}
 
 	listener, err := net.Listen("tcp", *addr)
@@ -79,21 +75,6 @@ func run() error {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shut down web UI: %w", err)
-	}
-	return nil
-}
-
-func validateLoopbackAddress(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("invalid web listen address %q: %w", addr, err)
-	}
-	if strings.EqualFold(host, "localhost") {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("web listen address must be loopback, got %q", addr)
 	}
 	return nil
 }

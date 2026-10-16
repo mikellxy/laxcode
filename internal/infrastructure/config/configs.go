@@ -55,6 +55,7 @@ func configurationOwner(configDir string) (string, error) {
 	if len(parts) == 3 && parts[0] != ".." && parts[1] == "agenthome" && parts[2] == layout.RootDirName {
 		return parts[0], nil
 	}
+	// Preserve legacy template key namespaces so upgrades do not lose stored keys.
 	localDir, err := canonical(layout.Root(hostHome))
 	if err != nil {
 		return "", err
@@ -108,11 +109,11 @@ func openConfigs(create bool) (*sql.DB, error) {
 	return db, nil
 }
 
-// SaveProviderAPIKeys upserts every API-key model in one transaction. OAuth is untouched.
+// SaveProviderAPIKeys upserts API-key models, skipping legacy subscription entries.
 func SaveProviderAPIKeys(configDir string, providers []Provider) error {
 	var apiModels bool
 	for _, p := range providers {
-		apiModels = apiModels || (p.AuthType != "oauth" && p.ProviderName != CLIProviderName && len(p.ModelList) > 0)
+		apiModels = apiModels || (p.AuthType != "oauth" && len(p.ModelList) > 0)
 	}
 	if !apiModels {
 		return nil
@@ -132,7 +133,7 @@ func SaveProviderAPIKeys(configDir string, providers []Provider) error {
 	}
 	defer tx.Rollback()
 	for _, p := range providers {
-		if p.AuthType == "oauth" || p.ProviderName == CLIProviderName {
+		if p.AuthType == "oauth" {
 			continue
 		}
 		for _, m := range p.ModelList {
