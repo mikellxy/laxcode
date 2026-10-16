@@ -18,8 +18,16 @@ import { pickDirectory } from "../api/directory-picker";
 import { requestJSON } from "../api/client";
 import { listModels } from "../api/models";
 import type { SessionDTO } from "../types/api";
+import { hasSeenUserGuide, markUserGuideSeen } from "../features/identity/user-guide";
+import { UserGuide } from "../components/user-guide/UserGuide";
 
 export function App() {
+  const [showGuide, setShowGuide] = useState(() => !hasSeenUserGuide());
+  const finishGuide = () => { markUserGuideSeen(); setShowGuide(false); };
+  return showGuide ? <UserGuide onFinish={finishGuide} /> : <WorkspaceApp />;
+}
+
+function WorkspaceApp() {
   const mode = useQuery({ queryKey: ["server-config"], queryFn: () => requestJSON<{ cloud: boolean }>("/api/config") });
   const cloud = mode.data?.cloud === true;
   const userID = useMemo(getOrCreateGuestID, []); const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);

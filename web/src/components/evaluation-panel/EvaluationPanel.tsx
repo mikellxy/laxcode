@@ -29,15 +29,15 @@ export function EvaluationPanel({ sessionID, workDir, disabled }: { sessionID?: 
       await client.invalidateQueries({ queryKey: ["evaluations", sessionID] });
     },
   });
-  if (!sessionID || !workDir) return null;
+  if (!workDir) return null;
   const hasActiveJob = jobs.data?.jobs.some((job) => job.status === "queued" || job.status === "running") ?? false;
-  const canSubmit = !disabled && !hasActiveJob && !create.isPending && Boolean(requirement.trim());
+  const canSubmit = Boolean(sessionID) && !disabled && !hasActiveJob && !create.isPending && Boolean(requirement.trim());
 
   return <div className="evaluation-control">
-    <button className={`evaluation-trigger ${open ? "active" : ""}`} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label="评估当前会话">
+    <button className={`evaluation-trigger ${open ? "active" : ""}`} disabled={!sessionID} title={!sessionID ? "发送首条消息后即可评估" : undefined} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={!sessionID ? "评估：发送首条消息后可用" : "评估当前会话"}>
       <ClipboardCheck size={15} /><span>评估</span>
     </button>
-    {open && <section className="evaluation-panel" aria-label="评估任务">
+    {open && sessionID && <section className="evaluation-panel" aria-label="评估任务">
       <header><div><strong>评估当前会话</strong><small>提交后由独立 Judge 异步执行</small></div><button onClick={() => setOpen(false)} aria-label="关闭评估面板"><X size={15} /></button></header>
       <textarea value={requirement} maxLength={65536} onChange={(event) => setRequirement(event.target.value)} placeholder="输入本次评估 requirement，例如重点检查测试覆盖和验收条件…" />
       {create.isError && <p className="evaluation-error">{create.error instanceof Error ? create.error.message : "创建评估任务失败"}</p>}
