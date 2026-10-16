@@ -169,21 +169,26 @@ export function useWorkspace(userID: string) {
 
   const send = useCallback(async (task: string) => {
     if (!selection || !streamKey || !task.trim() || streams[streamKey]?.running || sending.current.has(streamKey)) return;
-    sending.current.add(streamKey);
+    let sendingKey = streamKey;
+    sending.current.add(sendingKey);
     try {
       let sessionID = selectedID;
       if (!sessionID) {
         const created = await createSessionMutation.mutateAsync(selection.projectID);
         sessionID = created.session_id;
+        // A running session must not keep the project's next draft reserved.
+        sending.current.delete(sendingKey);
+        sendingKey = sessionID;
+        sending.current.add(sendingKey);
         updateStream(streamKey, { type: "clear" });
         setSelection((current) => current === selection ? { projectID: created.project_id, sessionID } : current);
       }
       await execute(sessionID, "send", task);
     } catch (error) {
-      updateStream(streamKey, { type: "send", content: task });
-      updateStream(streamKey, { type: "failed", message: error instanceof Error ? error.message : "会话创建失败", retryAction: "resend" });
+      updateStream(sendingKey, { type: "send", content: task });
+      updateStream(sendingKey, { type: "failed", message: error instanceof Error ? error.message : "会话创建失败", retryAction: "resend" });
     } finally {
-      sending.current.delete(streamKey);
+      sending.current.delete(sendingKey);
     }
   }, [selection, streamKey, selectedID, streams, execute, createSessionMutation, updateStream]);
 
