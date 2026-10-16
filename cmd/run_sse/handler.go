@@ -47,6 +47,7 @@ type server struct {
 	assemble           func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
 	assembleEvaluation func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
 	locks              *sessionLocks
+	projectLocks       *sessionLocks
 	approvals          *approvalBroker
 	history            session.SessionHistoryRepository
 	contextRepo        session.SessionRepository
@@ -709,6 +710,7 @@ func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server
 		},
 		assembleEvaluation: agentasm.Assemble,
 		locks:              newSessionLocks(),
+		projectLocks:       newSessionLocks(),
 		evaluationLocks:    newSessionLocks(),
 		evaluationCtx:      evaluationCtx,
 		evaluationCancel:   evaluationCancel,
@@ -799,6 +801,15 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, agentasm.ModeCode), "")
 		return
 	}
+
+	unlockProject, ok := s.lockChatProject(selected.WorkDir)
+	if !ok {
+		trace.err = errors.New("project is busy")
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "project is busy; wait for the other session to finish", RetryActionResend)
+		return
+	}
+	defer unlockProject()
+
 	// 延迟配置场景：模型未配置时在进入 SSE 流之前以 JSON 明确报错，避免
 	// 装配成功后在 LLM 调用处才失败、用户只看到晦涩的上游错误。
 	if s.modelMissing() {
@@ -845,14 +856,22 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResend})
 		return
 	}
-	defer assembled.Cleanup()
 	activeSessionID = assembled.Session.ID
+	if s.userRoot == "" {
+		defer assembled.Cleanup()
+	}
 
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
 	userCountBeforeChat := countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser)
-	msg, err := assembled.Service.Chat(ctx, req.Task)
+	msg, err := s.runWithFileTracking(ctx, selected.WorkDir, assembled, func() (*sharedkernel.Message, error) {
+		return assembled.Service.Chat(ctx, req.Task)
+	})
 	trace.err = err
+	if errors.Is(err, errChatFileTracking) {
+		sw.Send(EventError, ErrorData{Code: ErrorCodeInternal, Message: "文件产物统计失败，本轮任务可能已执行，请检查会话历史和项目文件；未自动重试。"})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, reactservice.ErrDangerousCommandDeclined) {
 			sw.Send(EventError, ErrorData{Code: ErrorCodeChatStopped, Message: err.Error()})
@@ -922,6 +941,15 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("session mode %q does not match server mode %q", selected.Mode, agentasm.ModeCode), "")
 		return
 	}
+
+	unlockProject, ok := s.lockChatProject(selected.WorkDir)
+	if !ok {
+		trace.err = errors.New("project is busy")
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "project is busy; wait for the other session to finish", RetryActionResume)
+		return
+	}
+	defer unlockProject()
+
 	if s.modelMissing() {
 		trace.err = errors.New("no model is configured")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
@@ -958,7 +986,9 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeAssemblyFailed, Message: "assemble agent failed: " + err.Error(), RetryAction: RetryActionResume})
 		return
 	}
-	defer assembled.Cleanup()
+	if s.userRoot == "" {
+		defer assembled.Cleanup()
+	}
 	sw.Send(EventStart, StartData{SessionID: assembled.Session.ID})
 
 	// 恢复同一用户输入；老数据没有 chat_id 时保持缺省，不生成新的 ID。
@@ -966,8 +996,14 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 		trace.span.SetAttributes(telemetry.AttrChatID.String(chatID))
 		ctx = telemetry.ContextWithChatID(ctx, chatID)
 	}
-	msg, err := assembled.Service.Resume(ctx)
+	msg, err := s.runWithFileTracking(ctx, selected.WorkDir, assembled, func() (*sharedkernel.Message, error) {
+		return assembled.Service.Resume(ctx)
+	})
 	trace.err = err
+	if errors.Is(err, errChatFileTracking) {
+		sw.Send(EventError, ErrorData{Code: ErrorCodeInternal, Message: "文件产物统计失败，本轮任务可能已执行，请检查会话历史和项目文件；未自动重试。"})
+		return
+	}
 	if errors.Is(err, reactservice.ErrNothingToResume) {
 		sw.Send(EventError, ErrorData{Code: ErrorCodeNothingToResume, Message: err.Error()})
 		return

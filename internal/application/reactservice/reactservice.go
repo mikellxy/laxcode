@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -432,9 +431,6 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 					result.CompactContent += "\n" + repeatedToolReminder
 				}
 			}
-			if err := r.recordChangedFiles(toolCtx, result); err != nil {
-				return nil, err
-			}
 			toolMsg := tools.ToolResultAsMsg(result)
 			toolMsg.DisplayContent = info
 			if stopErr != nil {
@@ -623,40 +619,3 @@ func (r *ReActService) commitNextMemoryGeneration(ctx context.Context, candidate
 
 // SetUserRoot enables hard file boundaries and rejects risky commands without approval.
 func (r *ReActService) SetUserRoot(root string) { r.userRoot = root }
-
-func (r *ReActService) recordChangedFiles(ctx context.Context, result *sharedkernel.ToolResult) error {
-	if r.userRoot == "" || len(result.ChangedFiles) == 0 {
-		return nil
-	}
-	repo, ok := r.SessRepo.(session.ChatFilesRepository)
-	if !ok {
-		return fmt.Errorf("%w: chat file repository unavailable", ErrPersistRequestContext)
-	}
-	var files []session.ChatFile
-	for _, file := range result.ChangedFiles {
-		if err := tools.ValidateUserPath(r.userRoot, file.Path); err != nil {
-			return fmt.Errorf("%w: invalid changed file", ErrPersistRequestContext)
-		}
-		// Configuration and temporary writes are not project deliverables.
-		rel, err := filepath.Rel(r.workDir, file.Path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
-		}
-		path, err := filepath.Rel(r.userRoot, file.Path)
-		if err != nil {
-			return fmt.Errorf("%w: resolve changed file", ErrPersistRequestContext)
-		}
-		kind := "modified"
-		if file.Created {
-			kind = "created"
-		}
-		files = append(files, session.ChatFile{Path: filepath.ToSlash(path), ChangeType: kind})
-	}
-	// shortcut: filesystem writes and SQLite records are not crash-atomic.
-	if len(files) > 0 {
-		if err := repo.UpsertChatFiles(ctx, r.Session.ID, telemetry.ChatIDFromContext(ctx), files); err != nil {
-			return fmt.Errorf("%w: record changed files: %w", ErrPersistRequestContext, err)
-		}
-	}
-	return nil
-}
