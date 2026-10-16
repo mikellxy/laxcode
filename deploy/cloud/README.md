@@ -13,7 +13,7 @@ laxcode-web，两个程序都是 CGO_ENABLED=0 构建，无需 Go、Node、pnpm�
 ```sh
 cd /volume1/apps/laxcode
 docker load -i cloud-bash-amd64.tar
-chmod +x laxcode laxcode-web start.sh
+chmod +x laxcode laxcode-web start.sh stop.sh
 ./start.sh
 ```
 
@@ -21,18 +21,24 @@ chmod +x laxcode laxcode-web start.sh
 start.sh，不能使用 sudo ./start.sh；导入镜像如需管理员权限，可单独使用
 sudo docker load -i cloud-bash-amd64.tar。Docker 可执行文件必须在 PATH 中。
 
-后台运行：
+`start.sh` 会自动在后台运行，等待 Web 服务就绪后返回。关闭终端或 SSH 连接不会
+停止服务；重复执行时会提示已运行。控制台输出追加到部署目录的 `server.log`，
+`server.pid` 和 `server.state` 记录后台管理进程及对应后端/Web 进程。
 
 ```sh
-nohup ./start.sh > server.log 2>&1 &
-echo $! > server.pid
+tail -f server.log
 ```
 
-停止（脚本会同时停止后端和 Web 服务）：
+停止（默认查找 5173，使用自定义端口启动时会读取保存的端口）：
 
 ```sh
-kill "$(cat server.pid)"
+./stop.sh
 ```
+
+脚本先发送 TERM，等待最多 25 秒后对仍存活的对应进程发送 KILL，同时停止 Web 和后端。
+通过 `/proc` 验证进程属于当前部署目录，不会杀掉同端口上的其他程序。
+兼容没有 PID 文件的旧前台启动方式，此时通过 NAS 自带的 `ss` 按端口查找进程。
+更换配置、升级二进制或修改启动参数时，先运行 `./stop.sh`，再运行 `./start.sh`。
 
 修改端口：LAXCODE_CLOUD_PORT=8080 ./start.sh。
 指定其他镜像：LAXCODE_CLOUD_BASH_IMAGE=your-image:tag ./start.sh。
@@ -78,7 +84,7 @@ Bash 容器禁用外网；后端仍需访问配置的 LLM API。每次 Bash 的�
 
 ```sh
 docker load -i cloud-bash-amd64.tar
-chmod +x laxcode laxcode-web start.sh
+chmod +x laxcode laxcode-web start.sh stop.sh
 ./start.sh
 ```
 

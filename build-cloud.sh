@@ -25,6 +25,7 @@ if [ ! -e "$out/defaults/settings.json" ]; then
   printf '%s\n' '{"model":"","provider_list":[]}' > "$out/defaults/settings.json"
 fi
 cp deploy/cloud/start.sh "$out/start.sh"
+cp deploy/cloud/stop.sh "$out/stop.sh"
 cp deploy/cloud/README.md "$out/README.md"
 
 revision=$(git rev-parse HEAD 2>/dev/null || printf unknown)
@@ -49,7 +50,7 @@ mv "$out/laxcode.tmp" "$out/laxcode"
 mv "$out/laxcode-web.tmp" "$out/laxcode-web"
 mv "$out/cloud-bash-amd64.tar.tmp" "$out/cloud-bash-amd64.tar"
 mv "$out/BUILD_INFO.json.tmp" "$out/BUILD_INFO.json"
-chmod +x "$out/laxcode" "$out/laxcode-web" "$out/start.sh"
+chmod +x "$out/laxcode" "$out/laxcode-web" "$out/start.sh" "$out/stop.sh"
 
 if command -v sha256sum >/dev/null 2>&1; then
   checksum=sha256sum
@@ -58,7 +59,7 @@ else
 fi
 (
   cd "$out"
-  find laxcode laxcode-web cloud-bash-amd64.tar start.sh README.md BUILD_INFO.json defaults -type f > .cloud-files.tmp
+  find laxcode laxcode-web cloud-bash-amd64.tar start.sh stop.sh README.md BUILD_INFO.json defaults -type f > .cloud-files.tmp
   LC_ALL=C sort -o .cloud-files.tmp .cloud-files.tmp
   while IFS= read -r file; do
     if [ "$checksum" = shasum ]; then
