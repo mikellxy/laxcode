@@ -1,0 +1,66 @@
+.performance-trigger { display: flex; align-items: center; gap: 9px; width: 100%; margin: 0 0 16px; padding: 11px 12px; border: 1px solid #414c47; border-radius: 10px; background: #29342f; color: #dce8df; font-size: 12px; font-weight: 550; cursor: pointer; transition: background .15s, border-color .15s; }
+.performance-trigger svg { color: #82b799; }
+.performance-trigger:hover:not(:disabled) { border-color: #71917e; background: #35453b; }
+.performance-trigger:disabled { opacity: .4; cursor: default; }
+.performance-trigger:focus-visible { outline: 2px solid #82b799; outline-offset: 3px; }
+.confirm-dialog.performance-dialog { width: min(860px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: hidden; }
+.performance-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 14px; padding-bottom: 20px; border-bottom: 1px solid #e5e7df; }
+.performance-header .confirm-icon { margin: 0; width: 46px; height: 46px; border-radius: 14px; color: #427262; border-color: #d5e4db; background: linear-gradient(145deg, #f5faf6, #e3eee7); }
+.performance-header > p { width: 100%; }
+.performance-session { display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #939a94; font: 10px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.performance-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 28px; }
+.performance-state { display: flex; min-height: 180px; flex-direction: column; justify-content: center; align-items: center; gap: 12px; text-align: center; color: #7b857c; font-size: 13px; }
+.performance-state p { margin: 0; font-size: 12px; line-height: 1.8; }
+.performance-state > svg { color: #527b65; }
+.performance-notice { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; padding: 13px 15px; border: 1px solid #e8dcb7; border-radius: 12px; background: #fbf6e9; color: #896c31; font-size: 12px; line-height: 1.7; }
+.performance-notice > svg { flex-shrink: 0; margin-top: 2px; }
+.performance-notice p { margin: 3px 0 0; overflow-wrap: anywhere; }
+.performance-notice.error { color: #a54d35; border-color: #eddbd2; background: #fcf1eb; }
+.performance-overview, .performance-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 0; }
+.performance-overview { margin-bottom: 22px; }
+.performance-overview > div { min-width: 0; padding: 16px; border: 1px solid #dce4db; border-radius: 13px; background: #f0f5ee; }
+.performance-overview dt, .performance-metrics dt { color: #7c867d; font-size: 11px; }
+.performance-overview dd { margin: 10px 0 0; color: #354d3e; font-size: 21px; font-weight: 650; letter-spacing: -.7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.performance-overview small { margin-left: 5px; font-size: 11px; font-weight: 400; color: #7c8c7f; letter-spacing: 0; }
+.performance-chats { display: grid; gap: 18px; }
+.performance-chat { min-width: 0; padding: 20px; border: 1px solid #e0e4dc; border-radius: 15px; background: #fffefa; }
+.performance-chat > header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 7px 12px; margin-bottom: 18px; }
+.performance-chat h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.performance-chat > header > code { color: #8c948c; font-size: 10px; overflow-wrap: anywhere; }
+.performance-metrics { margin-bottom: 18px; }
+.performance-metrics dd { margin: 7px 0 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.performance-table-scroll { overflow-x: auto; border: 1px solid #e8eae3; border-radius: 10px; }
+.performance-table-scroll:focus-visible { outline: 2px solid #7b9985; outline-offset: 2px; }
+.performance-table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; }
+.performance-table caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.performance-table th, .performance-table td { padding: 10px 12px; text-align: right; border-bottom: 1px solid #eceee7; }
+.performance-table th:first-child { text-align: left; }
+.performance-table thead th { background: #f4f5ef; color: #899083; font-size: 10px; font-weight: 500; }
+.performance-table tbody th { color: #536452; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.performance-table tbody tr:last-child > * { border-bottom: 0; }
+.performance-requests { margin-top: 15px; border-top: 1px solid #eceee7; padding-top: 12px; }
+.performance-requests > summary { width: fit-content; padding: 4px 0; color: #7a857a; font-size: 11px; cursor: pointer; }
+.performance-requests > summary:focus-visible { outline: 2px solid #7b9985; outline-offset: 3px; border-radius: 3px; }
+.performance-request { margin-top: 14px; padding: 14px; border: 1px solid #e6e9e1; border-radius: 10px; background: #f7f8f2; }
+.performance-request > header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
+.performance-request time { margin-left: auto; color: #92998f; font-size: 10px; }
+.performance-status { padding: 2px 7px; border-radius: 5px; color: #52715b; background: #e8efe3; font-size: 10px; }
+.performance-status.error { color: #a65d43; background: #f6e9e0; }
+.performance-identifiers { margin: 12px 0 0; color: #92998f; font-size: 10px; line-height: 1.7; overflow-wrap: anywhere; }
+.performance-identifiers code { font-size: inherit; }
+.performance-actions { align-items: center; gap: 8px; margin-top: 0; }
+.performance-actions > p { flex: 1; margin: 0; color: #8b9488; font-size: 10px; line-height: 1.8; }
+@media (max-width: 560px) {
+  .confirm-dialog.performance-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 24px); border-radius: 18px; }
+  .performance-body { padding: 16px; }
+  .performance-overview, .performance-metrics { gap: 9px; }
+  .performance-overview > div { padding: 12px 9px; }
+  .performance-overview dd { font-size: 17px; }
+  .performance-chat { padding: 15px 12px; }
+  .performance-chat > header > code { font-size: 9px; }
+  .performance-metrics dd { font-size: 11px; }
+  .performance-metrics dt { font-size: 10px; }
+  .performance-table { min-width: 420px; }
+  .performance-actions { flex-wrap: wrap; }
+  .performance-actions > p { flex-basis: 100%; margin-bottom: 5px; }
+}

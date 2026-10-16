@@ -167,6 +167,10 @@ LaxCode/
 Cloud 模式全局最多同时处理 2 个 Chat/Resume 请求，名额覆盖整段 SSE 流和文件统计收尾。
 超出上限直接返回 HTTP 429（`SERVER_BUSY`），不排队；前端可稍后手动重试。本地模式不受此限制。
 
+可通过 `GET /api/sessions/{session_id}/performance?user_id={user_id}` 汇总本地 tracing
+日志，查看各轮 Chat/Resume 的总耗时、首输出耗时，以及 LLM 和各工具的平均耗时。
+统计口径及调用方式见 [Session 性能汇总接口](./docs/session-performance.md)。
+
 cloud 主 Agent 和子 Agent 每次 Bash 调用都使用一个新容器：`--rm --network=none
 --pull=never`，保留本次容器内的 `127.0.0.1` 回环访问。项目 WorkDir 和用户
 TempDir 挂载到容器相同的绝对路径，权限为可读写；另将

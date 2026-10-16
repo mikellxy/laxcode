@@ -167,6 +167,7 @@ func (s *server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/sessions/{session_id}/chats/{chat_id}/files.zip", s.handleDownloadChatFiles)
 	mux.HandleFunc("GET /api/sessions/{session_id}/chats/{chat_id}/file", s.handlePreviewChatFile)
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
+	mux.HandleFunc("GET /api/sessions/{session_id}/performance", s.handlePerformance)
 	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
 	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
 	mux.HandleFunc("GET /api/models", s.handleListModels)

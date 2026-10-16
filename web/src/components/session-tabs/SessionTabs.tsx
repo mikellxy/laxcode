@@ -3,6 +3,7 @@ import { ChevronRight, Folder, LoaderCircle, MessageSquare, Plus, Trash2 } from 
 import type { ContextData, ProjectDTO, SessionDTO } from "../../types/api";
 import laxcodeLogo from "../../assets/laxcode-logo.png";
 import { contextUsageLabel, sessionLabel, workDirLabel } from "./label";
+import { PerformanceMonitor } from "../performance-monitor/PerformanceMonitor";
 
 type Props = {
   cloud: boolean;
@@ -85,6 +86,7 @@ export function SessionTabs({ cloud, projects, sessionsByProject, selectedID, se
       <span>{contextUsage ? `${new Intl.NumberFormat("en-US").format(used)} tokens` : "— tokens"}</span>
       <span>{contextUsage ? contextUsageLabel(used, contextUsage.context_window) : "— used"}</span>
     </div>
+    {cloud && <PerformanceMonitor key={selectedID ?? "no-session"} sessionID={selectedID} />}
     <div className="sidebar-foot"><span className="status-dot" /> 服务连接就绪</div>
   </aside>;
 }
