@@ -46,12 +46,17 @@ type evaluationJobListDTO struct {
 	Jobs []evaluationJobDTO `json:"jobs"`
 }
 
-func evaluationToDTO(job evaluation.Job) evaluationJobDTO {
-	return evaluationJobDTO{
+func (s *server) evaluationToDTO(job evaluation.Job) evaluationJobDTO {
+	dto := evaluationJobDTO{
 		ID: job.ID, SourceSessionID: job.SourceSessionID, Requirement: job.Requirement,
 		Status: job.Status, ReportPath: job.ReportPath, Error: job.Error,
 		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt, CompletedAt: job.CompletedAt,
 	}
+	if s.userRoot != "" {
+		dto.ReportPath = ""
+		dto.Error = strings.ReplaceAll(dto.Error, s.userRoot, "")
+	}
+	return dto
 }
 
 func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +141,7 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(evaluationToDTO(job))
+	_ = json.NewEncoder(w).Encode(s.evaluationToDTO(job))
 	s.startEvaluation(job)
 }
 
@@ -157,7 +162,7 @@ func (s *server) handleListEvaluations(w http.ResponseWriter, r *http.Request) {
 	}
 	response := evaluationJobListDTO{Jobs: make([]evaluationJobDTO, len(jobs))}
 	for i := range jobs {
-		response.Jobs[i] = evaluationToDTO(jobs[i])
+		response.Jobs[i] = s.evaluationToDTO(jobs[i])
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(response)

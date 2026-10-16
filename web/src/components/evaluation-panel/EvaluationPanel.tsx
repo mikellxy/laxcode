@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ClipboardCheck, LoaderCircle, X } from "lucide-react";
 import { createEvaluation, listEvaluationJobs } from "../../api/evaluations";
 import type { EvaluationJobStatus } from "../../types/api";
+import { EvaluationReportDownload } from "./EvaluationReportDownload";
 
 const statusLabel: Record<EvaluationJobStatus, string> = {
   queued: "排队中",
@@ -48,7 +49,7 @@ export function EvaluationPanel({ sessionID, workDir, disabled }: { sessionID?: 
         {jobs.data?.jobs.map((job) => <article className="evaluation-job" key={job.id}>
           <div><span className={`evaluation-status ${job.status}`}>{statusLabel[job.status]}</span><time>{new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(job.created_at))}</time></div>
           <p>{job.requirement}</p>
-          {job.report_path && <code title={job.report_path}>{job.report_path}</code>}
+          <EvaluationReportDownload sessionID={sessionID} job={job} />
           {job.error && <small className="evaluation-error">{job.error}</small>}
         </article>)}
         {jobs.isSuccess && jobs.data.jobs.length === 0 && <p className="evaluation-empty">暂无评估任务</p>}

@@ -170,6 +170,7 @@ func (s *server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/sessions/{session_id}/performance", s.handlePerformance)
 	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
 	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
+	mux.HandleFunc("GET /api/sessions/{session_id}/evaluations/{job_id}/report", s.handleDownloadEvaluationReport)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("POST /api/models", s.handleAddModel)
 	mux.HandleFunc("POST /api/auth/chatgpt", s.handleChatGPTLogin)

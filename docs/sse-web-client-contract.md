@@ -424,8 +424,30 @@ GET /api/evaluations?session_id={session_id}
 }
 ```
 
-状态为 `queued | running | succeeded | failed`。`report_path` 仅在成功后出现，
-`error` 仅在失败后出现；前端只需在存在活跃状态时轮询。
+状态为 `queued | running | succeeded | failed`。本地模式保留成功任务的
+`report_path` 字段以兼容旧客户端，Cloud 模式省略该字段，并隐藏 `error` 中的
+UserRoot 前缀。前端按 `status == succeeded` 显示下载按钮，不依赖报告路径；
+仅在存在活跃状态时轮询。
+
+下载完整评估报告（本地与 Cloud 均可用）：
+
+```http
+GET /api/sessions/{session_id}/evaluations/{job_id}/report
+```
+
+Cloud 用户身份通过已有访客 Cookie、`X-Laxcode-User-ID` 请求头或 `user_id`
+查询参数提供。后端在当前用户数据库中校验源 Session、评估任务和归属关系，
+仅允许下载 `succeeded` 任务；根据 Job ID 在服务端拼接固定报告目录和文件名，
+不接受客户端文件路径，也不使用数据库中的绝对 `report_path` 读取文件。
+
+成功返回 `text/markdown; charset=utf-8`，设置 `Content-Disposition: attachment`
+及文件名 `{job_id}.md`、`Cache-Control: no-store`、`X-Content-Type-Options: nosniff`。
+报告完整传输，不应用文件预览接口的 256 KiB 截断限制。通过 `os.Root` 限制读取
+范围，仅允许普通文件，拒绝报告文件符号链接及目录越界。
+
+源 Session、评估任务或报告文件不存在时返回 `404`；任务未成功时返回 `409`；
+非法 ID 返回 `400`；目录越界或文件不允许读取时返回 `403`。前端显示下载中及
+失败提示，出错时不会把 JSON 错误正文保存成 Markdown。
 
 ## 6. 发起对话和接收 SSE
 

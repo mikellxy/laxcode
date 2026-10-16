@@ -93,7 +93,7 @@ API Key，数据库提交成功后才从 JSON 删除明文。新增模型同样�
 ${workdir}/eval/${session_id}/history.jsonl
 ```
 
-评估任务以 `queued`、`running`、`succeeded`、`failed` 状态保存在 SQLite 中，页面会自动轮询。完成后的 Markdown 报告写入 `${HOME}/.laxcode/eval/`，任务列表会显示 requirement、状态和报告文件路径。
+评估任务以 `queued`、`running`、`succeeded`、`failed` 状态保存在 SQLite 中，页面会自动轮询。完成后的 Markdown 报告写入 `${HOME}/.laxcode/eval/`，任务列表会显示 requirement、状态和“下载评估报告”按钮。本地与 Cloud 模式均支持完整下载，Cloud 列表响应不返回报告绝对路径。
 
 评估过程不会续聊或修改被评估任务的 session；评估器使用 `eval_${session_id}_${date_time}` 独立 session 保存自己的消息和 token 统计。
 

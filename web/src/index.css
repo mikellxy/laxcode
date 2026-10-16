@@ -81,6 +81,12 @@ button { color: inherit; }
 .chatgpt-login button:disabled { opacity: .6; cursor: default; }
 .chatgpt-login a { color: var(--ink); }
 
+.topbar .evaluation-download { display: inline-flex; align-items: center; gap: 6px; margin-top: 5px; padding: 8px 11px; border: 1px solid #d4e0d5; border-radius: 8px; background: #f0f5ef; color: #456a52; font-size: 11px; }
+.topbar .evaluation-download:hover:not(:disabled) { border-color: #9db7a2; background: #e6eee2; color: #354f3d; }
+.topbar .evaluation-download:disabled { opacity: .55; cursor: default; }
+.topbar .evaluation-download:focus-visible { outline: 2px solid #71917c; outline-offset: 2px; }
+.evaluation-job .evaluation-error { color: #b5482f; }
+
 .chat-files { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: #f7f7f2; }
 .message-body .chat-files header { justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .chat-files header span { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; }

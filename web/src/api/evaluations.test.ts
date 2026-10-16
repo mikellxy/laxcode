@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createEvaluation, listEvaluationJobs } from "./evaluations";
+import { createEvaluation, downloadEvaluationReport, listEvaluationJobs } from "./evaluations";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -19,5 +19,21 @@ describe("evaluation API", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ jobs: [] }), { status: 200 })));
     await expect(listEvaluationJobs("session with spaces")).resolves.toEqual({ jobs: [] });
     expect(fetch).toHaveBeenCalledWith("/api/evaluations?session_id=session+with+spaces", expect.any(Object));
+  });
+
+  it("downloads complete Markdown by session and job ID, without passing a file path", async () => {
+    const markdown = "# 评估报告\n" + "完整报告\n".repeat(60000);
+    const fetchMock = vi.fn(async () => new Response(markdown, { headers: { "Content-Type": "text/markdown; charset=utf-8" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const blob = await downloadEvaluationReport("session/one", "eval job");
+    expect(await blob.text()).toBe(markdown);
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session%2Fone/evaluations/eval%20job/report", { cache: "no-store" });
+  });
+
+  it("reports missing and unfinished reports as errors instead of downloading the error body", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ message: "evaluation report is not ready" }), { status: 409 })));
+    await expect(downloadEvaluationReport("session", "job")).rejects.toMatchObject({ status: 409, message: "evaluation report is not ready" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+    await expect(downloadEvaluationReport("session", "job")).rejects.toMatchObject({ status: 404, message: "报告下载失败 (404)" });
   });
 });
