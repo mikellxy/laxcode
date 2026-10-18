@@ -87,7 +87,7 @@ func TestEvaluationReportDownload(t *testing.T) {
 		}
 	}
 	rangeRequest := httptest.NewRequest(http.MethodGet, endpoint, nil)
-	rangeRequest.Header.Set("X-Laxcode-User-ID", userID)
+	rangeRequest.Header.Set("X-USERID", userID)
 	rangeRequest.Header.Set("Range", "bytes=0-9")
 	rangeResponse := httptest.NewRecorder()
 	handler.ServeHTTP(rangeResponse, rangeRequest)

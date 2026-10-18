@@ -1,4 +1,4 @@
-import { ApiError } from "./client";
+import { ApiError, request } from "./client";
 import type { ErrorPayload, StreamEvent } from "../types/api";
 
 const eventNames = new Set(["start", "reasoning", "message", "tool_call", "done", "error"]);
@@ -15,7 +15,7 @@ export function parseSSEFrame(frame: string): StreamEvent | null {
 }
 
 async function consumeSSE(url: string, init: RequestInit, signal: AbortSignal, onEvent: (event: StreamEvent) => void) {
-  const response = await fetch(url, { ...init, headers: { Accept: "text/event-stream", ...init.headers }, signal });
+  const response = await request(url, { ...init, headers: { Accept: "text/event-stream", ...init.headers }, signal });
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as ErrorPayload | null;
     throw new ApiError(payload?.message || `对话请求失败 (${response.status})`, response.status, payload?.code, payload?.retry_action);

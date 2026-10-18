@@ -27,7 +27,7 @@ describe("evaluation API", () => {
     vi.stubGlobal("fetch", fetchMock);
     const blob = await downloadEvaluationReport("session/one", "eval job");
     expect(await blob.text()).toBe(markdown);
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session%2Fone/evaluations/eval%20job/report", { cache: "no-store" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session%2Fone/evaluations/eval%20job/report", expect.objectContaining({ cache: "no-store", headers: { "X-USERID": "11111111-1111-4111-8111-111111111111" } }));
   });
 
   it("reports missing and unfinished reports as errors instead of downloading the error body", async () => {
@@ -37,3 +37,5 @@ describe("evaluation API", () => {
     await expect(downloadEvaluationReport("session", "job")).rejects.toMatchObject({ status: 404, message: "报告下载失败 (404)" });
   });
 });
+
+vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));

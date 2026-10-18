@@ -7,15 +7,11 @@
 - `internal/infrastructure/config/config.go`：`func Parse() error`
 - `internal/infrastructure/config/config.go`：`func Load(homeDir string, args []string) (Conf, error)`
 
-### 加载进程环境变量文件，为模型连接和子进程提供代理等环境配置
+### 从平台只读配置文件解析模型目录、主模型和压缩模型选择
 
-- `internal/infrastructure/config/envconf.go`：`func ApplyEnvFile(homeDir string) error`
+- `internal/infrastructure/config/config.go`：`func parseFile(configDir string) (fileConf, error)`
 
-### 从用户目录的配置文件解析模型目录、主模型和压缩模型选择
-
-- `internal/infrastructure/config/config.go`：`func parseFile(homeDir string) (fileConf, error)`
-
-### 将命令行模型参数合并为临时 provider，并覆盖主模型选择
+### 合并平台模型目录和命令行服务参数
 
 - `internal/infrastructure/config/config.go`：`func parseCLI(args []string) (cliConf, error)`
 - `internal/infrastructure/config/config.go`：`func merge(file fileConf, cli cliConf) (Conf, error)`

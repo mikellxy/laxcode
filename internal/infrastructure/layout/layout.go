@@ -34,7 +34,6 @@ const (
 	settingsFileName = "settings.json"
 
 	// envConfFileName 是用户主目录数据根下的进程环境注入文件名。
-	envConfFileName = "env.conf"
 
 	// sessionDBFileName 是全局 SQLite 会话数据库文件名。
 	sessionDBFileName = "sessions.db"
@@ -114,9 +113,6 @@ func SkillsRoot(homeDir string) string {
 // SkillsDir returns the skills directory within a configuration directory.
 func SkillsDir(configDir string) string { return filepath.Join(configDir, SkillsDirName) }
 
-// ConfigsDB contains API keys for all configurations owned by the host account.
-func ConfigsDB(hostHome string) string { return filepath.Join(Root(hostHome), "configs.db") }
-
 // UserSettings 返回用户级配置文件 ${homeDir}/.laxcode/settings.json。
 // 与工作目录布局共用 RootDirName 但根不同，故单列一个函数而非复用 Root。
 func UserSettings(homeDir string) string {
@@ -126,15 +122,11 @@ func UserSettings(homeDir string) string {
 // SettingsFile returns settings.json within a configuration directory.
 func SettingsFile(configDir string) string { return filepath.Join(configDir, settingsFileName) }
 
-// EnvConf 返回用户级进程环境注入文件 ${homeDir}/.laxcode/env.conf：每行
-// 一条 k=v，进程启动早期经 os.Setenv 注入，作为服务基础设施
-// 子进程的环境基线（网络代理等）。
-func EnvConf(homeDir string) string {
-	return filepath.Join(homeDir, RootDirName, envConfFileName)
-}
-
 // SSECodeInstance 返回浏览器代码模式的单实例文件路径。文件在服务
 // 运行期间持有排他锁，同时保存当前进程和实际 HTTP 地址。
 func SSECodeInstance(homeDir string) string {
 	return filepath.Join(Root(homeDir), sseCodeInstanceFileName)
 }
+
+// ModelSelection persists a user preference independently of the platform catalog.
+func ModelSelection(home string) string { return filepath.Join(Root(home), "model-selection.json") }

@@ -1,9 +1,12 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +57,27 @@ func swapConfigGlobals(t *testing.T) {
 
 func writeSettings(t *testing.T, home, content string) {
 	t.Helper()
+	var doc map[string]any
+	if json.Unmarshal([]byte(content), &doc) == nil {
+		for key, value := range doc {
+			if strings.EqualFold(key, "provider_list") {
+				if providers, ok := value.([]any); ok {
+					for i, v := range providers {
+						if p, ok := v.(map[string]any); ok {
+							if key, ok := p["openai_api_key"].(string); ok {
+								env := fmt.Sprintf("TEST_PROVIDER_%d", i)
+								t.Setenv(env, key)
+								p["openai_api_key"] = env
+							}
+						}
+					}
+				}
+			}
+		}
+		if b, err := json.Marshal(doc); err == nil {
+			content = string(b)
+		}
+	}
 	dir := filepath.Join(home, ".laxcode")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -129,21 +153,6 @@ func TestLoadParsesTypedProvidersAndDefaultsIndependently(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesEnvFileWithoutModelOverrides(t *testing.T) {
-	t.Setenv("LAXCODE_ENVCONF_PROBE", "inherited")
-	t.Setenv("OPENAI_MODEL_NAME", "inherited-model")
-	home := writeEnvConf(t, "LAXCODE_ENVCONF_PROBE=from-file\nOPENAI_MODEL_NAME=ignored-model\n")
-	t.Setenv("HOME", home)
-	writeSettings(t, home, `{"model":"p:chat","provider_list":[{"provider_name":"p","openai_api_key":"key","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"chat"}]}]}`)
-	conf, err := Load(home, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.Getenv("LAXCODE_ENVCONF_PROBE") != "from-file" || os.Getenv("OPENAI_MODEL_NAME") != "ignored-model" || conf.Model != "p:chat" || len(conf.ProviderList) != 1 {
-		t.Fatal("env.conf injection or file model selection changed")
-	}
-}
-
 func TestRetiredMemorySettingsDoNotBlockStartup(t *testing.T) {
 	swapConfigGlobals(t)
 	home := t.TempDir()
@@ -168,54 +177,5 @@ func TestSettingsDoNotApplyUserEnvironment(t *testing.T) {
 	}
 	if os.Getenv("LAXCODE_CLOUD_ENV_PROBE") != "server-value" {
 		t.Fatal("user env changed process environment")
-	}
-}
-
-func TestConfCopyDirFlag(t *testing.T) {
-	home := t.TempDir()
-	source := filepath.Join(t.TempDir(), "configuration source")
-	if err := os.Mkdir(source, 0700); err != nil {
-		t.Fatal(err)
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	relative, err := filepath.Rel(cwd, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, input := range []string{source, relative} {
-		conf, err := LoadSettings(home, []string{"-conf_copy_dir=" + input})
-		if err != nil || conf.ConfCopyDir != source {
-			t.Fatalf("source %q: dir=%q err=%v", input, conf.ConfCopyDir, err)
-		}
-	}
-	conf, err := LoadSettings(home, nil)
-	if err != nil || conf.ConfCopyDir != "" {
-		t.Fatalf("default copy dir: %+v %v", conf, err)
-	}
-	file := filepath.Join(home, "file")
-	if err := os.WriteFile(file, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, invalid := range []string{file, filepath.Join(home, "missing")} {
-		if _, err := LoadSettings(home, []string{"-conf_copy_dir=" + invalid}); err == nil {
-			t.Fatalf("accepted invalid source %q", invalid)
-		}
-	}
-}
-
-func TestCloudBashImageFlag(t *testing.T) {
-	for _, image := range []string{"laxcode-cloud-bash:local", "registry.example/cloud-bash:v1"} {
-		conf, err := LoadSettings(t.TempDir(), []string{"-cloud_bash_image=" + image})
-		if err != nil || conf.CloudBashImage != image {
-			t.Fatalf("image=%s conf=%+v err=%v", image, conf, err)
-		}
-	}
-	for _, image := range []string{"", "--privileged", "bad image"} {
-		if _, err := LoadSettings(t.TempDir(), []string{"-cloud_bash_image=" + image}); err == nil {
-			t.Fatalf("accepted %q", image)
-		}
 	}
 }

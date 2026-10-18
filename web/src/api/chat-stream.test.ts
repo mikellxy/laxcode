@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { vi, describe, expect, it } from "vitest";
 import { parseSSEFrame } from "./chat-stream";
 
 describe("parseSSEFrame", () => {
@@ -6,3 +6,5 @@ describe("parseSSEFrame", () => {
   it("joins multiline data", () => expect(parseSSEFrame('event: error\ndata: {"message":\ndata: "boom"}')).toEqual({ type: "error", data: { message: "boom" } }));
   it("ignores malformed and unknown events", () => { expect(parseSSEFrame("event: ping\ndata: {}" )).toBeNull(); expect(parseSSEFrame("event: done\ndata: nope")).toBeNull(); });
 });
+
+vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));

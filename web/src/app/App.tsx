@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Menu, PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
 import { getOrCreateGuestID } from "../features/identity/guest";
@@ -44,22 +44,14 @@ function WorkspaceApp() {
   };
   const messages = [...workspace.historyMessages.map(historyToMessage), ...workspace.stream.messages];
   // 模型目录与 ModelPicker 共用同一 Query 缓存：无活跃模型时锁定输入框，
-  // 点击锁定区让齿轮按钮跳动引导配置。
+  // 平台尚未配置模型时显示不可用提示。
   const models = useQuery({ queryKey: ["models"], queryFn: listModels });
   const modelLocked = models.isSuccess && !models.data.current_model;
-  const [gearBounce, setGearBounce] = useState(0);
   const selected = workspace.allSessions.find((session) => session.session_id === workspace.selectedID);
   const workDir = selected?.work_dir ?? workspace.selectedProject?.work_dir;
   const displayWorkDir = workDirLabel(workspace.selectedProject?.name);
   const projects = workspace.projects.data?.projects ?? [];
   const isFirstRun = workspace.projects.isSuccess && projects.length === 0;
-  // 主工作区首次确认尚未配置模型后，稍作停顿再提示一次，避免页面刚加载时
-  // 与其他入场动画争抢注意力；项目引导页不展示模型控件，故不提前触发。
-  useEffect(() => {
-    if (!modelLocked || !workspace.projects.isSuccess || isFirstRun) return;
-    const timer = window.setTimeout(() => setGearBounce((value) => value + 1), 500);
-    return () => window.clearTimeout(timer);
-  }, [modelLocked, workspace.projects.isSuccess, isFirstRun]);
   const connectionError = workspace.projects.error ?? workspace.sessions.error;
   if (workspace.projects.isError || workspace.sessions.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>{connectionError instanceof Error ? connectionError.message : "请确认 SSE 服务已启动。"}</p><button onClick={() => { void workspace.projects.refetch(); void workspace.sessions.refetch(); }}>重新连接</button></div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarOpen ? "mobile-sidebar-open" : ""}`}>
@@ -69,8 +61,8 @@ function WorkspaceApp() {
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏"><Menu size={20} /></button><button className="collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "打开侧边栏" : "关闭侧边栏"}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><div className="workspace-meta"><strong title={displayWorkDir}>{isFirstRun ? "欢迎使用 LaxCode" : displayWorkDir || "请选择项目"}</strong><small>{isFirstRun ? <span>创建项目后即可开始</span> : <>{selected && <span>session_id: {selected.session_id}</span>}{workspace.createSession.isPending ? <span>正在创建会话…</span> : workspace.stream.running ? <><i className="working-dot" />正在执行</> : <span>准备就绪</span>}</>}</small></div><EvaluationPanel key={selected?.session_id ?? "no-session"} sessionID={selected?.session_id} workDir={workDir} disabled={workspace.stream.running || modelLocked} /></header>
       {isFirstRun ? <ProjectOnboarding creating={workspace.createProject.isPending || workspace.createSession.isPending} onCreate={() => void createProject()} /> : <>
         <MessageList messages={messages} sessionID={workspace.selectedID} hasMore={Boolean(workspace.history.hasNextPage)} loading={workspace.history.isFetchingNextPage} initialLoading={workspace.history.isLoading} error={workspace.stream.error} retryAction={workspace.stream.retryAction} retrying={workspace.stream.running} onRetry={workspace.retry} onLoadMore={() => workspace.history.fetchNextPage()} />
-        <ModelPicker running={workspace.stream.running} bounceKey={gearBounce} />
-        <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedProject || !workspace.sessions.isSuccess || workspace.history.isLoading || workspace.createSession.isPending || (workspace.deleteSession.isPending && workspace.deleteSession.variables?.session_id === workspace.selectedID)} locked={modelLocked} onLockedClick={() => setGearBounce((value) => value + 1)} onSend={workspace.send} onCancel={workspace.cancel} />
+        <ModelPicker running={workspace.stream.running} />
+        <ChatComposer running={workspace.stream.running} disabled={!workspace.selectedProject || !workspace.sessions.isSuccess || workspace.history.isLoading || workspace.createSession.isPending || (workspace.deleteSession.isPending && workspace.deleteSession.variables?.session_id === workspace.selectedID)} locked={modelLocked} onSend={workspace.send} onCancel={workspace.cancel} />
       </>}
     </section>
     {creatingProject && <CreateProjectDialog pending={workspace.createProject.isPending} onCancel={() => setCreatingProject(false)} onCreate={async (name) => {

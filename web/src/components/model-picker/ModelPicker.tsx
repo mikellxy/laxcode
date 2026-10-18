@@ -1,21 +1,15 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Clock, Loader2, Settings } from "lucide-react";
-import { addModelRequest, listModels, modelProviders, splitModelRef, switchModelRequest } from "../../api/models";
-import type { AddModelInput, ProviderListModelDTO } from "../../types/api";
-import { AddModelDialog } from "./AddModelDialog";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Clock, Loader2 } from "lucide-react";
+import { listModels, modelProviders, splitModelRef, switchModelRequest } from "../../api/models";
+import type { ProviderListModelDTO } from "../../types/api";
 
-// ModelPicker 承载模型选择触发器与旁侧的「添加模型」齿轮按钮：齿轮直接打开
-// 添加表单；bounceKey 由父组件在用户点击被锁定的输入框时递增，驱动齿轮跳动
-// 引导配置模型。
-export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKey: number }) {
+export function ModelPicker({ running }: { running: boolean }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const menuID = useId();
-  const [adding, setAdding] = useState(false);
   const [queued, setQueued] = useState<string | null>(null);
-  const [bouncing, setBouncing] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const models = useQuery({ queryKey: ["models"], queryFn: listModels });
   const switchModel = useMutation({
@@ -30,14 +24,6 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
       setOpen(false);
     },
   });
-  const addModel = useMutation({
-    mutationFn: (input: AddModelInput) => addModelRequest(input),
-    onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: ["models"] });
-      setAdding(false);
-    },
-  });
-
   // SSE 流式期间不真正发切换请求（后端约定切换只在无进行中 Chat 时原子生效）：
   // 点击仅排队，流结束（running 由 true 变 false）后再发送排队的引用。
   useEffect(() => {
@@ -46,22 +32,6 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
     setQueued(null);
     switchModel.mutate({ ref });
   }, [running, queued, switchModel]);
-
-  // 父组件递增 bounceKey（用户点击了锁定中的输入框）时让齿轮跳动一次。
-  useEffect(() => {
-    if (!bounceKey) return;
-    // 先移除再于下一帧恢复 class，使上一轮尚未结束时再次点击也能从头播放。
-    setBouncing(false);
-    let timer: number | undefined;
-    const frame = window.requestAnimationFrame(() => {
-      setBouncing(true);
-      timer = window.setTimeout(() => setBouncing(false), 700);
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [bounceKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -88,10 +58,9 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
       {switchModel.isPending ? <Loader2 size={13} className="spin" /> : queued ? <Clock size={13} /> : open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
     </button>
     {!!selected?.reasoning_efforts?.length && <select className="reasoning-select" aria-label="思考强度" value={models.data?.current_reasoning_effort || selected.reasoning_effort || ""} disabled={running || switchModel.isPending} onChange={(event) => { if (current) switchModel.mutate({ ref: current, effort: event.target.value }); }}><option value="">模型默认</option>{selected.reasoning_efforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select>}
-    <button type="button" className={`model-gear ${bouncing ? "bounce" : ""}`} onClick={() => { addModel.reset(); setOpen(false); setAdding(true); }} aria-label="添加模型" aria-haspopup="dialog" title="添加模型"><Settings size={14} /></button>
     {open && <div id={menuID} className="model-menu" role="group" aria-label="选择模型">
       {models.isError && <button type="button" className="model-menu-state" onClick={() => models.refetch()}>加载失败，点击重试</button>}
-      {!models.isError && providers.length === 0 && <div className="model-menu-state">还没有模型，点击齿轮按钮添加</div>}
+      {!models.isError && providers.length === 0 && <div className="model-menu-state">暂无可用模型，请联系管理员</div>}
       {!models.isError && <div className="model-menu-columns">
         <ul className="model-provider-list" aria-label="提供商">
           {providers.map((provider) => <li key={provider.provider_name}>
@@ -125,6 +94,5 @@ export function ModelPicker({ running, bounceKey }: { running: boolean; bounceKe
       </div>}
       {switchModel.isError && <div className="model-menu-state error" role="alert">切换失败：{switchModel.error instanceof Error ? switchModel.error.message : "未知错误"}</div>}
     </div>}
-    {adding && <AddModelDialog saving={addModel.isPending} error={addModel.isError ? (addModel.error instanceof Error ? addModel.error.message : "保存失败") : undefined} onCancel={() => { addModel.reset(); setAdding(false); }} onSubmit={(input) => addModel.mutate(input)} />}
   </div>;
 }

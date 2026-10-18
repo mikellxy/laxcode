@@ -129,7 +129,7 @@ export function getOrCreateGuestID(): string {
 
 `user_id` 和新建 Session 返回的 `session_id` 都是 UUID。
 
-当前 `/chat` 和历史消息接口不校验 `user_id` 归属。前端必须只使用当前游客通过 Session 列表接口取得的 `session_id`，但这不是服务端安全隔离。
+所有业务接口必须携带 `X-USERID` UUID 请求头。proxy 将请求转发到该用户的独立沙箱，cloud 校验身份并只访问该用户数据库；UUID 仍不是登录凭据。
 
 ## 2. 前端统一消息模型
 
@@ -229,7 +229,7 @@ GET /api/sessions?user_id={UUID}&project_id={PROJECT_ID}&limit=20
 GET /api/sessions?user_id={UUID}&project_id={PROJECT_ID}&limit=20&before_session_id={上一页的next_before_session_id}
 ```
 
-- `user_id`：必填，必须是 UUID。
+- `user_id`：兼容字段，可省略；提供时必须与 `X-USERID` 一致。
 - `project_id`：必填，只返回该项目下的 Session。
 - `limit`：可选，默认 `20`，范围 `1..100`。
 - `before_session_id`：可选，排他游标。
@@ -333,33 +333,11 @@ GET /api/sessions/{session_id}/messages?limit=50&before_seq={上一页的next_be
 - `tool` 只返回 `tool_summary`，不会返回工具执行结果。
 - JSON 中带 `omitempty` 的空字段可能不存在，前端应使用空字符串作为默认值。
 
-## 5.1 模型目录与新增模型
+## 5.1 平台模型目录与用户选择
 
-模型菜单通过 `GET /api/models` 获取当前模型和可切换目录。新增模型使用：
-
-```http
-POST /api/models
-Content-Type: application/json
-```
-
-```json
-{
-  "provider": "openai",
-  "model": "gpt-5",
-  "api_key": "sk-...",
-  "base_url": "https://api.openai.com/v1",
-  "context_window": 200000,
-  "max_output_tokens": 16384
-}
-```
-
-成功返回 `201 Created`，响应只包含 `model_name` 和 `model_ref`，不会回传 API
-Key 或 Base URL。服务端将配置原子写入 `~/.laxcode/settings.json`，文件权限为
-`0600`，并立即更新当前进程的模型目录，但不自动切换当前模型。
-
-API Key 和 Base URL 是 provider 级配置。同名 provider 已存在时，传入值必须与
-已有配置一致；不一致或模型重名返回 `409`。名称或 token 上限非法返回 `400`。
-输出 token 必须小于上下文大小。
+`GET /api/models` 返回管理员预置的当前模型和可切换目录，不返回 API Key 或 Base URL。
+`POST /api/model` 通过 `provider`、`model` 和可选 `reasoning_effort` 切换；选择持久化到当前用户目录。
+`POST /api/models` 已移除（返回 405），用户不能新增模型或凭据。平台模型目录由部署配置生成，只读挂载到每个沙箱。
 
 ## 5.2 异步评估任务
 
@@ -414,8 +392,8 @@ UserRoot 前缀。前端按 `status == succeeded` 显示下载按钮，不依赖
 GET /api/sessions/{session_id}/evaluations/{job_id}/report
 ```
 
-Cloud 用户身份通过已有访客 Cookie、`X-Laxcode-User-ID` 请求头或 `user_id`
-查询参数提供。后端在当前用户数据库中校验源 Session、评估任务和归属关系，
+Cloud 用户身份必须通过 `X-USERID` 请求头提供。浏览器从访客 Cookie 读取 UUID 并设置请求头。
+旧接口中的 `user_id` 可省略，提供时必须与请求头一致。后端在当前用户数据库中校验源 Session、评估任务和归属关系，
 仅允许下载 `succeeded` 任务；根据 Job ID 在服务端拼接固定报告目录和文件名，
 不接受客户端文件路径，也不使用数据库中的绝对 `report_path` 读取文件。
 

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/spf13/viper"
@@ -21,8 +19,7 @@ type Conf struct {
 	ProviderList    []Provider
 	Addr            string
 	Plan            bool
-	CloudBashImage  string
-	ConfCopyDir     string
+	SettingsDir     string
 }
 
 type Provider struct {
@@ -69,14 +66,13 @@ type fileConf struct {
 }
 
 type cliConf struct {
-	Addr           string `mapstructure:"addr"`
-	Plan           bool   `mapstructure:"plan"`
-	CloudBashImage string `mapstructure:"cloud_bash_image"`
-	ConfCopyDir    string `mapstructure:"conf_copy_dir"`
+	Addr        string `mapstructure:"addr"`
+	Plan        bool   `mapstructure:"plan"`
+	SettingsDir string
 }
 
 const (
-	DefaultSSEAddr         = "127.0.0.1:8090"
+	DefaultSSEAddr         = "127.0.0.1:8080"
 	DefaultContextWindow   = 200_000
 	DefaultMaxOutputTokens = 16_384
 )
@@ -102,33 +98,23 @@ func Parse() error {
 }
 
 func Load(homeDir string, args []string) (Conf, error) {
-	if err := ApplyEnvFile(homeDir); err != nil {
-		return Conf{}, err
-	}
+	return LoadSettings(homeDir, args)
+}
+
+// LoadSettings reads the platform catalog and resolves OpenShell environment references.
+func LoadSettings(homeDir string, args []string) (Conf, error) {
 	return LoadSettingsFromDir(layout.Root(homeDir), args)
 }
 
-// LoadSettings hydrates API keys and migrates legacy plaintext outside cloud templates.
-// It does not change the process environment.
-func LoadSettings(homeDir string, args []string) (Conf, error) {
-	configDir := layout.Root(homeDir)
-	conf, err := LoadSettingsFromDir(configDir, args)
-	if err != nil {
-		return Conf{}, err
-	}
-	if err := migrateAPIKeys(configDir, conf.ProviderList); err != nil {
-		return Conf{}, err
-	}
-	return conf, nil
-}
-
-// LoadSettingsFromDir reads a template without rewriting it or applying env.conf.
 func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
-	file, err := parseFile(configDir)
+	cli, err := parseCLI(args)
 	if err != nil {
 		return Conf{}, err
 	}
-	cli, err := parseCLI(args)
+	if cli.SettingsDir != "" {
+		configDir = cli.SettingsDir
+	}
+	file, err := parseFile(configDir)
 	if err != nil {
 		return Conf{}, err
 	}
@@ -136,7 +122,7 @@ func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
 	if err != nil {
 		return Conf{}, err
 	}
-	if err := LoadProviderAPIKeys(configDir, conf.ProviderList); err != nil {
+	if err := LoadProviderAPIKeys(conf.ProviderList); err != nil {
 		return Conf{}, err
 	}
 	return conf, nil
@@ -179,8 +165,7 @@ func parseCLI(args []string) (cliConf, error) {
 	}
 	flags.StringVar(&cli.Addr, "addr", DefaultSSEAddr, "Web backend listen address")
 	flags.BoolVar(&cli.Plan, "plan", false, "enable plan mode")
-	flags.StringVar(&cli.CloudBashImage, "cloud_bash_image", "laxcode-cloud-bash:local", "prebuilt local image for cloud Bash (never pulled at runtime)")
-	flags.StringVar(&cli.ConfCopyDir, "conf_copy_dir", "", "cloud initialization source containing settings.json and skills (default: service home/.laxcode)")
+	flags.StringVar(&cli.SettingsDir, "settings_dir", "", "read-only platform catalog directory")
 	if err := flags.Parse(args); err != nil {
 		return cliConf{}, err
 	}
@@ -195,24 +180,7 @@ func merge(file fileConf, cli cliConf) (Conf, error) {
 	conf.Model, conf.CompactionModel = file.Model, file.CompactionModel
 	conf.ProviderList = file.ProviderList
 	conf.Addr, conf.Plan = cli.Addr, cli.Plan
-	conf.CloudBashImage = strings.TrimSpace(cli.CloudBashImage)
-	if conf.CloudBashImage == "" || strings.HasPrefix(conf.CloudBashImage, "-") || strings.ContainsAny(conf.CloudBashImage, " \t\r\n") {
-		return Conf{}, errors.New("cloud_bash_image must be a non-empty Docker image reference")
-	}
-	if cli.ConfCopyDir != "" {
-		dir, err := filepath.Abs(cli.ConfCopyDir)
-		if err != nil {
-			return Conf{}, fmt.Errorf("resolve conf_copy_dir: %w", err)
-		}
-		info, err := os.Stat(dir)
-		if err != nil {
-			return Conf{}, fmt.Errorf("stat conf_copy_dir: %w", err)
-		}
-		if !info.IsDir() {
-			return Conf{}, errors.New("conf_copy_dir must be a directory")
-		}
-		conf.ConfCopyDir = dir
-	}
+	conf.SettingsDir = cli.SettingsDir
 	for i := range conf.ProviderList {
 		for j := range conf.ProviderList[i].ModelList {
 			model := &conf.ProviderList[i].ModelList[j]

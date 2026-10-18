@@ -1,3 +1,4 @@
+import { request } from "./client";
 import { ApiError, requestJSON } from "./client";
 import type { HistoryPageDTO } from "../types/api";
 
@@ -8,7 +9,7 @@ export const listHistory = (sessionID: string, before?: number) => {
 };
 
 export async function downloadChatFiles(sessionID: string, chatID: string): Promise<Blob> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionID)}/chats/${encodeURIComponent(chatID)}/files.zip`);
+  const response = await request(`/api/sessions/${encodeURIComponent(sessionID)}/chats/${encodeURIComponent(chatID)}/files.zip`);
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { message?: string } | null;
     throw new ApiError(payload?.message || `下载失败 (${response.status})`, response.status);
@@ -20,7 +21,7 @@ export type ChatFilePreview = { kind: "text"; content: string; truncated: boolea
 
 export async function readChatFile(sessionID: string, chatID: string, path: string, signal: AbortSignal): Promise<ChatFilePreview> {
   const query = new URLSearchParams({ path });
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionID)}/chats/${encodeURIComponent(chatID)}/file?${query}`, { signal, cache: "no-store" });
+  const response = await request(`/api/sessions/${encodeURIComponent(sessionID)}/chats/${encodeURIComponent(chatID)}/file?${query}`, { signal, cache: "no-store" });
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { message?: string } | null;
     throw new ApiError(payload?.message || `预览失败 (${response.status})`, response.status);

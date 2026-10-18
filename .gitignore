@@ -28,4 +28,9 @@ web/vite.config.d.ts
 
 # Retired knowledge pipeline local environments and data
 /knowledge-pipeline/
-/nas/
+/deploy/defaults/settings.json
+
+/deploy/__pycache__/
+
+/deploy/laxcode.tar.gz
+/deploy/laxcode.tar.gz.tmp

@@ -61,7 +61,7 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 	}
 	if s.modelMissing() {
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
-			"no model is configured; add one with the model picker (gear) first", "")
+			"no platform model is configured; contact the administrator", "")
 		return
 	}
 	var req createEvaluationRequest
@@ -165,8 +165,10 @@ func (s *server) handleListEvaluations(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) startEvaluation(job evaluation.Job) {
 	s.evaluationWG.Add(1)
+	s.activeEvaluations.Add(1)
 	go func() {
 		defer s.evaluationWG.Done()
+		defer s.activeEvaluations.Add(-1)
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", fmt.Sprintf("evaluation worker panicked: %v", recovered))

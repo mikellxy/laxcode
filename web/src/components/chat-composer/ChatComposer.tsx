@@ -5,10 +5,7 @@ import { listSkills } from "../../api/skills";
 import { shouldSubmitOnKeyDown } from "./keyboard";
 import { searchSkills, taskWithSkills, trailingSkillQuery } from "./skills";
 
-// locked 表示「尚无可用模型」：输入框锁定为不可输入，点击输入区通过
-// onLockedClick 通知父组件（驱动模型齿轮跳动引导配置）；与 disabled
-// （无会话等临时不可用）区分，提示文案不同。
-export function ChatComposer({ running, disabled, locked, onLockedClick, onSend, onCancel }: { running: boolean; disabled: boolean; locked: boolean; onLockedClick?: () => void; onSend: (value: string) => void; onCancel: () => void }) {
+export function ChatComposer({ running, disabled, locked, onSend, onCancel }: { running: boolean; disabled: boolean; locked: boolean; onSend: (value: string) => void; onCancel: () => void }) {
   const [value, setValue] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -85,8 +82,7 @@ export function ChatComposer({ running, disabled, locked, onLockedClick, onSend,
     aria-activedescendant={menuOpen ? `${menuID}-${activeOption}` : undefined}
     disabled={disabled && !locked}
     readOnly={locked}
-    placeholder={locked ? "请先点击齿轮按钮配置模型…" : "给 LaxCode 发送任务…"}
-    onPointerDown={locked ? (event) => { event.preventDefault(); onLockedClick?.(); } : undefined}
+    placeholder={locked ? "暂无可用模型，请联系管理员…" : "给 LaxCode 发送任务…"}
     onChange={(event) => { setValue(event.target.value); setActiveIndex(0); setDismissed(false); }}
     onFocus={() => setDismissed(false)}
     onBlur={() => setDismissed(true)}

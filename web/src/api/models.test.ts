@@ -38,3 +38,5 @@ describe("splitModelRef", () => {
   it("splits on the first colon", () => expect(splitModelRef("prov:mo:del")).toEqual({ provider: "prov", model: "mo:del" }));
   it("rejects malformed refs", () => { expect(splitModelRef("no-colon")).toBeNull(); expect(splitModelRef(":leading")).toBeNull(); expect(splitModelRef("trailing:")).toBeNull(); });
 });
+
+vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));

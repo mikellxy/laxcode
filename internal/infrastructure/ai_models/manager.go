@@ -2,7 +2,11 @@
 package ai_models
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
+	"os"
 	"strings"
 	"sync"
 
@@ -37,6 +41,31 @@ func New(homeDir string, conf config.Conf) (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{homeDir: homeDir, state: s}, nil
+}
+
+// LoadSelection restores the user preference over the deployment catalog at startup.
+func (m *Manager) LoadSelection() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, err := os.ReadFile(layout.ModelSelection(m.homeDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var saved struct {
+		Model  string `json:"model"`
+		Effort string `json:"reasoning_effort"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return fmt.Errorf("read model selection: %w", err)
+	}
+	// A removed model falls back to the platform default after an upgrade.
+	if _, err := m.state.selection(saved.Model, saved.Effort); err != nil {
+		return nil
+	}
+	return m.state.setActiveModel(saved.Model, saved.Effort)
 }
 
 func (c *modelState) initializeSelection() error {
@@ -125,7 +154,23 @@ func (m *Manager) Compaction() ResolvedModel {
 func (m *Manager) SetActiveModel(ref string, effort ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.state.setActiveModel(ref, effort...)
+	candidate := m.state
+	if err := candidate.setActiveModel(ref, effort...); err != nil {
+		return err
+	}
+	dir := layout.Root(m.homeDir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(map[string]string{"model": candidate.active.Ref, "reasoning_effort": candidate.active.ReasoningEffort})
+	if err != nil {
+		return err
+	}
+	if err := config.WriteSettingsAtomic(layout.ModelSelection(m.homeDir), data); err != nil {
+		return err
+	}
+	m.state = candidate
+	return nil
 }
 
 // ProviderInfo deliberately omits credentials and endpoints from catalog reads.

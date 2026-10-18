@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,7 @@ const maxBodyBytes = 1 << 20
 // server 承载 sse 模式的 HTTP 编排。assemble 字段默认 agentasm.Assemble，测试可
 // 注入 fake 以覆盖装配失败 / 完整流路径而不依赖真实 LLM provider。
 type server struct {
+	userID             string
 	tracer             telemetry.Tracer
 	userRoot           string
 	tempDir            string
@@ -55,6 +57,7 @@ type server struct {
 	evaluationCtx      context.Context
 	evaluationCancel   context.CancelFunc
 	evaluationWG       sync.WaitGroup
+	activeEvaluations  atomic.Int32
 	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
 	models   *ai_models.Manager
 	switcher *agentasm.ModelSwitcher
@@ -116,7 +119,7 @@ func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	userID, err := parseUserID(req.UserID)
+	userID, err := s.requestUserID(req.UserID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
@@ -154,7 +157,7 @@ func (s *server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
 		return
 	}
-	userID, err := parseUserID(r.URL.Query().Get("user_id"))
+	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
@@ -197,7 +200,7 @@ func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
 		return
 	}
-	userID, err := parseUserID(r.URL.Query().Get("user_id"))
+	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
@@ -271,7 +274,7 @@ func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	userID, err := parseUserID(req.UserID)
+	userID, err := s.requestUserID(req.UserID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
@@ -334,7 +337,7 @@ func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
 		return
 	}
-	userID, err := parseUserID(r.URL.Query().Get("user_id"))
+	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return
@@ -394,16 +397,6 @@ type providerListModelDTO struct {
 	Providers              []providerModelsDTO `json:"providers"`
 }
 
-type addModelRequest struct {
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	APIKey          string `json:"api_key"`
-	BaseURL         string `json:"base_url"`
-	ContextWindow   int    `json:"context_window"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-}
-
 // handleListModels 处理 GET /api/models：返回 ai_models.Manager.List() 的
 // 脱敏视图（各 provider 的 ModelList）与当前生效模型引用，供客户端做模型
 // 选择、切换与展示，不暴露凭据与端点。
@@ -430,53 +423,6 @@ func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 	s.switcher.RUnlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(response)
-}
-
-// handleAddModel 将新模型写入用户级 settings.json，并同步更新当前进程的
-// 模型目录。写入与模型切换/对话共用 switcher 写锁，避免目录在读取中突变。
-func (s *server) handleAddModel(w http.ResponseWriter, r *http.Request) {
-	var req addModelRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	s.switcher.Lock()
-	// 延迟配置场景：此前没有任何模型，AddModelToSettings 会把新模型自动
-	// 激活为运行时配置；路由器尚无上游 client，需在同一把写锁内
-	// 同步替换，保证紧随其后的 /chat 即可用。
-	hadActiveModel := strings.TrimSpace(s.models.Active().Ref) != ""
-	model, err := s.models.AddModelToSettings(ai_models.AddModelInput{
-		ReasoningEffort: req.ReasoningEffort,
-		Provider:        req.Provider, Model: req.Model, APIKey: req.APIKey, BaseURL: req.BaseURL,
-		ContextWindow: req.ContextWindow, MaxOutputTokens: req.MaxOutputTokens,
-	})
-	if err == nil && !hadActiveModel {
-		if err = s.switcher.SwitchModelLocked(strings.TrimSpace(req.Provider) + ":" + model.ModelName); err != nil {
-			s.switcher.Unlock()
-			writeJSONError(w, http.StatusInternalServerError, "model saved but activation failed: "+err.Error())
-			return
-		}
-	}
-	s.switcher.Unlock()
-	if err != nil {
-		switch {
-		case errors.Is(err, ai_models.ErrInvalidModelConfig):
-			writeJSONError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, ai_models.ErrModelAlreadyExists), errors.Is(err, ai_models.ErrProviderCredentialsConflict):
-			writeJSONError(w, http.StatusConflict, err.Error())
-		default:
-			writeJSONError(w, http.StatusInternalServerError, "save model failed: "+err.Error())
-		}
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(modelConfigDTO{
-		ModelName: model.ModelName,
-		ModelRef:  strings.TrimSpace(req.Provider) + ":" + model.ModelName,
-	})
 }
 
 // switchModelRequest 是 POST /api/model 的请求体：provider 与 model 拼成
@@ -713,7 +659,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.modelMissing() {
 		trace.err = errors.New("no model is configured")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
-			"no model is configured; add one with the model picker (gear) first", RetryActionResend)
+			"no platform model is configured; contact the administrator", RetryActionResend)
 		return
 	}
 
@@ -840,7 +786,7 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 	if s.modelMissing() {
 		trace.err = errors.New("no model is configured")
 		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeModelRequired,
-			"no model is configured; add one with the model picker (gear) first", RetryActionResume)
+			"no platform model is configured; contact the administrator", RetryActionResume)
 		return
 	}
 
@@ -953,4 +899,14 @@ func (s *sessionLocks) TryLock(id string) (func(), bool) {
 		return nil, false
 	}
 	return l.Unlock, true
+}
+
+func (s *server) requestUserID(legacy string) (string, error) {
+	if s.userID == "" {
+		return parseUserID(legacy)
+	}
+	if legacy != "" && legacy != s.userID {
+		return "", errors.New("conflicting user identities")
+	}
+	return s.userID, nil
 }

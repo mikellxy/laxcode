@@ -21,3 +21,5 @@ describe("performance API", () => {
     expect(error).toMatchObject({ status: 404, code: "TRACE_LOG_UNAVAILABLE", message: "本地 tracing 日志不存在" });
   });
 });
+
+vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));

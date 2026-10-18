@@ -8,7 +8,7 @@ it("downloads the chat ZIP without submitting client file paths", async () => {
   vi.stubGlobal("fetch", fetch);
   const blob = await downloadChatFiles("session/one", "chat/one");
   expect(await blob.text()).toBe("zip-content");
-  expect(fetch).toHaveBeenCalledWith("/api/sessions/session%2Fone/chats/chat%2Fone/files.zip");
+  expect(fetch).toHaveBeenCalledWith("/api/sessions/session%2Fone/chats/chat%2Fone/files.zip", expect.objectContaining({headers: { "X-USERID": "11111111-1111-4111-8111-111111111111" }}));
 });
 
 it("reports missing files to the file card", async () => {
@@ -45,3 +45,5 @@ it("reports server-side preview limits and file errors", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "图片超过 10 MiB，请下载后查看" }), { status: 413 })));
   await expect(readChatFile("s", "c", "demo/a.png", new AbortController().signal)).rejects.toMatchObject({ status: 413, message: "图片超过 10 MiB，请下载后查看" });
 });
+
+vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));

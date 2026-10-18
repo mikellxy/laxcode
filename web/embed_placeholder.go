@@ -1,6 +1,6 @@
 //go:build !webdist
 
-// Package webui exposes the browser bundle to the standalone web server.
+// Package webui exposes the browser bundle to the cloud proxy.
 package webui
 
 import (

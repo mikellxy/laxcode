@@ -1,9 +1,8 @@
 import { requestJSON } from "./client";
-import type { AddModelInput, ModelDTO, ProviderListModelDTO, ProviderModelsDTO, SwitchModelDTO } from "../types/api";
+import type { ProviderListModelDTO, ProviderModelsDTO, SwitchModelDTO } from "../types/api";
 
 export const listModels = () => requestJSON<ProviderListModelDTO>("/api/models");
 export const switchModelRequest = (provider: string, model: string, reasoning_effort?: string) => requestJSON<SwitchModelDTO>("/api/model", { method: "POST", body: JSON.stringify({ provider, model, reasoning_effort }) });
-export const addModelRequest = (input: AddModelInput) => requestJSON<ModelDTO>("/api/models", { method: "POST", body: JSON.stringify(input) });
 
 export const modelProviders = (payload: ProviderListModelDTO): ProviderModelsDTO[] => payload.providers
   .filter((provider) => provider.model_list.length > 0)

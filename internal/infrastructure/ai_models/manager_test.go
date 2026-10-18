@@ -46,6 +46,23 @@ func modelSettings(provider, model string) string {
 
 func writeSettings(t *testing.T, home string, content string) {
 	t.Helper()
+	var doc map[string]any
+	if json.Unmarshal([]byte(content), &doc) == nil {
+		if providers, ok := doc["provider_list"].([]any); ok {
+			for i, v := range providers {
+				if p, ok := v.(map[string]any); ok {
+					if key, ok := p["openai_api_key"].(string); ok {
+						env := fmt.Sprintf("TEST_PROVIDER_%d", i)
+						t.Setenv(env, key)
+						p["openai_api_key"] = env
+					}
+				}
+			}
+		}
+		if b, err := json.Marshal(doc); err == nil {
+			content = string(b)
+		}
+	}
 	dir := filepath.Join(home, ".laxcode")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir settings dir: %v", err)

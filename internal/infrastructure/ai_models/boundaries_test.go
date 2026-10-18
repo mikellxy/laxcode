@@ -2,8 +2,6 @@ package ai_models
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -51,48 +49,6 @@ func TestManagersAndCatalogViewsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestCatalogMutationPreservesEffortAndFailurePreservesState(t *testing.T) {
-	swapConfigGlobals(t)
-	home := t.TempDir()
-	raw := json.RawMessage(`[{"provider_name":"p","openai_api_key":"secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"gpt-6.1-sol","reasoning_effort":"medium"}]}]`)
-	writeSettings(t, home, `{"provider_list":`+string(raw)+`}`)
-	models, err := New(home, fixtureConf(t, raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := models.SetActiveModel("p:gpt-6.1-sol", "high"); err != nil {
-		t.Fatal(err)
-	}
-	input := AddModelInput{Provider: "p", Model: "other", APIKey: "secret", BaseURL: "https://example.com/v1", ContextWindow: 100000, MaxOutputTokens: 8000}
-	added, err := models.AddModelToSettings(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	added.Limit.Context = 1
-	resolved, err := models.Resolve("p:other")
-	if err != nil || resolved.ContextWindow != 100000 {
-		t.Fatal("returned model exposes live catalog limits")
-	}
-	if models.Active().ReasoningEffort != "high" || models.Compaction().ReasoningEffort != "high" {
-		t.Fatal("adding another model reset runtime effort")
-	}
-	before := models.Active()
-	path := filepath.Join(home, ".laxcode", "settings.json")
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	input.Model = "failed"
-	if _, err := models.AddModelToSettings(input); err == nil {
-		t.Fatal("failed settings read was ignored")
-	}
-	if models.Active() != before || len(models.List()[0].ModelList) != 2 {
-		t.Fatal("failed persistence changed runtime catalog")
-	}
-}
-
 func TestEmptyProviderAndInvalidLimitAreRejected(t *testing.T) {
 	swapConfigGlobals(t)
 	for _, raw := range []string{
@@ -102,5 +58,38 @@ func TestEmptyProviderAndInvalidLimitAreRejected(t *testing.T) {
 		if _, err := New(t.TempDir(), fixtureConf(t, []byte(raw))); err == nil {
 			t.Fatal("invalid directory accepted")
 		}
+	}
+}
+
+func TestSelectionSurvivesRestartAndCatalogRemoval(t *testing.T) {
+	conf := fixtureConf(t, []byte(`[{"provider_name":"p","openai_api_key":"secret","openai_base_url":"https://example.com/v1","model_list":[{"model_name":"default"},{"model_name":"other"}]}]`))
+	home := t.TempDir()
+	first, err := New(home, conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = first.SetActiveModel("p:other"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(home, conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = second.LoadSelection(); err != nil {
+		t.Fatal(err)
+	}
+	if second.Active().Ref != "p:other" {
+		t.Fatal("user selection lost")
+	}
+	conf.ProviderList[0].ModelList = conf.ProviderList[0].ModelList[:1]
+	third, err := New(home, conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = third.LoadSelection(); err != nil {
+		t.Fatal(err)
+	}
+	if third.Active().Ref != "p:default" {
+		t.Fatal("removed model did not fall back")
 	}
 }

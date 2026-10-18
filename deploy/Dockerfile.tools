@@ -17,7 +17,10 @@ RUN ln -s /opt/laxcode-excalidraw/node_modules/mcp-excalidraw-server/dist/bin.js
     && node --version \
     && excalidraw-canvas --version
 
-ENV GOTOOLCHAIN=local GOPROXY=off PIP_NO_INDEX=1 HOME=/tmp/agenthome
+ENV GOTOOLCHAIN=local GOPROXY=off PIP_NO_INDEX=1 HOME=/workplace/agenthome
+RUN mkdir -p /sandbox && chown 1000:1000 /sandbox
+WORKDIR /sandbox
 USER 1000:1000
 ENTRYPOINT []
+
 CMD ["/bin/bash"]

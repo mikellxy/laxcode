@@ -1,0 +1,9 @@
+{
+  "model": "ark:glm-5.3-flash",
+  "provider_list": [{
+    "provider_name": "ark",
+    "openai_base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "openai_api_key": "REPLACE_WITH_REAL_KEY",
+    "model_list": [{"model_name": "glm-5.3-flash", "limit": {"context": 1048576, "output": 131072}}]
+  }]
+}

@@ -1,5 +1,4 @@
 package tools
 
-const CloudBashEnvironment = "cloud Bash 每次在一个全新的 Linux Docker 沙箱中执行，项目工作目录与用户临时目录可读写，Skills 包目录以相同绝对路径只读挂载，可以读取和执行其中的脚本及包内资源；agenthome 中的其他配置和会话数据不挂载。查看 Skills 定义时优先使用 grep、glob 定位，再用 read_file 读取；执行 Skills 脚本时使用 Bash 和 Skills 的真实绝对路径，不要使用 $HOME 拼接 Skills 路径。Skills 源文件不能修改，脚本生成的文件、缓存和临时数据必须写入项目目录或 $TMPDIR；依赖仍需镜像预装。容器没有外部网络，只能访问本次容器内的 IPv4 回环地址 127.0.0.1。启动服务、等待就绪、执行测试、结束服务必须在同一次 Bash 调用中完成，后台进程不会跨调用保留；测试完成后结束本次脚本，容器退出会回收服务进程。项目和挂载 tmp 中的文件可以保留；未挂载目录里的安装结果、环境修改随容器删除而丢失。HOME 是容器内临时目录，TMPDIR/TMP/TEMP 是挂载的用户临时目录。"
-
-const CloudBashOfflineHint = "Bash 沙箱没有联外网权限。请结合原始输出判断：若错误涉及下载依赖、DNS、远程仓库或外部 API，使用容器内已有工具、标准库或本地依赖实现；这里的本机实现仅指容器内的本地实现，禁止绕到宿主机执行。确认受网络限制后，不要重复下载、切换镜像源或反复尝试同类联网操作。无法执行的构建、测试或功能验证，应向用户明确说明未验证项目和阻塞原因，并给出在具备网络与依赖的环境中自行验证的具体命令。普通代码错误仍需修复，模拟结果不能当作真实验证通过。"
+const CloudBashEnvironment = "Bash 直接运行在当前用户的 OpenShell Linux 沙箱内，项目工作目录为 /workplace/{project_name}，HOME 为 /workplace/agenthome，TMPDIR 是用户临时目录。每次调用启动独立 shell；环境变量和 cd 不跨调用保留，文件会保留。调用结束会清理该调用的后台子进程；启动服务、测试和结束服务应在同一次 Bash 调用完成。不要修改会话数据库或平台配置。Skills 脚本生成的文件和缓存应写入项目目录或 TMPDIR。"
+const CloudBashOfflineHint = "网络访问由 OpenShell 策略控制。遇到策略拒绝、下载失败或缺少依赖时，优先使用镜像内工具和现有依赖；不要绕过沙箱或反复更换地址规避策略。明确说明无法完成的验证，不能把模拟结果当作真实测试通过。"

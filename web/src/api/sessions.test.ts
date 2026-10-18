@@ -16,3 +16,5 @@ it("keeps deletion failures available to the UI", async () => {
   await expect(deleteSession("user", "session")).rejects.toMatchObject({ message: "会话正在执行", status: 409 });
   await expect(deleteSession("user", "session")).rejects.toBeInstanceOf(ApiError);
 });
+
+vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));

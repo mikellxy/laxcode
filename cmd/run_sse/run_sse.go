@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -55,7 +54,10 @@ func run(codeInstance *CodeInstanceGuard) error {
 		}()
 	}
 
-	users := newCloudUsers(homeDir, tracer)
+	users, err := newCloudService(homeDir, os.Getenv("LAXCODE_USER_ID"), config.Current, tracer)
+	if err != nil {
+		return err
+	}
 	defer users.Close()
 
 	// ctx 由 SIGINT/SIGTERM 取消，驱动优雅关闭。
@@ -77,8 +79,7 @@ func run(codeInstance *CodeInstanceGuard) error {
 		return nil
 	}
 
-	fmt.Printf("LaxCode cloud prototype listening on %s (users: %s)\n", actualAddr, filepath.Join(homeDir, "laxcode"))
-	fmt.Printf("Cloud Chat/Resume in-flight limit: %d\n", cloudMaxInFlightChats)
+	fmt.Printf("LaxCode cloud prototype listening on %s (users: %s)\n", actualAddr, users.server.userRoot)
 	fmt.Printf(">>> create a project and session, then POST /chat with its session_id\n")
 
 	// 监听在独立 goroutine：ListenAndServe 阻塞至服务关闭；ErrServerClosed 是
@@ -129,7 +130,6 @@ func (s *server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
 	mux.HandleFunc("GET /api/sessions/{session_id}/evaluations/{job_id}/report", s.handleDownloadEvaluationReport)
 	mux.HandleFunc("GET /api/models", s.handleListModels)
-	mux.HandleFunc("POST /api/models", s.handleAddModel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	return mux

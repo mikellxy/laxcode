@@ -12,11 +12,10 @@ Cloud 页面选中会话后，可点击左侧 Context 区块下的「性能监�
 GET /api/sessions/{session_id}/performance?user_id={user_id}
 ```
 
-也可以用 `X-Laxcode-User-ID` 请求头或已有访客 Cookie 提供用户身份，与现有
-Cloud 接口一致；同时提供的身份必须一致。Session 必须存在于该用户的数据库中。
+必须用 `X-USERID` UUID 请求头提供用户身份；查询参数 `user_id` 可省略，提供时必须与请求头一致。Session 必须存在于该用户的数据库中。
 
 ```sh
-curl --fail-with-body \
+curl --fail-with-body -H 'X-USERID: 94f4ba61-ba3d-416c-8b55-2ce315dbf7ca' \
   'http://127.0.0.1:5173/api/sessions/c113bd38-a82d-43f3-adcd-c90dca7bccb9/performance?user_id=94f4ba61-ba3d-416c-8b55-2ce315dbf7ca'
 ```
 

@@ -1,3 +1,5 @@
+> 历史方案记录：当前实现已改为整个 laxcode-cloud 运行在 OpenShell 沙箱内，Bash 直接执行 shell。以下是迁移前的评估，不是当前部署说明。
+
 # 用 crun 替代 Docker CLI 执行 Bash Tool：优势与实现难点
 
 日期：2026-10-15。状态：方案评估，暂不实施。本文以 LaxCode 当前 `DockerRunner` 为比较基线，未进行 crun 性能或隔离实测。

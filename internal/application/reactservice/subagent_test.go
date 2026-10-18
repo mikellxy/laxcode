@@ -469,7 +469,7 @@ func TestCloudSubAgentPathDisplayRules(t *testing.T) {
 	if out := childSysPrompt(t, repo); !strings.Contains(out, tools.CloudBashEnvironment) || !strings.Contains(out, tools.CloudBashOfflineHint) {
 		t.Fatal("child lacks cloud Bash guidance")
 	}
-	if out := childSysPrompt(t, repo); !strings.Contains(out, sa.deps.SkillsRoot) || !strings.Contains(out, "只读挂载") {
+	if out := childSysPrompt(t, repo); !strings.Contains(out, sa.deps.SkillsRoot) || !strings.Contains(out, "OpenShell") {
 		t.Fatal("child lacks read-only Skills mount path")
 	}
 }

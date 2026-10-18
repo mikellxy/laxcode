@@ -1,11 +1,8 @@
 # 配置文件使用说明
 
-配置模板：[settings.json](./settings.json)。将模板复制到 `~/.laxcode/settings.json`，再替换模型名、API Key 和服务地址：
+云端管理员配置位于 `deploy/defaults/settings.json`，可从 `deploy/defaults/settings.example.json` 复制。填写真实 API Key 后随发布包传到宿主机，用于注册 provider；不要提交到 Git，也不要放入镜像。
 
-```shell
-mkdir -p ~/.laxcode
-cp docs/settings.json ~/.laxcode/settings.json
-```
+部署脚本生成环境变量引用版配置并将其构建进沙箱镜像的 `/etc/laxcode/settings.json`，替换应用发布后重新注册 OpenShell provider。平台配置只读，用户模型选择单独持久化。其中 `openai_api_key` 为合法环境变量名（例如 `LAXCODE_API_KEY_...`），cloud 通过 `os.Getenv` 读取 OpenShell 占位凭据。模型名含点或短横线时，不能直接拼成 shell 变量名，因此部署脚本生成稳定标识。
 
 配置键使用小写 `snake_case`。请填写实际支持 OpenAI 兼容接口的服务及模型。不要将填入真实密钥的文件提交到仓库。`settings.json` 是一个完整的 JSON 对象，下面的代码块按功能拆开说明。
 
@@ -39,19 +36,9 @@ cp docs/settings.json ~/.laxcode/settings.json
 
 ## 云端启动参数
 
-本分支启动后始终按用户隔离运行，支持：
+每个沙箱仅服务一个固定用户。cloud 支持 `-addr`（默认 `127.0.0.1:8080`）、`-settings_dir`（部署为 `/etc/laxcode`）、`-plan`。用户身份由 `LAXCODE_USER_ID` 注入，HOME 为 `/workplace/agenthome`。
 
-- `-addr`：后端监听地址，默认 `127.0.0.1:8090`。
-- `-plan`：启用计划模式。
-- `-conf_copy_dir`：新用户模板目录，直接包含 `settings.json` 与 `skills/`；默认使用服务账户的 `~/.laxcode`。
-- `-cloud_bash_image`：预装的 Docker Bash 镜像，默认 `laxcode-cloud-bash:local`。
-
-服务账户的 settings 是初始化模板，可保留明文 API Key；新用户的 Key 写入服务账户的
-`~/.laxcode/configs.db`，用户 `agenthome/.laxcode/settings.json` 不含 Key。
-已有用户的配置不会被模板覆盖，可在网页中新增和切换模型。
-
-`~/.laxcode/env.conf` 在服务启动时注入进程环境，供上游 API 代理等基础设施使用；
-用户配置加载不会修改服务进程环境。模型与凭据由 settings 管理。
+网页只能选择管理员预置的模型，不能新增 provider 或填写密钥。选择持久化到用户 `.laxcode/model-selection.json`，不修改平台目录；升级时所选模型被移除则恢复平台默认。旧的 `env.conf`、`configs.db`、`-conf_copy_dir` 和 `-cloud_bash_image` 已移除。
 
 ---
 

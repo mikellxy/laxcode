@@ -421,7 +421,7 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 	if call.Name == tools.ToolBash {
 		sandbox, ok := r.ToolRegistry.(interface{ BashSandboxed() bool })
 		if !ok || !sandbox.BashSandboxed() {
-			return rejectedToolResult(call.ID, "Bash requires a Docker sandbox; command was not executed."), nil
+			return rejectedToolResult(call.ID, "Bash requires an OpenShell sandbox; command was not executed."), nil
 		}
 	}
 	return r.ToolRegistry.Execute(ctx, call), nil

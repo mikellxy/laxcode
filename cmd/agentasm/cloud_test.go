@@ -38,11 +38,11 @@ func TestCloudToolBoundaries(t *testing.T) {
 			t.Fatal("cloud prompt lacks Bash environment rules")
 		}
 	}
-	if !strings.Contains(assembled.Session.Messages[0].Content, layout.SkillsRoot(home)) || !strings.Contains(assembled.Session.Messages[0].Content, "权限为只读") {
+	if !strings.Contains(assembled.Session.Messages[0].Content, layout.SkillsRoot(home)) || !strings.Contains(assembled.Session.Messages[0].Content, "OpenShell") {
 		t.Fatal("cloud prompt lacks read-only Skills mount path")
 	}
 	for _, definition := range registry.GetAvailableTools() {
-		if definition.Name == tools.ToolBash && (!strings.Contains(definition.Description, "可以读取和执行其中的脚本") || strings.Contains(definition.Description, "不要用 Bash")) {
+		if definition.Name == tools.ToolBash && (!strings.Contains(definition.Description, "OpenShell") || strings.Contains(definition.Description, "不要用 Bash")) {
 			t.Fatal("cloud Bash description does not allow read-only Skill scripts")
 		}
 	}

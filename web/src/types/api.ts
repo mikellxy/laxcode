@@ -9,7 +9,6 @@ export type ModelDTO = { model_name: string; upstream_model?: string; model_ref:
 export type ProviderModelsDTO = { provider_name: string; model_list: ModelDTO[] };
 export type ProviderListModelDTO = { current_model: string; current_reasoning_effort?: string; providers: ProviderModelsDTO[] };
 export type SwitchModelDTO = { model_ref: string; reasoning_effort?: string };
-export type AddModelInput = { provider: string; model: string; api_key: string; base_url: string; context_window: number; max_output_tokens: number; reasoning_effort?: string };
 export type TokenStatistics = { token_input: number; token_output: number };
 export type ContextData = { window_token: TokenStatistics; context_window: number };
 export type DurationStats = { count: number; total_ms: number; avg_ms: number };
