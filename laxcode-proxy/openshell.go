@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 )
 
 type sandboxState struct {
@@ -27,6 +29,10 @@ type sandboxRuntime interface {
 }
 type openshellRuntime struct {
 	image, policy string
+	settingsFile  string
+	storeURL      string
+	gatewayPort   string
+	storeToken    func(string) string
 	providers     []string
 }
 
@@ -67,13 +73,17 @@ func (o *openshellRuntime) Lookup(ctx context.Context, id string) (*sandboxState
 func (o *openshellRuntime) Create(ctx context.Context, id, root string) error {
 	mounts := map[string]any{"docker": map[string]any{"mounts": []any{
 		map[string]any{"type": "bind", "source": root, "target": "/workplace", "read_only": false},
+		map[string]any{"type": "bind", "source": o.settingsFile, "target": layout.UserSettings("/workplace/agenthome"), "read_only": true},
 	}}}
 	data, _ := json.Marshal(mounts)
-	args := []string{"sandbox", "create", "--name", sandboxName(id), "--from", o.image, "--detach", "--expose", "8080", "--label", "laxcode-app=laxcode", "--label", "laxcode-user=" + id, "--cpu", "2", "--memory", "2Gi", "--policy", o.policy, "--driver-config-json", string(data), "--env", "LAXCODE_USER_ID=" + id, "--env", "HOME=/workplace/agenthome", "--env", "LAXCODE_DEFAULT_SKILLS=/opt/laxcode/skills"}
+	args := []string{"sandbox", "create", "--name", sandboxName(id), "--from", o.image, "--detach", "--expose", "8080", "--label", "laxcode-app=laxcode", "--label", "laxcode-user=" + id, "--cpu", "2", "--memory", "2Gi", "--policy", o.policy, "--driver-config-json", string(data), "--env", "LAXCODE_USER_ID=" + id, "--env", "HOME=/workplace/agenthome"}
+	if o.storeToken != nil {
+		args = append(args, "--env", "LAXCODE_STORE_URL="+o.storeURL, "--env", "LAXCODE_STORE_TOKEN="+o.storeToken(id))
+	}
 	for _, p := range o.providers {
 		args = append(args, "--provider", p)
 	}
-	args = append(args, "--", "/usr/local/bin/laxcode-cloud", "-addr=127.0.0.1:8080", "-settings_dir=/etc/laxcode")
+	args = append(args, "--", "/usr/local/bin/laxcode-cloud", "-addr=127.0.0.1:8080")
 	_, err := runOpenShell(ctx, args...)
 	return err
 }
@@ -99,10 +109,14 @@ func (o *openshellRuntime) Endpoint(ctx context.Context, name string) (*url.URL,
 	if e = json.Unmarshal(b, &list); e != nil {
 		return nil, e
 	}
+	expectedPort := o.gatewayPort
+	if expectedPort == "" {
+		expectedPort = "18080"
+	}
 	for _, s := range list.Services {
 		if s.Service == "" {
 			u, e := url.Parse(s.URL)
-			if e != nil || u.Scheme != "http" || !strings.HasSuffix(u.Hostname(), ".openshell.localhost") || u.Port() != "18080" {
+			if e != nil || u.Scheme != "http" || !strings.HasSuffix(u.Hostname(), ".openshell.localhost") || u.Port() != expectedPort {
 				return nil, errors.New("unexpected sandbox service URL")
 			}
 			return u, nil

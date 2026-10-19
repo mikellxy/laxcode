@@ -1,6 +1,6 @@
 //go:build unix
 
-package run_sse
+package workspace
 
 import (
 	"os"

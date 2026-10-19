@@ -33,13 +33,13 @@ func validateCloudProjectName(name string) error {
 // One process owns one mounted workplace; routing and provisioning belong to the proxy.
 type cloudService struct {
 	server  *server
-	repo    *sessionrepo.SqliteSessionRepo
+	repo    sessionrepo.Repository
 	handler http.Handler
 	userID  string
 	active  atomic.Int32
 }
 
-func newCloudService(home, id string, conf config.Conf, tracer telemetry.Tracer) (*cloudService, error) {
+func newCloudServiceWithRepository(home, id string, conf config.Conf, tracer telemetry.Tracer, repo sessionrepo.Repository) (*cloudService, error) {
 	id, err := parseUserID(id)
 	if err != nil {
 		return nil, err
@@ -57,18 +57,11 @@ func newCloudService(home, id string, conf config.Conf, tracer telemetry.Tracer)
 			return nil, err
 		}
 	}
-	if err := initializeDefaultSkills(os.Getenv("LAXCODE_DEFAULT_SKILLS"), layout.SkillsRoot(home)); err != nil {
-		return nil, err
-	}
 	models, err := ai_models.New(home, conf)
 	if err != nil {
 		return nil, err
 	}
 	if err := models.LoadSelection(); err != nil {
-		return nil, err
-	}
-	repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(home), layout.SessionRoot(home))
-	if err != nil {
 		return nil, err
 	}
 	if err := repo.FailActiveEvaluationJobs(context.Background(), "evaluation interrupted by server restart"); err != nil {

@@ -70,6 +70,7 @@ Linux 使用同样的流程，通过 scp 或 CI/CD 将文件放到目标目录�
 - 现有系统默认 OpenShell 网关不受影响；LaxCode 使用独立 XDG 配置、数据库和 Docker `sandbox_label=laxcode`。
 - 运行状态、PID、日志、网关数据库/密钥：`~/laxcode_deploy/state/`。
 - 当前发布：`~/laxcode_deploy/laxcode/`；不在这里保存用户文件。
+- proxy 模型目录：当前发布中的 `catalog/settings.json`，仅含环境变量名，不含真实 API Key；临时镜像构建目录 `image/` 在构建后删除。
 - 日志：`state/proxy.log`、`state/gateway.log`。
 
 内测版以 `X-USERID` UUID 标识用户，静态页面和 `/healthz` 无需身份；尚无登录验证，公网访问控制由部署方配置。部署脚本管理后台进程，本版不安装应用开机自启服务。
@@ -81,13 +82,39 @@ Linux 使用同样的流程，通过 scp 或 CI/CD 将文件放到目标目录�
 ├── .initialized
 ├── agenthome/                     → HOME
 │   └── .laxcode/
-│       ├── skills/                # 首次从镜像复制，以后保留修改/删除
+│       ├── settings.json          # proxy 同步的平台配置，沙箱中单文件只读挂载
+│       ├── skills/                # proxy 首次从发布包复制，以后保留修改/删除
 │       ├── model-selection.json   # 用户模型选择
 │       └── ...                    # 会话数据库等
 ├── {project_name}/                # 会话 workdir
 └── tmp/
 ```
 
-平台配置直接从镜像只读的 `/etc/laxcode/settings.json` 加载，不再复制进用户 HOME；其中 API Key 是合法环境变量名。真实密钥经 configure.py 注册给专用 OpenShell gateway，启动沙箱时由 OpenShell 注入占位凭据，cloud 使用 `os.Getenv` 获取占位凭据。默认 Skills 位于镜像 `/opt/laxcode/skills/`，cloud 原子初始化用户 Skills 目录；已有用户目录（包括旧部署初始化过的目录）不覆盖。
+proxy 首次打开一个用户的数据接口时，将发布包 `catalog/settings.json` 中的平台配置原子写入用户的 `agenthome/.laxcode/settings.json`；每次应用发布后，该用户首次访问时同步最新配置，再启动沙箱。沙箱中以发布目录 `catalog/settings.json` 为可信源，单独只读挂载到 `/workplace/agenthome/.laxcode/settings.json`，cloud 从 HOME 默认路径加载。挂载源位于用户工作目录之外，避免用户修改目录结构后篡改下次启动的配置。不要在保留运行中沙箱的情况下单独修改平台配置；正式更新使用 `deploy.sh restart`，先删除旧沙箱再启用新发布。
+
+配置中的 API Key 是合法环境变量名。真实密钥经 configure.py 注册给专用 OpenShell gateway，启动沙箱时由 OpenShell 注入占位凭据，cloud 使用 `os.Getenv` 获取占位凭据。proxy 从发布包 `skills/` 首次原子初始化用户 Skills 目录，以后保留用户修改和删除。用户模型选择独立保存在 `model-selection.json`，同步平台配置时不覆盖。
+
+沙箱镜像仅包含 cloud 可执行程序和固定基础工具链，不包含平台配置或默认 Skills，也不执行配置或 Skills 的复制操作。
 
 含真实密钥的源配置、发布包、当前/上一发布目录、gateway 状态仅供部署用户访问。构建镜像的 context 不包含真实 settings.json。
+
+
+## 数据接口与沙箱执行
+
+只有 `POST /chat`、`POST /api/sessions/{session_id}/resume` 和 `POST /api/evaluations` 会启动或唤醒沙箱。项目、会话、历史、上下文用量、性能统计、模型选择、Skills、文件预览/下载、评估列表和报告由 proxy 直接处理，查询与轮询不会刷新沙箱空闲计时。
+
+共享 `workspace` 模块复用现有模型目录、SQLite 仓储及路径规则。SQLite 仍位于用户的 `agenthome/.laxcode/sessions/sessions.db`，但仅 proxy 打开数据库；cloud 通过内部存储接口访问同一仓储。这样避免 macOS 与 Docker Desktop Linux 跨内核共享 SQLite WAL/文件锁。JSONL 备份、trace、报告和项目产物继续保存在原目录。
+
+部署生成的 `store-url` 使用宿主私网地址和 5173 端口；UDP 路由探测不发送数据，不要求目标能访问互联网。OpenShell 策略仅允许 `/usr/local/bin/laxcode-cloud` 向该地址的 `/internal/store` 发送 POST，并固定目标 IP `/32`。proxy 需监听该私网地址（默认 `0.0.0.0:5173`）；公网入口仍使用 Caddy，安全组不要对公网开放 5173。宿主私网地址变化后需重新执行部署以更新策略。
+
+内部存储按用户校验独立凭据，由 `~/laxcode/.proxy-store-key` 派生并在沙箱启动时注入；该文件不挂载进沙箱，proxy 重启时必须保留。普通 `X-USERID` 请求不能调用内部存储接口。
+
+模型切换立即保存 `agenthome/.laxcode/model-selection.json`，已运行任务继续使用其模型快照，之后的新任务读取最新选择。删除会话时，proxy 在用户生命周期锁下检查正在执行的请求和后台评估；繁忙或状态未知时返回 409，不唤醒沙箱。
+
+跨 Docker Desktop 的存储回归可执行：
+
+```bash
+LAXCODE_DOCKER_SQLITE_TEST=1 go test ./workspace -run TestStorageAcrossDockerMount -v
+```
+
+该测试使用临时目录和一次性容器，需要预装 `laxcode-tools:go1.26.6-v1`。

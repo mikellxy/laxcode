@@ -1,4 +1,4 @@
-package run_sse
+package workspace
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// An existing directory (including one from older releases) belongs to the user.
+// An existing directory belongs to the user.
 // Publish the complete seed atomically so interrupted starts can safely retry.
 func initializeDefaultSkills(source, dest string) error {
 	info, err := os.Lstat(dest)

@@ -87,7 +87,11 @@ func (s *server) assembleAgent(t *chatTrace, in agentasm.Input) (assembled *agen
 			t.span.SetAttributes(telemetry.AttrChatID.String(chatID))
 		}
 	}
-	in.Models = s.models
+	models, loadErr := s.models.ForTask()
+	if loadErr != nil {
+		return nil, fmt.Errorf("load model selection: %w", loadErr)
+	}
+	in.Models = models
 	in.Tracer = t.tracer
 	return s.assemble(ctx, in)
 }

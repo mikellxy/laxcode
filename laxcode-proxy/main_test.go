@@ -52,6 +52,7 @@ func fixture(t *testing.T, handler http.Handler) (*proxyServer, *fakeRuntime) {
 	runtime := &fakeRuntime{endpoint: u, uncertain: true}
 	p := newProxy(runtime, t.TempDir(), fstest.MapFS{"index.html": {Data: []byte("web")}}, time.Millisecond, 2)
 	t.Cleanup(p.transport.CloseIdleConnections)
+	t.Cleanup(p.closeWorkspaces)
 	return p, runtime
 }
 func TestConcurrentProvisionReconcileAndResume(t *testing.T) {
@@ -62,12 +63,13 @@ func TestConcurrentProvisionReconcileAndResume(t *testing.T) {
 		}
 		w.WriteHeader(200)
 	}))
+	p.chats = make(chan struct{}, 24)
 	var wg sync.WaitGroup
 	for i := 0; i < 24; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req := httptest.NewRequest("GET", "/api/models", nil)
+			req := httptest.NewRequest("POST", "/chat", nil)
 			req.Header.Set("X-USERID", testID)
 			rec := httptest.NewRecorder()
 			p.ServeHTTP(rec, req)
@@ -88,7 +90,7 @@ func TestConcurrentProvisionReconcileAndResume(t *testing.T) {
 	if runtime.stops != 1 {
 		t.Fatal("idle sandbox not stopped")
 	}
-	req := httptest.NewRequest("GET", "/api/models", nil)
+	req := httptest.NewRequest("POST", "/chat", nil)
 	req.Header.Set("X-USERID", testID)
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
@@ -238,7 +240,7 @@ func TestStoppedGatewayResponseInvalidatesCachedEndpoint(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusPreconditionFailed)
 	}))
-	req := httptest.NewRequest("GET", "/api/models", nil)
+	req := httptest.NewRequest("POST", "/chat", nil)
 	req.Header.Set("X-USERID", testID)
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, req)

@@ -16,6 +16,31 @@ exec(compile(script, 'deploy.sh', 'exec'), module.__dict__)
 
 
 class DeployTest(unittest.TestCase):
+    def test_proxy_catalog_survives_build_context_cleanup(self):
+        from configure import generate
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            release = base / 'laxcode'
+            (release / 'bin').mkdir(parents=True)
+            (release / 'bin/laxcode-cloud').write_bytes(b'binary')
+            (release / 'skills').mkdir()
+            (release / 'Dockerfile').write_text('FROM base\n')
+            (release / 'settings.json').write_text(json.dumps({'model': 'p:m', 'provider_list': [{
+                'provider_name': 'p', 'openai_base_url': 'https://example.com',
+                'openai_api_key': 'secret-value', 'model_list': [{'model_name': 'm'}]}]}))
+            with patch('configure.socket.socket') as socket:
+                socket.return_value.__enter__.return_value.getsockname.return_value = ('192.168.1.5', 10000)
+                generate(release)
+            expected = (release / 'catalog/settings.json').read_bytes()
+            module.shutil.rmtree(release / 'image')
+            (release / 'image-tag').write_text('laxcode-cloud:test')
+            with patch.object(module, 'start') as start, patch.object(module, 'wait_ready'):
+                module.start_proxy(base, base / 'state', {})
+            args = start.call_args.args[2]
+            catalog = Path(next(arg.split('=', 1)[1] for arg in args if str(arg).startswith('-settings-dir=')))
+            self.assertEqual((catalog / 'settings.json').read_bytes(), expected)
+            self.assertNotIn(b'secret-value', expected)
+
     def archive(self, root, extra=None, corrupt=False):
         files = {name: b'content' for name in ('bin/laxcode-cloud', 'bin/laxcode-proxy', 'settings.json', 'configure.py', 'Dockerfile', 'skills/SKILL.md')}
         manifest = {'format': 1, 'os': {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()],

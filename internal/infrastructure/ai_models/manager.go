@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -14,12 +15,15 @@ import (
 )
 
 // Manager is shared by the composition root and model management endpoints.
-// ModelSwitcher coordinates publishing selections with active requests.
+// Each task receives a snapshot of the persisted user preference.
 // ReActService receives only LLMClient instances with their own limit snapshots.
 type Manager struct {
-	mu      sync.RWMutex
-	homeDir string
-	state   modelState
+	mu            sync.RWMutex
+	homeDir       string
+	state         modelState
+	defaults      modelState
+	selectionRoot *os.Root
+	selectionPath string
 }
 
 type modelState struct {
@@ -40,15 +44,59 @@ func New(homeDir string, conf config.Conf) (*Manager, error) {
 	if err := s.initializeSelection(); err != nil {
 		return nil, err
 	}
-	return &Manager{homeDir: homeDir, state: s}, nil
+	return &Manager{homeDir: homeDir, state: s, defaults: s}, nil
 }
 
-// LoadSelection restores the user preference over the deployment catalog at startup.
+// NewRooted constrains the host's preference I/O to one user directory.
+func NewRooted(home, userRoot string, conf config.Conf) (*Manager, error) {
+	m, err := New(home, conf)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(userRoot)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(userRoot, layout.ModelSelection(home))
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	m.selectionRoot, m.selectionPath = root, rel
+	return m, nil
+}
+func (m *Manager) Close() error {
+	if m.selectionRoot != nil {
+		return m.selectionRoot.Close()
+	}
+	return nil
+}
+
+// ForTask freezes the persisted preference and credential references for one task.
+func (m *Manager) ForTask() (*Manager, error) {
+	m.mu.RLock()
+	task := &Manager{homeDir: m.homeDir, state: m.defaults, defaults: m.defaults, selectionRoot: m.selectionRoot, selectionPath: m.selectionPath}
+	m.mu.RUnlock()
+	if err := task.LoadSelection(); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+// LoadSelection restores the persisted preference over the deployment default.
 func (m *Manager) LoadSelection() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	data, err := os.ReadFile(layout.ModelSelection(m.homeDir))
+	candidate := m.defaults
+	var data []byte
+	var err error
+	if m.selectionRoot != nil {
+		data, err = m.selectionRoot.ReadFile(m.selectionPath)
+	} else {
+		data, err = os.ReadFile(layout.ModelSelection(m.homeDir))
+	}
 	if errors.Is(err, os.ErrNotExist) {
+		m.state = candidate
 		return nil
 	}
 	if err != nil {
@@ -61,11 +109,13 @@ func (m *Manager) LoadSelection() error {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return fmt.Errorf("read model selection: %w", err)
 	}
-	// A removed model falls back to the platform default after an upgrade.
-	if _, err := m.state.selection(saved.Model, saved.Effort); err != nil {
-		return nil
+	if _, err := candidate.selection(saved.Model, saved.Effort); err == nil {
+		if err := candidate.setActiveModel(saved.Model, saved.Effort); err != nil {
+			return err
+		}
 	}
-	return m.state.setActiveModel(saved.Model, saved.Effort)
+	m.state = candidate
+	return nil
 }
 
 func (c *modelState) initializeSelection() error {
@@ -159,14 +209,26 @@ func (m *Manager) SetActiveModel(ref string, effort ...string) error {
 		return err
 	}
 	dir := layout.Root(m.homeDir)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	var mkdirErr error
+	if m.selectionRoot != nil {
+		mkdirErr = m.selectionRoot.MkdirAll(filepath.Dir(m.selectionPath), 0700)
+	} else {
+		mkdirErr = os.MkdirAll(dir, 0700)
+	}
+	if err := mkdirErr; err != nil {
 		return err
 	}
 	data, err := json.Marshal(map[string]string{"model": candidate.active.Ref, "reasoning_effort": candidate.active.ReasoningEffort})
 	if err != nil {
 		return err
 	}
-	if err := config.WriteSettingsAtomic(layout.ModelSelection(m.homeDir), data); err != nil {
+	var writeErr error
+	if m.selectionRoot != nil {
+		writeErr = config.WriteSettingsRootAtomic(m.selectionRoot, m.selectionPath, data)
+	} else {
+		writeErr = config.WriteSettingsAtomic(layout.ModelSelection(m.homeDir), data)
+	}
+	if err := writeErr; err != nil {
 		return err
 	}
 	m.state = candidate

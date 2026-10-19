@@ -1,4 +1,4 @@
-package run_sse
+package workspace
 
 import (
 	"os"

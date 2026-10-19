@@ -213,7 +213,9 @@ def start_proxy(base, state, env):
     start(state, 'proxy', [release / 'bin/laxcode-proxy', '-addr=0.0.0.0:5173',
                          '-workplaces=' + str(Path.home() / 'laxcode'), '-image=' + image,
                          '-policy=' + str(release / 'policy.yaml'),
-                         '-providers-file=' + str(release / 'providers.json')], env)
+                         '-providers-file=' + str(release / 'providers.json'),
+                         '-settings-dir=' + str(release / 'catalog'),
+                         '-store-url=' + (release / 'store-url').read_text().strip(), '-skills=' + str(release / 'skills')], env)
     wait_ready(state, 'proxy', 'http://127.0.0.1:5173/healthz')
 
 
@@ -238,7 +240,7 @@ def restart(base, state, env):
         image = 'laxcode-cloud:' + digest
         run('docker', 'build', '--pull=false', '--network=none', '-t', image, stage / 'image')
         run('docker', 'run', '--rm', '--network=none', '--entrypoint', '/bin/sh', image, '-c',
-            'test -r /etc/laxcode/settings.json && test -r /opt/laxcode/skills && test -x /usr/local/bin/laxcode-cloud')
+            'test -x /usr/local/bin/laxcode-cloud')
         shutil.rmtree(stage / 'image')
         (stage / 'image-tag').write_text(image)
         ensure_gateway(state, env)

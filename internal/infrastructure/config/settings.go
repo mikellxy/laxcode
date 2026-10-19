@@ -1,27 +1,55 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
+// WriteCatalogAtomic publishes platform settings without CLI options or user preferences.
+func WriteCatalogAtomic(path string, conf Conf) error {
+	content, err := json.Marshal(fileConf{Model: conf.Model, CompactionModel: conf.CompactionModel, ProviderList: conf.ProviderList})
+	if err != nil {
+		return err
+	}
+	return WriteSettingsAtomic(path, content)
+}
+
 // WriteSettingsAtomic publishes a complete settings document with mode 0600.
-func WriteSettingsAtomic(path string, content []byte) (err error) {
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, ".settings-*.tmp")
+func WriteSettingsAtomic(path string, content []byte) error {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return WriteSettingsRootAtomic(root, filepath.Base(path), content)
+}
+
+// WriteSettingsRootAtomic keeps host writes inside a previously opened user root.
+func WriteSettingsRootAtomic(root *os.Root, path string, content []byte) (err error) {
+	dir, err := root.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	name := ".settings-" + rand.Text() + ".tmp"
+	temp, err := dir.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return fmt.Errorf("create temporary settings: %w", err)
 	}
-	tempPath := temp.Name()
 	defer func() {
 		_ = temp.Close()
 		if err != nil {
-			_ = os.Remove(tempPath)
+			_ = dir.Remove(name)
 		}
 	}()
-	if err = temp.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary settings: %w", err)
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		if err = temp.Chown(1000, 1000); err != nil {
+			return fmt.Errorf("set settings ownership: %w", err)
+		}
 	}
 	if _, err = temp.Write(content); err != nil {
 		return fmt.Errorf("write temporary settings: %w", err)
@@ -32,12 +60,12 @@ func WriteSettingsAtomic(path string, content []byte) (err error) {
 	if err = temp.Close(); err != nil {
 		return fmt.Errorf("close temporary settings: %w", err)
 	}
-	if err = os.Rename(tempPath, path); err != nil {
+	if err = dir.Rename(name, filepath.Base(path)); err != nil {
 		return fmt.Errorf("replace settings: %w", err)
 	}
-	if dirHandle, openErr := os.Open(dir); openErr == nil {
-		_ = dirHandle.Sync()
-		_ = dirHandle.Close()
+	if handle, err := dir.Open("."); err == nil {
+		_ = handle.Sync()
+		_ = handle.Close()
 	}
 	return nil
 }

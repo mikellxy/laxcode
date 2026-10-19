@@ -1,4 +1,4 @@
-package run_sse
+package workspace
 
 import (
 	"archive/zip"
@@ -19,15 +19,15 @@ import (
 const maxChatDownloadBytes int64 = 100 << 20
 const maxChatDownloadFiles = 200
 
-func (s *server) openChatFileProject(w http.ResponseWriter, r *http.Request) (*os.Root, string, []session.ChatFile) {
+func (s *API) openChatFileProject(w http.ResponseWriter, r *http.Request) (*os.Root, string, []session.ChatFile) {
 
-	repo, ok := s.contextRepo.(session.ChatFilesRepository)
-	if !ok || s.catalog == nil {
+	repo, ok := s.ContextRepo.(session.ChatFilesRepository)
+	if !ok || s.Catalog == nil {
 		writeJSONError(w, 500, "file repository is unavailable")
 		return nil, "", nil
 	}
 	sessionID, chatID := r.PathValue("session_id"), r.PathValue("chat_id")
-	selected, err := s.catalog.GetSession(r.Context(), sessionID)
+	selected, err := s.Catalog.GetSession(r.Context(), sessionID)
 	if err != nil {
 		writeJSONError(w, 404, "session not found")
 		return nil, "", nil
@@ -41,13 +41,13 @@ func (s *server) openChatFileProject(w http.ResponseWriter, r *http.Request) (*o
 		writeJSONError(w, 500, "无法读取文件清单")
 		return nil, "", nil
 	}
-	root, err := os.OpenRoot(s.userRoot)
+	root, err := os.OpenRoot(s.UserRoot)
 	if err != nil {
 		writeJSONError(w, 500, "用户目录不可用")
 		return nil, "", nil
 	}
 	defer root.Close()
-	projectPath, err := filepath.Rel(s.userRoot, selected.WorkDir)
+	projectPath, err := s.projectPath(selected.WorkDir)
 	if err != nil || !fs.ValidPath(filepath.ToSlash(projectPath)) || projectPath == "." {
 		writeJSONError(w, 403, "项目目录越界")
 		return nil, "", nil
@@ -90,7 +90,7 @@ func openChatFile(w http.ResponseWriter, project *os.Root, projectPath, path str
 	return input, info
 }
 
-func (s *server) handleDownloadChatFiles(w http.ResponseWriter, r *http.Request) {
+func (s *API) HandleDownloadChatFiles(w http.ResponseWriter, r *http.Request) {
 	project, projectPath, files := s.openChatFileProject(w, r)
 	if project == nil {
 		return
@@ -100,13 +100,13 @@ func (s *server) handleDownloadChatFiles(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, 413, "下载文件数量超过 200 个")
 		return
 	}
-	root, err := os.OpenRoot(s.userRoot)
+	root, err := os.OpenRoot(s.UserRoot)
 	if err != nil {
 		writeJSONError(w, 500, "用户目录不可用")
 		return
 	}
 	defer root.Close()
-	tempPath, err := filepath.Rel(s.userRoot, s.tempDir)
+	tempPath, err := filepath.Rel(s.UserRoot, s.TempDir)
 	if err != nil || !fs.ValidPath(filepath.ToSlash(tempPath)) || tempPath == "." {
 		writeJSONError(w, 500, "临时目录不可用")
 		return

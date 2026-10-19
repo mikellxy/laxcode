@@ -19,7 +19,6 @@ type Conf struct {
 	ProviderList    []Provider
 	Addr            string
 	Plan            bool
-	SettingsDir     string
 }
 
 type Provider struct {
@@ -60,15 +59,14 @@ type ModelLimit struct {
 }
 
 type fileConf struct {
-	Model           string     `mapstructure:"model"`
-	CompactionModel string     `mapstructure:"compaction_model"`
-	ProviderList    []Provider `mapstructure:"provider_list"`
+	Model           string     `json:"model" mapstructure:"model"`
+	CompactionModel string     `json:"compaction_model,omitempty" mapstructure:"compaction_model"`
+	ProviderList    []Provider `json:"provider_list" mapstructure:"provider_list"`
 }
 
 type cliConf struct {
-	Addr        string `mapstructure:"addr"`
-	Plan        bool   `mapstructure:"plan"`
-	SettingsDir string
+	Addr string `mapstructure:"addr"`
+	Plan bool   `mapstructure:"plan"`
 }
 
 const (
@@ -111,9 +109,6 @@ func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
 	if err != nil {
 		return Conf{}, err
 	}
-	if cli.SettingsDir != "" {
-		configDir = cli.SettingsDir
-	}
 	file, err := parseFile(configDir)
 	if err != nil {
 		return Conf{}, err
@@ -126,6 +121,15 @@ func LoadSettingsFromDir(configDir string, args []string) (Conf, error) {
 		return Conf{}, err
 	}
 	return conf, nil
+}
+
+// LoadCatalogFromDir reads deployment metadata without resolving inference credentials.
+func LoadCatalogFromDir(dir string) (Conf, error) {
+	file, err := parseFile(dir)
+	if err != nil {
+		return Conf{}, err
+	}
+	return merge(file, cliConf{})
 }
 
 func parseFile(configDir string) (fileConf, error) {
@@ -165,7 +169,6 @@ func parseCLI(args []string) (cliConf, error) {
 	}
 	flags.StringVar(&cli.Addr, "addr", DefaultSSEAddr, "Web backend listen address")
 	flags.BoolVar(&cli.Plan, "plan", false, "enable plan mode")
-	flags.StringVar(&cli.SettingsDir, "settings_dir", "", "read-only platform catalog directory")
 	if err := flags.Parse(args); err != nil {
 		return cliConf{}, err
 	}
@@ -180,7 +183,6 @@ func merge(file fileConf, cli cliConf) (Conf, error) {
 	conf.Model, conf.CompactionModel = file.Model, file.CompactionModel
 	conf.ProviderList = file.ProviderList
 	conf.Addr, conf.Plan = cli.Addr, cli.Plan
-	conf.SettingsDir = cli.SettingsDir
 	for i := range conf.ProviderList {
 		for j := range conf.ProviderList[i].ModelList {
 			model := &conf.ProviderList[i].ModelList[j]

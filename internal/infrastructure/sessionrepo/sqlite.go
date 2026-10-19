@@ -105,6 +105,7 @@ func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, err
 	}
+	// Only the proxy opens this database; sandbox workers use Remote.
 	dsn := dbPath + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(FULL)"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger:                 logger.Default.LogMode(logger.Silent),

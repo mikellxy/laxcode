@@ -6,9 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,7 +38,6 @@ type server struct {
 	tracer             telemetry.Tracer
 	userRoot           string
 	tempDir            string
-	projectMu          sync.Mutex
 	homeDir            string
 	planMode           bool
 	assemble           func(context.Context, agentasm.Input) (*agentasm.Assembled, error)
@@ -58,38 +54,7 @@ type server struct {
 	evaluationCancel   context.CancelFunc
 	evaluationWG       sync.WaitGroup
 	activeEvaluations  atomic.Int32
-	// switcher 串行化模型切换，并保护装配和对话使用同一模型。
-	models   *ai_models.Manager
-	switcher *agentasm.ModelSwitcher
-}
-
-const (
-	defaultHistoryLimit = 50
-	maxHistoryLimit     = 100
-	defaultSessionLimit = 20
-	maxSessionLimit     = 100
-)
-
-type createSessionRequest struct {
-	UserID    string `json:"user_id"`
-	ProjectID string `json:"project_id"`
-}
-
-type sessionDTO struct {
-	SessionID string    `json:"session_id"`
-	Mode      string    `json:"mode"`
-	UserID    string    `json:"user_id"`
-	ProjectID string    `json:"project_id"`
-	Title     string    `json:"title"`
-	WorkDir   string    `json:"work_dir"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type sessionPageDTO struct {
-	Sessions            []sessionDTO `json:"sessions"`
-	NextBeforeSessionID string       `json:"next_before_session_id,omitempty"`
-	HasMore             bool         `json:"has_more"`
+	models             *ai_models.Manager
 }
 
 func parseUserID(raw string) (string, error) {
@@ -100,469 +65,8 @@ func parseUserID(raw string) (string, error) {
 	return id.String(), nil
 }
 
-func sessionToDTO(item session.Summary) sessionDTO {
-	return sessionDTO{
-		SessionID: item.ID, Mode: item.Mode, UserID: item.UserID, ProjectID: item.ProjectID, Title: item.Title, WorkDir: item.WorkDir,
-		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
-	}
-}
-
-func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	if s.catalog == nil {
-		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
-		return
-	}
-	var req createSessionRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	userID, err := s.requestUserID(req.UserID)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
-		return
-	}
-	projectID := strings.TrimSpace(req.ProjectID)
-	if projectID == "" {
-		writeJSONError(w, http.StatusBadRequest, "project_id is required")
-		return
-	}
-	if s.projects == nil {
-		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
-		return
-	}
-	project, err := s.projects.GetProject(r.Context(), projectID)
-	if errors.Is(err, sessionrepo.ErrProjectNotFound) || (err == nil && project.UserID != userID) {
-		writeJSONError(w, http.StatusNotFound, "project not found: "+projectID)
-		return
-	}
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "load project failed: "+err.Error())
-		return
-	}
-	created, err := s.catalog.CreateSession(r.Context(), uuid.NewString(), userID, project.ID, "", project.WorkDir, string(agentasm.ModeCode))
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "create session failed: "+err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(sessionToDTO(created))
-}
-
-func (s *server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	if s.catalog == nil {
-		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
-		return
-	}
-	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
-		return
-	}
-	sessionID, err := uuid.Parse(r.PathValue("session_id"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "session_id must be a UUID")
-		return
-	}
-	unlock, ok := s.locks.TryLock(sessionID.String())
-	if !ok {
-		writeJSONError(w, http.StatusConflict, "会话正在执行，请停止或等待完成后再删除")
-		return
-	}
-	defer unlock()
-	evaluationUnlock, ok := s.evaluationLocks.TryLock(sessionID.String())
-	if !ok {
-		writeJSONError(w, http.StatusConflict, "会话正在创建评估，请稍后再删除")
-		return
-	}
-	defer evaluationUnlock()
-	err = s.catalog.DeleteSession(r.Context(), sessionID.String(), userID)
-	if errors.Is(err, sessionrepo.ErrSessionBusy) {
-		writeJSONError(w, http.StatusConflict, "会话仍有评估任务，请等待完成后再删除")
-		return
-	}
-	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
-		writeJSONError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "delete session failed: "+err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	if s.catalog == nil {
-		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
-		return
-	}
-	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
-		return
-	}
-	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
-	if projectID == "" {
-		writeJSONError(w, http.StatusBadRequest, "project_id is required")
-		return
-	}
-	limit := defaultSessionLimit
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		value, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || value < 1 || value > maxSessionLimit {
-			writeJSONError(w, http.StatusBadRequest, "limit must be between 1 and 100")
-			return
-		}
-		limit = value
-	}
-	beforeSessionID := r.URL.Query().Get("before_session_id")
-	page, err := s.catalog.ListSessions(r.Context(), userID, projectID, beforeSessionID, limit)
-	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
-		writeJSONError(w, http.StatusBadRequest, "invalid session cursor")
-		return
-	}
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "list sessions failed: "+err.Error())
-		return
-	}
-	response := sessionPageDTO{Sessions: make([]sessionDTO, len(page.Sessions)), HasMore: page.HasMore}
-	for i := range page.Sessions {
-		response.Sessions[i] = sessionToDTO(page.Sessions[i])
-	}
-	if page.HasMore && len(page.Sessions) > 0 {
-		response.NextBeforeSessionID = page.Sessions[len(page.Sessions)-1].ID
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(response)
-}
-
-type createProjectRequest struct {
-	UserID string `json:"user_id"`
-	Name   string `json:"name"`
-}
-
-type projectDTO struct {
-	ProjectID string    `json:"project_id"`
-	UserID    string    `json:"user_id"`
-	Name      string    `json:"name"`
-	WorkDir   string    `json:"work_dir"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type projectListDTO struct {
-	Projects []projectDTO `json:"projects"`
-}
-
-func projectToDTO(item session.Project) projectDTO {
-	return projectDTO{ProjectID: item.ID, UserID: item.UserID, Name: item.Name, WorkDir: item.WorkDir, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
-}
-
-func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
-	if s.projects == nil {
-		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
-		return
-	}
-	var req createProjectRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	userID, err := s.requestUserID(req.UserID)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
-		return
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		writeJSONError(w, http.StatusBadRequest, "project name is required")
-		return
-	}
-	if len([]rune(name)) > 120 {
-		writeJSONError(w, http.StatusBadRequest, "project name must not exceed 120 characters")
-		return
-	}
-	var workDir string
-	s.projectMu.Lock()
-	defer s.projectMu.Unlock()
-	if err := validateCloudProjectName(name); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	items, err := s.projects.ListProjects(r.Context(), userID)
-	if err != nil {
-		writeJSONError(w, 500, err.Error())
-		return
-	}
-	for _, item := range items {
-		if item.Name == name {
-			writeJSONError(w, 409, "project name already exists")
-			return
-		}
-	}
-	workDir = filepath.Join(s.userRoot, name)
-	root, err := os.OpenRoot(s.userRoot)
-	if err != nil {
-		writeJSONError(w, 500, err.Error())
-		return
-	}
-	defer root.Close()
-	if err := root.Mkdir(name, 0700); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			writeJSONError(w, 409, "project name already exists")
-		} else {
-			writeJSONError(w, 500, err.Error())
-		}
-		return
-	}
-	created, err := s.projects.CreateProject(r.Context(), uuid.NewString(), userID, name, workDir)
-	if err != nil {
-		_ = os.Remove(workDir)
-		writeJSONError(w, http.StatusInternalServerError, "create project failed: "+err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(projectToDTO(created))
-}
-
-func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	if s.projects == nil {
-		writeJSONError(w, http.StatusInternalServerError, "project repository is unavailable")
-		return
-	}
-	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "user_id must be a UUID")
-		return
-	}
-	projects, err := s.projects.ListProjects(r.Context(), userID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "list projects failed: "+err.Error())
-		return
-	}
-	response := projectListDTO{Projects: make([]projectDTO, len(projects))}
-	for i := range projects {
-		response.Projects[i] = projectToDTO(projects[i])
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(response)
-}
-
-// modelMissing 在 switcher 读锁内检查是否尚无活跃模型（延迟配置场景）。
 func (s *server) modelMissing() bool {
-	s.switcher.RLock()
-	defer s.switcher.RUnlock()
 	return strings.TrimSpace(s.models.Active().Ref) == ""
-}
-
-type historyMessageDTO struct {
-	Seq              uint64             `json:"seq"`
-	Role             string             `json:"role"`
-	Content          string             `json:"content,omitempty"`
-	ReasoningContent string             `json:"reasoning_content,omitempty"`
-	ToolSummary      string             `json:"tool_summary,omitempty"`
-	ChatID           string             `json:"chat_id,omitempty"`
-	UpsertFiles      []session.ChatFile `json:"upsert_files,omitempty"`
-	CreatedAt        time.Time          `json:"created_at"`
-}
-
-// modelConfigDTO / providerModelsDTO / providerListModelDTO 是 GET /api/models
-// 的响应载体：只回传模型目录中的模型清单；OpenaiApiKey / OpenaiBaseUrl 属隐私
-// 配置不外发。ModelRef 是 provider:model 引用，前端凭它构造 POST /api/model
-// 的切换请求。CurrentModel 是运行时生效的引用，即当前（及后续每个请求）LLM
-// client 实际使用的模型。
-type modelConfigDTO struct {
-	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
-	ModelName        string   `json:"model_name"`
-	UpstreamModel    string   `json:"upstream_model,omitempty"`
-	ModelRef         string   `json:"model_ref"`
-}
-
-type providerModelsDTO struct {
-	ProviderName string           `json:"provider_name"`
-	ModelList    []modelConfigDTO `json:"model_list"`
-}
-
-type providerListModelDTO struct {
-	CurrentReasoningEffort string              `json:"current_reasoning_effort,omitempty"`
-	CurrentModel           string              `json:"current_model"`
-	Providers              []providerModelsDTO `json:"providers"`
-}
-
-// handleListModels 处理 GET /api/models：返回 ai_models.Manager.List() 的
-// 脱敏视图（各 provider 的 ModelList）与当前生效模型引用，供客户端做模型
-// 选择、切换与展示，不暴露凭据与端点。
-func (s *server) handleListModels(w http.ResponseWriter, _ *http.Request) {
-	s.switcher.RLock()
-	providers := s.models.List()
-	response := providerListModelDTO{
-		CurrentReasoningEffort: s.models.Active().ReasoningEffort,
-		CurrentModel:           s.models.Active().Ref,
-		Providers:              make([]providerModelsDTO, len(providers)),
-	}
-	for i, provider := range providers {
-		models := make([]modelConfigDTO, len(provider.ModelList))
-		for j, model := range provider.ModelList {
-			models[j] = modelConfigDTO{
-				ReasoningEffort: model.ReasoningEffort, ReasoningEfforts: model.ReasoningEfforts,
-				ModelName:     model.ModelName,
-				UpstreamModel: model.UpstreamModel,
-				ModelRef:      model.Ref,
-			}
-		}
-		response.Providers[i] = providerModelsDTO{ProviderName: provider.ProviderName, ModelList: models}
-	}
-	s.switcher.RUnlock()
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(response)
-}
-
-// switchModelRequest 是 POST /api/model 的请求体：provider 与 model 拼成
-// provider:model 引用，二者均必填。
-type switchModelRequest struct {
-	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
-	Provider        string  `json:"provider"`
-	Model           string  `json:"model"`
-}
-
-// handleSwitchModel 处理 POST /api/model：按 provider + model 组合引用后，经
-// agentasm.ModelSwitcher.SwitchModel 完成切换——替换本地 LLM 路由器的上游 client（SSE 流式流量全经
-// 路由器，凭据与模型名都在其侧），再写回运行时配置；此后每个请求的按次装配
-// 自然以新配置（含模型级 limit 预算）构建 provider。切换等待进行中的 Chat/
-// Resume 结束后生效。
-func (s *server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
-	var req switchModelRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	provider, model := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
-	if provider == "" || model == "" {
-		writeJSONError(w, http.StatusBadRequest, "provider and model are required")
-		return
-	}
-	var effort []string
-	if req.ReasoningEffort != nil {
-		effort = []string{strings.TrimSpace(*req.ReasoningEffort)}
-	}
-	s.switcher.Lock()
-	err := s.switcher.SwitchModelLocked(provider+":"+model, effort...)
-	currentEffort := s.models.Active().ReasoningEffort
-	s.switcher.Unlock()
-	if err != nil {
-		if errors.Is(err, agentasm.ErrModelsUnavailable) {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]string{"model_ref": provider + ":" + model, "reasoning_effort": currentEffort})
-}
-
-type historyPageDTO struct {
-	Messages      []historyMessageDTO `json:"messages"`
-	NextBeforeSeq uint64              `json:"next_before_seq,omitempty"`
-	HasMore       bool                `json:"has_more"`
-}
-
-// handleHistory 处理 GET /api/sessions/{session_id}/messages。
-// before_seq 是排他的消息游标，省略时从最新消息开始；响应消息始终按 seq 正序。
-func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		writeJSONError(w, http.StatusInternalServerError, "history repository is unavailable")
-		return
-	}
-	sessionID := r.PathValue("session_id")
-	if sessionID == "" {
-		writeJSONError(w, http.StatusBadRequest, "session_id is required")
-		return
-	}
-
-	limit := defaultHistoryLimit
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > maxHistoryLimit {
-			writeJSONError(w, http.StatusBadRequest, "limit must be between 1 and 100")
-			return
-		}
-		limit = value
-	}
-	var beforeSeq uint64
-	if raw := r.URL.Query().Get("before_seq"); raw != "" {
-		value, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil || value == 0 {
-			writeJSONError(w, http.StatusBadRequest, "before_seq must be a positive integer")
-			return
-		}
-		beforeSeq = value
-	}
-
-	page, found, err := s.history.ListOriginalHistory(r.Context(), sessionID, beforeSeq, limit)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "load history failed: "+err.Error())
-		return
-	}
-	if !found {
-		writeJSONError(w, http.StatusNotFound, "session not found: "+sessionID)
-		return
-	}
-
-	response := historyPageDTO{Messages: make([]historyMessageDTO, len(page.Messages)), HasMore: page.HasMore}
-	for i, msg := range page.Messages {
-		response.Messages[i] = historyMessageDTO{
-			Seq: msg.Seq, Role: msg.Role, Content: msg.Content,
-			ReasoningContent: msg.ReasoningContent, ToolSummary: msg.ToolSummary,
-			ChatID: msg.ChatID, CreatedAt: msg.CreatedAt,
-			UpsertFiles: msg.UpsertFiles,
-		}
-	}
-	if page.HasMore && len(page.Messages) > 0 {
-		response.NextBeforeSeq = page.Messages[0].Seq
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(response)
-}
-
-func (s *server) handleSessionContext(w http.ResponseWriter, r *http.Request) {
-	if s.contextRepo == nil {
-		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
-		return
-	}
-	sessionID := strings.TrimSpace(r.PathValue("session_id"))
-	if sessionID == "" {
-		writeJSONError(w, http.StatusBadRequest, "session_id is required")
-		return
-	}
-	if _, err := s.catalog.GetSession(r.Context(), sessionID); err != nil {
-		if errors.Is(err, sessionrepo.ErrSessionNotFound) {
-			writeJSONError(w, 404, "session not found")
-		} else {
-			writeJSONError(w, 500, err.Error())
-		}
-		return
-	}
-	contextState, err := s.contextRepo.GetRequestContext(r.Context(), sessionID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "load context failed: "+err.Error())
-		return
-	}
-	s.switcher.RLock()
-	contextWindow := s.models.Active().ContextWindow
-	s.switcher.RUnlock()
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(ContextData{WindowToken: contextState.WindowToken, ContextWindow: contextWindow})
 }
 
 func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server {
@@ -581,7 +85,6 @@ func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server
 		evaluationLocks:    newSessionLocks(),
 		evaluationCtx:      evaluationCtx,
 		evaluationCancel:   evaluationCancel,
-		switcher:           agentasm.NewModelSwitcher(models),
 	}
 }
 
@@ -682,8 +185,6 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context() // 客户端断开即取消，驱动 Chat 从 LLM/工具调用收敛
 
-	s.switcher.RLock()
-	defer s.switcher.RUnlock()
 	assembled, err := s.assembleAgent(trace, agentasm.Input{
 		WorkDir:  selected.WorkDir,
 		HomeDir:  s.homeDir,
@@ -713,7 +214,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		retryAction := RetryActionResend
 		// recoverBeforeChat 可能先补写 tool result；只有 user 数量增加才能证明
 		// 本次 query 已提交，不能用总消息数判断。
-		if countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser) > userCountBeforeChat {
+		if countMessagesByRole(assembled.Session.Messages, sharedkernel.RoleUser) > userCountBeforeChat || errors.Is(err, sessionrepo.ErrWriteUncertain) {
 			retryAction = RetryActionResume
 		}
 		sw.Send(EventError, ErrorData{Code: ErrorCodeChatFailed, Message: err.Error(), RetryAction: retryAction})
@@ -806,8 +307,6 @@ func (s *server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	sw := newSSEWriter(w, flusher)
 	ctx := r.Context()
-	s.switcher.RLock()
-	defer s.switcher.RUnlock()
 	assembled, err := s.assembleAgent(trace, agentasm.Input{
 		WorkDir: selected.WorkDir, HomeDir: s.homeDir, UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo, SessionID: sessionID, PlanMode: s.planMode, Consumer: trace.consumer(newEventConsumer(sw)),
 	})
@@ -899,14 +398,4 @@ func (s *sessionLocks) TryLock(id string) (func(), bool) {
 		return nil, false
 	}
 	return l.Unlock, true
-}
-
-func (s *server) requestUserID(legacy string) (string, error) {
-	if s.userID == "" {
-		return parseUserID(legacy)
-	}
-	if legacy != "" && legacy != s.userID {
-		return "", errors.New("conflicting user identities")
-	}
-	return s.userID, nil
 }

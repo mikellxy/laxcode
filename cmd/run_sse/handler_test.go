@@ -38,7 +38,7 @@ func TestHandleSessionContext(t *testing.T) {
 	s.catalog = catalogWithSession("s1", t.TempDir())
 	s.contextRepo = contextReaderStub{state: session.RequestContext{WindowToken: sharedkernel.TokenStatistics{TokenInput: 12000, TokenOutput: 932}}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
+	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.workspaceAPI().HandleSessionContext)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/s1/context", nil))
 	if rec.Code != http.StatusOK {
@@ -147,8 +147,8 @@ func TestHandleCreateAndListSessions(t *testing.T) {
 	s.catalog = catalog
 	s.projects = catalog
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("POST /api/sessions", s.workspaceAPI().HandleCreateSession)
+	mux.HandleFunc("GET /api/sessions", s.workspaceAPI().HandleListSessions)
 
 	created := httptest.NewRecorder()
 	workDir := catalog.projects[0].WorkDir
@@ -187,7 +187,7 @@ func TestHandleDeleteSession(t *testing.T) {
 	s := newTestServer(t, t.TempDir(), false)
 	s.catalog = catalog
 	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
+	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.workspaceAPI().HandleDeleteSession)
 	request := func(id, owner string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/sessions/"+id+"?user_id="+owner, nil))
@@ -234,8 +234,8 @@ func TestHandleCreateAndListProjects(t *testing.T) {
 	s := newTestServer(t, t.TempDir(), false)
 	s.projects = catalog
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
-	mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	mux.HandleFunc("POST /api/projects", s.workspaceAPI().HandleCreateProject)
+	mux.HandleFunc("GET /api/projects", s.workspaceAPI().HandleListProjects)
 
 	created := httptest.NewRecorder()
 	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/projects",
@@ -278,12 +278,12 @@ func TestSessionEndpointsRejectInvalidUserID(t *testing.T) {
 
 	create := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(`{"user_id":"not-a-uuid"}`))
-	s.handleCreateSession(create, req)
+	s.workspaceAPI().HandleCreateSession(create, req)
 	if create.Code != http.StatusBadRequest {
 		t.Fatalf("create invalid user status=%d", create.Code)
 	}
 	list := httptest.NewRecorder()
-	s.handleListSessions(list, httptest.NewRequest(http.MethodGet, "/api/sessions?user_id=bad", nil))
+	s.workspaceAPI().HandleListSessions(list, httptest.NewRequest(http.MethodGet, "/api/sessions?user_id=bad", nil))
 	if list.Code != http.StatusBadRequest {
 		t.Fatalf("list invalid user status=%d", list.Code)
 	}
@@ -310,10 +310,9 @@ func TestHandleSwitchModelUpdatesUserModels(t *testing.T) {
 	setupSwitchModelCatalog(t)
 
 	s := newTestServer(t, t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(s.models)
 
 	rec := httptest.NewRecorder()
-	s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
+	s.workspaceAPI().HandleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
 		strings.NewReader(`{"provider":"second","model":"model-2"}`)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -338,7 +337,6 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 	setupSwitchModelCatalog(t)
 
 	s := newTestServer(t, t.TempDir(), false)
-	s.switcher = agentasm.NewModelSwitcher(s.models)
 
 	cases := []struct {
 		name   string
@@ -352,16 +350,16 @@ func TestHandleSwitchModelRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
-		s.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model", strings.NewReader(tc.body)))
+		s.workspaceAPI().HandleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model", strings.NewReader(tc.body)))
 		if rec.Code != tc.status {
 			t.Fatalf("%s: status=%d body=%s", tc.name, rec.Code, rec.Body.String())
 		}
 	}
 
 	noModels := newTestServer(t, t.TempDir(), false)
-	noModels.switcher = agentasm.NewModelSwitcher(nil)
+	noModels.models = nil
 	rec := httptest.NewRecorder()
-	noModels.handleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
+	noModels.workspaceAPI().HandleSwitchModel(rec, httptest.NewRequest(http.MethodPost, "/api/model",
 		strings.NewReader(`{"provider":"first","model":"model-1"}`)))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("nil model manager status=%d body=%s", rec.Code, rec.Body.String())
@@ -386,7 +384,7 @@ func TestHandleListModelsOmitsSensitiveFields(t *testing.T) {
 
 	s := newTestServer(t, t.TempDir(), false)
 	rec := httptest.NewRecorder()
-	s.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	s.workspaceAPI().HandleListModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -427,7 +425,7 @@ func TestHandleHistoryReturnsPagedDTO(t *testing.T) {
 	s := newTestServer(t, t.TempDir(), false)
 	s.history = repo
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
+	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.workspaceAPI().HandleHistory)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/messages?before_seq=10&limit=2", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -454,7 +452,7 @@ func TestHandleHistoryRejectsInvalidPaginationAndMissingSession(t *testing.T) {
 	s := newTestServer(t, t.TempDir(), false)
 	s.history = &fakeHistoryRepo{found: false}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
+	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.workspaceAPI().HandleHistory)
 
 	bad := httptest.NewRecorder()
 	mux.ServeHTTP(bad, httptest.NewRequest(http.MethodGet, "/api/sessions/s1/messages?limit=101", nil))

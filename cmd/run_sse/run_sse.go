@@ -14,6 +14,7 @@ import (
 
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
+	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing"
 )
 
@@ -54,7 +55,12 @@ func run(codeInstance *CodeInstanceGuard) error {
 		}()
 	}
 
-	users, err := newCloudService(homeDir, os.Getenv("LAXCODE_USER_ID"), config.Current, tracer)
+	storeURL, storeToken := os.Getenv("LAXCODE_STORE_URL"), os.Getenv("LAXCODE_STORE_TOKEN")
+	if storeURL == "" || storeToken == "" {
+		return errors.New("proxy storage configuration is required")
+	}
+	repo := sessionrepo.NewRemote(storeURL, os.Getenv("LAXCODE_USER_ID"), storeToken)
+	users, err := newCloudServiceWithRepository(homeDir, os.Getenv("LAXCODE_USER_ID"), config.Current, tracer, repo)
 	if err != nil {
 		return err
 	}
@@ -113,23 +119,8 @@ func (s *server) routes() *http.ServeMux {
 	// Go 1.22+ 的方法+路径模式：方法不匹配时由 ServeMux 自动回 405，
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
-	mux.HandleFunc("GET /skills", s.handleListSkills)
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
-	mux.HandleFunc("POST /api/model", s.handleSwitchModel)
-	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
-	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.handleDeleteSession)
-	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
-	mux.HandleFunc("GET /api/projects", s.handleListProjects)
-	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.handleHistory)
-	mux.HandleFunc("GET /api/sessions/{session_id}/chats/{chat_id}/files.zip", s.handleDownloadChatFiles)
-	mux.HandleFunc("GET /api/sessions/{session_id}/chats/{chat_id}/file", s.handlePreviewChatFile)
-	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.handleSessionContext)
-	mux.HandleFunc("GET /api/sessions/{session_id}/performance", s.handlePerformance)
 	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
-	mux.HandleFunc("GET /api/evaluations", s.handleListEvaluations)
-	mux.HandleFunc("GET /api/sessions/{session_id}/evaluations/{job_id}/report", s.handleDownloadEvaluationReport)
-	mux.HandleFunc("GET /api/models", s.handleListModels)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	return mux

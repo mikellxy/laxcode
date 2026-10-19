@@ -18,8 +18,10 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
+	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
+	"github.com/mikellxy/laxcode/workspace"
 )
 
 const maxEvaluationRequirementBytes = 64 << 10
@@ -30,28 +32,10 @@ type createEvaluationRequest struct {
 	Requirement string `json:"requirement"`
 }
 
-type evaluationJobDTO struct {
-	ID              string     `json:"id"`
-	SourceSessionID string     `json:"source_session_id"`
-	Requirement     string     `json:"requirement"`
-	Status          string     `json:"status"`
-	Error           string     `json:"error,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-}
-
-type evaluationJobListDTO struct {
-	Jobs []evaluationJobDTO `json:"jobs"`
-}
+type evaluationJobDTO = workspace.EvaluationJobDTO
 
 func (s *server) evaluationToDTO(job evaluation.Job) evaluationJobDTO {
-	dto := evaluationJobDTO{
-		ID: job.ID, SourceSessionID: job.SourceSessionID, Requirement: job.Requirement,
-		Status: job.Status, Error: strings.ReplaceAll(job.Error, s.userRoot, ""),
-		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt, CompletedAt: job.CompletedAt,
-	}
-	return dto
+	return workspace.EvaluationToDTO(job, s.userRoot)
 }
 
 func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) {
@@ -130,40 +114,21 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 		SnapshotHistory: layout.EvaluationSnapshotHistory(workDir, req.SessionID),
 	})
 	if err != nil {
+		if errors.Is(err, sessionrepo.ErrWriteUncertain) {
+			s.finishEvaluationJob(jobID, evaluation.StatusFailed, "", "evaluation submission interrupted")
+		}
 		writeJSONError(w, http.StatusInternalServerError, "create evaluation job failed: "+err.Error())
 		return
 	}
 
+	s.startEvaluation(job)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(s.evaluationToDTO(job))
-	s.startEvaluation(job)
-}
-
-func (s *server) handleListEvaluations(w http.ResponseWriter, r *http.Request) {
-	if s.evaluations == nil {
-		writeJSONError(w, http.StatusInternalServerError, "evaluation repository is unavailable")
-		return
-	}
-	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-	if sessionID == "" {
-		writeJSONError(w, http.StatusBadRequest, "session_id is required")
-		return
-	}
-	jobs, err := s.evaluations.ListEvaluationJobs(r.Context(), sessionID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "list evaluation jobs failed: "+err.Error())
-		return
-	}
-	response := evaluationJobListDTO{Jobs: make([]evaluationJobDTO, len(jobs))}
-	for i := range jobs {
-		response.Jobs[i] = s.evaluationToDTO(jobs[i])
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (s *server) startEvaluation(job evaluation.Job) {
+	models, modelErr := s.models.ForTask()
 	s.evaluationWG.Add(1)
 	s.activeEvaluations.Add(1)
 	go func() {
@@ -174,13 +139,17 @@ func (s *server) startEvaluation(job evaluation.Job) {
 				s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", fmt.Sprintf("evaluation worker panicked: %v", recovered))
 			}
 		}()
-		if err := s.runEvaluation(s.evaluationCtx, job); err != nil {
+		if modelErr != nil {
+			s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", modelErr.Error())
+			return
+		}
+		if err := s.runEvaluation(s.evaluationCtx, job, models); err != nil {
 			s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", err.Error())
 		}
 	}()
 }
 
-func (s *server) runEvaluation(ctx context.Context, job evaluation.Job) error {
+func (s *server) runEvaluation(ctx context.Context, job evaluation.Job, models *ai_models.Manager) error {
 	ctx = telemetry.ContextWithChatID(ctx, uuid.NewString())
 	if err := s.evaluations.UpdateEvaluationJob(ctx, job.ID, evaluation.StatusRunning, "", ""); err != nil {
 		return err
@@ -207,20 +176,17 @@ func (s *server) runEvaluation(ctx context.Context, job evaluation.Job) error {
 	}
 	reportPath := layout.EvaluationReport(s.homeDir, job.ID)
 
-	s.switcher.RLock()
 	assembled, err := s.assembleEvaluation(ctx, agentasm.Input{
-		Models: s.models, Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
+		Models: models, Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
 		UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(job.SnapshotHistory),
 	})
 	if err != nil {
-		s.switcher.RUnlock()
 		return fmt.Errorf("assemble evaluator: %w", err)
 	}
 	msg, runErr := assembled.Service.Chat(ctx,
 		prompt.GetEvaluateUserPrompt(job.SnapshotHistory, job.Requirement, reportPath))
 	assembled.Cleanup()
-	s.switcher.RUnlock()
 	if runErr != nil {
 		return fmt.Errorf("run evaluator: %w", runErr)
 	}

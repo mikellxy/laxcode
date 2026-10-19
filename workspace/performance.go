@@ -1,4 +1,4 @@
-package run_sse
+package workspace
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/tracing/filetrace"
 )
 
-func (s *server) handlePerformance(w http.ResponseWriter, r *http.Request) {
+func (s *API) HandlePerformance(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	sessionID := r.PathValue("session_id")
@@ -27,11 +27,11 @@ func (s *server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if s.catalog == nil {
+	if s.Catalog == nil {
 		writeJSONError(w, http.StatusInternalServerError, "session repository is unavailable")
 		return
 	}
-	if _, err := s.catalog.GetSession(ctx, sessionID); err != nil {
+	if _, err := s.Catalog.GetSession(ctx, sessionID); err != nil {
 		if errors.Is(err, sessionrepo.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "session not found")
 		} else {
@@ -42,14 +42,14 @@ func (s *server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	missing := func() {
 		writeJSONProtocolError(w, http.StatusNotFound, "TRACE_LOG_UNAVAILABLE", "本地 tracing 日志不存在；可能尚无记录，或服务使用了 OTLP。", "")
 	}
-	user, err := os.OpenRoot(s.userRoot)
+	user, err := os.OpenRoot(s.UserRoot)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "user directory unavailable")
 		return
 	}
 	defer user.Close()
-	sessionDir := layout.SessionDir(s.homeDir, sessionID)
-	rel, err := filepath.Rel(s.userRoot, sessionDir)
+	sessionDir := layout.SessionDir(s.HomeDir, sessionID)
+	rel, err := filepath.Rel(s.UserRoot, sessionDir)
 	if err != nil || !fs.ValidPath(filepath.ToSlash(rel)) || rel == "." {
 		writeJSONError(w, http.StatusForbidden, "invalid session directory")
 		return
@@ -64,7 +64,7 @@ func (s *server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer root.Close()
-	path, _ := filepath.Rel(sessionDir, layout.TracingLog(s.homeDir, sessionID))
+	path, _ := filepath.Rel(sessionDir, layout.TracingLog(s.HomeDir, sessionID))
 	info, err := root.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		missing()

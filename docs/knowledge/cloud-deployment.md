@@ -27,10 +27,18 @@
 - `web/src/features/identity/guest.ts`：`getOrCreateGuestID()`
 - `laxcode-proxy/main.go`：`func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request)`
 
-### 按用户加锁初始化目录，原子发布完成标记；cloud 首次从镜像初始化默认 Skills
+### proxy 按用户加锁初始化目录，原子同步平台配置并仅首次初始化默认 Skills
 
 - `laxcode-proxy/workplace.go`：`func initializeWorkplace(base, id string) (string, error)`
-- `cmd/run_sse/default_skills.go`：`func initializeDefaultSkills(source, dest string) error`
+- `laxcode-proxy/main.go`：`func (p *proxyServer) prepareWorkspace(id string, u *userState) error`
+- `workspace/api.go`：`func Open(root, id string, catalog Catalog, skills string) (*API, error)`
+- `workspace/default_skills.go`：`func initializeDefaultSkills(source, dest string) error`
+- `internal/infrastructure/config/settings.go`：`func WriteCatalogAtomic(path string, conf Conf) error`
+
+### 沙箱从 HOME 加载平台配置，发布目录配置以单文件只读挂载覆盖用户路径
+
+- `laxcode-proxy/openshell.go`：`func (o *openshellRuntime) Create(ctx context.Context, id, root string) error`
+- `internal/infrastructure/config/config.go`：`func LoadSettings(homeDir string, args []string) (Conf, error)`
 
 ### 固定名称查询和创建沙箱，创建返回不确定时先查询结果，已停止沙箱使用 start
 
@@ -46,17 +54,18 @@
 
 ## 沙箱内应用
 
-### 一个进程持有一个用户的模型管理器、SQLite 仓储和项目根目录
+### cloud 持有单用户模型管理器和远程仓储，SQLite 仅由 proxy 打开
 
-- `cmd/run_sse/cloud.go`：`func newCloudService(home, id string, conf config.Conf, tracer telemetry.Tracer) (*cloudService, error)`
-- `cmd/run_sse/run_sse.go`：`func run(codeInstance *CodeInstanceGuard) error`
+- `cmd/run_sse/cloud.go`：`func newCloudServiceWithRepository(home, id string, conf config.Conf, tracer telemetry.Tracer, repo sessionrepo.Repository) (*cloudService, error)`
+- `cmd/run_sse/run_sse.go`：`func Run(codeInstance *CodeInstanceGuard)`
+- `internal/infrastructure/sessionrepo/remote.go`：`func NewRemote(url, userID, token string) *Remote`
+- `workspace/api.go`：`func (s *API) StoreHandler() http.Handler`
 
 ### 项目仅按名称创建于 workplace，项目和会话身份固定为沙箱用户
 
-- `cmd/run_sse/cloud.go`：`func validateCloudProjectName(name string) error`
-- `cmd/run_sse/handler.go`：`func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request)`
-- `cmd/run_sse/handler.go`：`func (s *server) handleCreateSession(w http.ResponseWriter, r *http.Request)`
-- `cmd/run_sse/handler.go`：`func (s *server) requestUserID(legacy string) (string, error)`
+- `workspace/api.go`：`func ValidateProjectName(name string) error`
+- `workspace/metadata.go`：`func (s *API) HandleCreateProject(w http.ResponseWriter, r *http.Request)`
+- `workspace/metadata.go`：`func (s *API) HandleCreateSession(w http.ResponseWriter, r *http.Request)`
 
 ### 用户从平台目录选择模型，独立保存选择并在启动时恢复
 

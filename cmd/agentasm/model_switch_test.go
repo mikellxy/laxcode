@@ -3,7 +3,6 @@ package agentasm
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
@@ -35,7 +34,7 @@ func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
 	if budget := previousClient.ContextBudget(); budget.ContextWindow != 128_000 || budget.ReservedOutputTokens != 16_384 {
 		t.Fatalf("initial budget: %+v", budget)
 	}
-	if err := NewModelSwitcher(models).SwitchModel("second:model-2"); err != nil {
+	if err := models.SetActiveModel("second:model-2"); err != nil {
 		t.Fatal(err)
 	}
 	if assembled.Service.LLMClient != previousClient || previousClient.ContextBudget().ContextWindow != 128_000 {
@@ -57,27 +56,22 @@ func TestModelSwitchAppliesToNextAssembly(t *testing.T) {
 	}
 }
 
-func TestModelSwitcherWaitsForActiveRequest(t *testing.T) {
+func TestModelSelectionDoesNotChangeActiveTask(t *testing.T) {
 	models := switchTestModels(t)
-
-	switcher := NewModelSwitcher(models)
-	switcher.RLock()
-	done := make(chan error, 1)
-	go func() { done <- switcher.SwitchModel("second:model-2") }()
-	select {
-	case err := <-done:
-		switcher.RUnlock()
-		t.Fatalf("switch completed while request was active: %v", err)
-	case <-time.After(25 * time.Millisecond):
+	task, err := models.ForTask()
+	if err != nil {
+		t.Fatal(err)
 	}
-	switcher.RUnlock()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("switch did not complete after request ended")
+	before := task.Active()
+	if err := models.SetActiveModel("second:model-2"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := models.ForTask()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Active().Ref != before.Ref || next.Active().Ref != "second:model-2" {
+		t.Fatal("task model snapshot changed")
 	}
 }
 
@@ -86,7 +80,7 @@ func TestFailedModelSwitchKeepsSelection(t *testing.T) {
 
 	before := models.Active()
 	for _, ref := range []string{"missing:model", "bad-reference"} {
-		if err := NewModelSwitcher(models).SwitchModel(ref); err == nil {
+		if err := models.SetActiveModel(ref); err == nil {
 			t.Fatal("invalid switch succeeded")
 		}
 	}

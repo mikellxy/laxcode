@@ -3,6 +3,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,7 +27,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	webui "github.com/mikellxy/laxcode/web"
+	"github.com/mikellxy/laxcode/workspace"
 )
 
 type userState struct {
@@ -31,6 +37,8 @@ type userState struct {
 	endpoint *url.URL
 	active   int
 	lastUsed time.Time
+	api      *workspace.API
+	apiMu    sync.RWMutex
 }
 
 func (u *userState) lock(ctx context.Context) error {
@@ -53,6 +61,9 @@ type proxyServer struct {
 	users     map[string]*userState
 	chats     chan struct{}
 	idle      time.Duration
+	catalog   workspace.Catalog
+	skills    string
+	storeKey  []byte
 }
 
 func newProxy(runtime sandboxRuntime, root string, assets fs.FS, idle time.Duration, maxChats int) *proxyServer {
@@ -70,7 +81,9 @@ func newProxy(runtime sandboxRuntime, root string, assets fs.FS, idle time.Durat
 		}
 		return dial(ctx, network, address)
 	}
-	return &proxyServer{runtime: runtime, root: root, assets: staticHandler(assets), transport: transport, client: &http.Client{Transport: transport, Timeout: 3 * time.Second}, users: map[string]*userState{}, chats: make(chan struct{}, maxChats), idle: idle}
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	return &proxyServer{storeKey: key, runtime: runtime, root: root, assets: staticHandler(assets), transport: transport, client: &http.Client{Transport: transport, Timeout: 3 * time.Second}, users: map[string]*userState{}, chats: make(chan struct{}, maxChats), idle: idle}
 }
 func (p *proxyServer) user(id string) *userState {
 	p.mu.Lock()
@@ -162,6 +175,10 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		return
 	}
+	if r.URL.Path == "/internal/store" {
+		p.serveStore(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/internal/") {
 		http.NotFound(w, r)
 		return
@@ -181,6 +198,21 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parsed.String()
+	if !executionRequest(r) {
+		u := p.user(id)
+		if err := u.lock(r.Context()); err != nil {
+			return
+		}
+		defer u.unlock()
+		if err := p.prepareWorkspace(id, u); err != nil {
+			log.Printf("workspace %s: %v", id, err)
+			jsonError(w, 500, "workspace unavailable")
+			return
+		}
+
+		u.api.ServeHTTP(w, r)
+		return
+	}
 	streaming := r.Method == "POST" && (r.URL.Path == "/chat" || strings.HasSuffix(r.URL.Path, "/resume"))
 	if streaming {
 		select {
@@ -203,6 +235,11 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err = u.lock(ctx); err != nil {
 		jsonError(w, 503, "sandbox startup timed out")
+		return
+	}
+	if err := p.prepareWorkspace(id, u); err != nil {
+		u.unlock()
+		jsonError(w, 500, "workspace unavailable")
 		return
 	}
 	endpoint, err := p.ensure(ctx, id, u)
@@ -266,6 +303,10 @@ func (p *proxyServer) restoreRunning(ctx context.Context) {
 			state, err := p.runtime.Lookup(check, id.String())
 			if err == nil && state != nil && strings.EqualFold(state.Phase, "Ready") {
 				u.endpoint, _ = p.runtime.Endpoint(check, state.Name)
+			} else if err == nil && (state == nil || strings.EqualFold(state.Phase, "Stopped") || strings.EqualFold(state.Phase, "Completed")) {
+				if err := p.prepareWorkspace(id.String(), u); err == nil {
+					_ = u.api.InterruptEvaluations(check)
+				}
 			}
 		}
 		u.unlock()
@@ -316,6 +357,9 @@ func (p *proxyServer) stopIdle(ctx context.Context) {
 				return
 			}
 			u.endpoint = nil
+			if u.api != nil {
+				_ = u.api.InterruptEvaluations(check)
+			}
 		}()
 	}
 }
@@ -348,12 +392,19 @@ func run() error {
 	root := flag.String("workplaces", "/data/laxcode", "persistent user directories")
 	policy := flag.String("policy", "/run/laxcode/policy.yaml", "sandbox policy")
 	image := flag.String("image", "laxcode-cloud:bundle", "preloaded sandbox image")
+	gatewayPort := flag.String("gateway-port", "18080", "local OpenShell gateway port")
+	storeURL := flag.String("store-url", "", "private host storage callback URL")
+	settings := flag.String("settings-dir", "", "public platform catalog directory (required)")
+	skills := flag.String("skills", "", "default skills seed directory (required)")
 	providers := flag.String("providers-file", "/run/laxcode/providers.json", "registered provider names")
 	idle := flag.Duration("idle-timeout", 30*time.Minute, "stop inactive sandboxes after this duration")
 	maxChats := flag.Int("max-chats", 2, "global concurrent chat limit")
 	flag.Parse()
 	if *idle <= 0 || *maxChats < 1 {
 		return errors.New("idle-timeout and max-chats must be positive")
+	}
+	if *settings == "" || *skills == "" || *storeURL == "" {
+		return errors.New("settings-dir, skills and store-url are required")
 	}
 	assets, err := webui.Dist()
 	if err != nil {
@@ -383,8 +434,28 @@ func run() error {
 	if err = json.Unmarshal(b, &names); err != nil {
 		return err
 	}
-	runtime := &openshellRuntime{image: *image, policy: *policy, providers: names}
+	runtime := &openshellRuntime{image: *image, policy: *policy, settingsFile: layout.SettingsFile(*settings), providers: names, gatewayPort: *gatewayPort}
+	catalog, err := workspace.LoadCatalog(*settings)
+	if err != nil {
+		return err
+	}
 	p := newProxy(runtime, *root, assets, *idle, *maxChats)
+	p.catalog, p.skills = catalog, *skills
+	keyPath := filepath.Join(*root, ".proxy-store-key")
+	if key, err := os.ReadFile(keyPath); err == nil {
+		if len(key) != 32 {
+			return errors.New("invalid storage key")
+		}
+		p.storeKey = key
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(keyPath, p.storeKey, 0600); err != nil {
+			return err
+		}
+	} else {
+		return err
+	}
+	runtime.storeURL, runtime.storeToken = *storeURL, p.storeToken
+	defer p.closeWorkspaces()
 	defer p.transport.CloseIdleConnections()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -418,4 +489,127 @@ func run() error {
 		_ = srv.Close()
 	}
 	return err
+}
+
+// All other public APIs operate on persisted state and never wake a sandbox.
+func executionRequest(r *http.Request) bool {
+	return r.Method == http.MethodPost && (r.URL.Path == "/chat" || r.URL.Path == "/api/evaluations" || strings.HasPrefix(r.URL.Path, "/api/sessions/") && strings.HasSuffix(r.URL.Path, "/resume"))
+}
+
+// Called with the user's lifecycle lock held through the deletion transaction.
+func (p *proxyServer) checkInactive(ctx context.Context, id string, u *userState) error {
+	if u.active != 0 {
+		return errors.New("用户仍有任务正在执行，请稍后再删除")
+	}
+	check, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	state, err := p.runtime.Lookup(check, id)
+	if err != nil {
+		return errors.New("无法确认沙箱状态，请稍后再删除")
+	}
+	if state == nil || strings.EqualFold(state.Phase, "Stopped") || strings.EqualFold(state.Phase, "Completed") {
+		if err := u.api.InterruptEvaluations(check); err != nil {
+			return errors.New("无法更新已中断任务，请稍后再删除")
+		}
+		return nil
+	}
+	if !strings.EqualFold(state.Phase, "Ready") {
+		return errors.New("沙箱正在切换状态，请稍后再删除")
+	}
+	endpoint, err := p.runtime.Endpoint(check, state.Name)
+	if err != nil {
+		return errors.New("无法确认任务状态，请稍后再删除")
+	}
+	req, _ := http.NewRequestWithContext(check, "GET", strings.TrimRight(endpoint.String(), "/")+"/internal/activity", nil)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return errors.New("无法确认任务状态，请稍后再删除")
+	}
+	defer resp.Body.Close()
+	var activity struct {
+		Active int `json:"active"`
+	}
+	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&activity) != nil {
+		return errors.New("无法确认任务状态，请稍后再删除")
+	}
+	if activity.Active != 0 {
+		return errors.New("用户仍有任务正在执行，请稍后再删除")
+	}
+	return nil
+}
+func (p *proxyServer) closeWorkspaces() {
+	p.mu.Lock()
+	var users []*userState
+	for _, u := range p.users {
+		users = append(users, u)
+	}
+	p.mu.Unlock()
+	for _, u := range users {
+		u.apiMu.RLock()
+		api := u.api
+		u.apiMu.RUnlock()
+		if api != nil {
+			_ = api.Close()
+		}
+	}
+}
+func (p *proxyServer) storeToken(id string) string {
+	mac := hmac.New(sha256.New, p.storeKey)
+	_, _ = mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// Caller holds the user lifecycle lock; store RPCs use their own SQL transactions.
+func (p *proxyServer) prepareWorkspace(id string, u *userState) error {
+	u.apiMu.RLock()
+	exists := u.api != nil
+	u.apiMu.RUnlock()
+	if exists {
+		return nil
+	}
+	root, err := initializeWorkplace(p.root, id)
+	if err != nil {
+		return err
+	}
+	api, err := workspace.Open(root, id, p.catalog, p.skills)
+	if err != nil {
+		return err
+	}
+	api.DeleteGuard = func(ctx context.Context, _ string) (func(), error) {
+		if err := p.checkInactive(ctx, id, u); err != nil {
+			return nil, err
+		}
+		return func() {}, nil
+	}
+	u.apiMu.Lock()
+	u.api = api
+	u.apiMu.Unlock()
+	return nil
+}
+func (p *proxyServer) serveStore(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.Header.Get("X-USERID"))
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if err != nil || id == uuid.Nil || !hmac.Equal([]byte(token), []byte(p.storeToken(id.String()))) {
+		http.NotFound(w, r)
+		return
+	}
+	u := p.user(id.String())
+	u.apiMu.RLock()
+	api := u.api
+	u.apiMu.RUnlock()
+	if api == nil {
+		if err := u.lock(r.Context()); err != nil {
+			return
+		}
+		err := p.prepareWorkspace(id.String(), u)
+		u.unlock()
+		if err != nil {
+			jsonError(w, 503, "storage unavailable")
+			return
+		}
+		u.apiMu.RLock()
+		api = u.api
+		u.apiMu.RUnlock()
+	}
+	api.StoreHandler().ServeHTTP(w, r)
 }

@@ -18,7 +18,7 @@ import (
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 )
 
-func createReportTestJob(t *testing.T, repo *sessionrepo.SqliteSessionRepo, sessionID, userID, jobID, workDir, status string) {
+func createReportTestJob(t *testing.T, repo sessionrepo.Repository, sessionID, userID, jobID, workDir, status string) {
 	t.Helper()
 	_, err := repo.CreateEvaluationJob(context.Background(), evaluation.Job{
 		ID: jobID, SourceSessionID: sessionID, UserID: userID, WorkDir: workDir,

@@ -96,7 +96,7 @@ func parseTestConfig() error {
 }
 
 func TestParseCLIRejectsRemovedFlagsAndPositionalArguments(t *testing.T) {
-	for _, arg := range []string{"-sse", "-mode=code", "-kb=x", "-session=x", "-token-budget=1000", "unexpected"} {
+	for _, arg := range []string{"-sse", "-mode=code", "-kb=x", "-session=x", "-token-budget=1000", "-settings_dir=/etc/laxcode", "unexpected"} {
 		if _, err := Load(t.TempDir(), []string{arg}); err == nil {
 			t.Fatalf("accepted %q", arg)
 		}

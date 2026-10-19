@@ -323,3 +323,34 @@ func providersConf(providers []config.Provider) config.Conf {
 	}
 	return config.Conf{ProviderList: providers}
 }
+
+func TestRootedPreferencesCannotFollowHostSymlink(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "agenthome")
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, home, modelSettings("p", "a"))
+	conf, err := config.Load(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewRooted(home, root, conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	outside := t.TempDir()
+	if err := os.Rename(filepath.Join(home, ".laxcode"), filepath.Join(home, "saved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, ".laxcode")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetActiveModel("p:a"); err == nil {
+		t.Fatal("preference write escaped user root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "model-selection.json")); !os.IsNotExist(err) {
+		t.Fatal("wrote outside user root")
+	}
+}

@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import socket
+import ipaddress
 import sys
 from urllib.parse import urlsplit
 
@@ -68,18 +70,36 @@ def generate(release):
     (image / 'bin').mkdir()
     import shutil
     shutil.copy2(release / 'bin/laxcode-cloud', image / 'bin/laxcode-cloud')
-    shutil.copytree(release / 'skills', image / 'skills')
     # Build context deliberately excludes the release's real settings and credentials.
     shutil.copy2(release / 'Dockerfile', image / 'Dockerfile')
-    (image / 'settings.json').write_text(json.dumps(catalog, indent=2) + '\n')
-    for path in image.rglob('*'):
-        path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
+    (release / 'catalog').mkdir()
+    (release / 'catalog/settings.json').write_text(json.dumps(catalog, indent=2) + '\n')
+    (release / 'catalog/settings.json').chmod(0o444)
     profiles = release / 'profiles'
     profiles.mkdir()
     for profile, _, _ in registrations:
         (profiles / (profile['id'] + '.json')).write_text(json.dumps(profile))
     (release / 'providers.json').write_text(json.dumps([p['id'] for p, _, _ in registrations]))
-    (release / 'policy.yaml').write_text('version: 1\nfilesystem_policy:\n  include_workdir: true\n  read_only: [/bin, /usr, /lib, /proc, /dev/urandom, /etc, /var/log, /opt]\n  read_write: [/sandbox, /workplace, /tmp, /dev/null]\nlandlock:\n  compatibility: best_effort\nnetwork_policies: {}\n')
+    # Choose the host's private address, reachable from both Docker Desktop and Linux.
+    # Connecting a UDP socket selects a route without sending any packets.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(('8.8.8.8', 80))
+        host_ip = route.getsockname()[0]
+    if not ipaddress.ip_address(host_ip).is_private or ipaddress.ip_address(host_ip).is_loopback:
+        raise ValueError('A private host address is required for sandbox storage callbacks')
+    (release / 'store-url').write_text(f'http://{host_ip}:5173/internal/store')
+    policy = {'version': 1,
+              'filesystem_policy': {'include_workdir': True,
+                  'read_only': ['/bin', '/usr', '/lib', '/proc', '/dev/urandom', '/etc', '/var/log', '/opt'],
+                  'read_write': ['/sandbox', '/workplace', '/tmp', '/dev/null']},
+              'landlock': {'compatibility': 'best_effort'},
+              'network_policies': {'laxcode_storage': {
+                  'endpoints': [{'host': host_ip, 'port': 5173, 'protocol': 'rest',
+                                 'enforcement': 'enforce', 'allowed_ips': [host_ip + '/32'],
+                                 'rules': [{'allow': {'method': 'POST', 'path': '/internal/store'}}]}],
+                  'binaries': [{'path': '/usr/local/bin/laxcode-cloud'}]}}}
+    (release / 'policy.yaml').write_text(json.dumps(policy, indent=2))
+
 
 
 def register(release):

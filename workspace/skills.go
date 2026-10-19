@@ -1,4 +1,4 @@
-package run_sse
+package workspace
 
 import (
 	"encoding/json"
@@ -13,8 +13,8 @@ type skillDTO struct {
 	Description string `json:"description"`
 }
 
-func (s *server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
-	source := skillrepo.NewWithRoot(s.homeDir, s.userRoot)
+func (s *API) HandleListSkills(w http.ResponseWriter, _ *http.Request) {
+	source := skillrepo.NewWithRoot(s.HomeDir, s.UserRoot)
 	skills := make([]skillDTO, 0)
 	for _, skill := range prompt.LoadSkills(source, "", nil) {
 		skills = append(skills, skillDTO{Name: skill.Name, Description: skill.Description})

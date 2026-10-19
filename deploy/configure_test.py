@@ -33,12 +33,26 @@ class ReleaseConfigTest(unittest.TestCase):
             (root / 'skills/SKILL.md').write_text('skill')
             (root / 'Dockerfile').write_text('FROM base\n')
             (root / 'settings.json').write_text(json.dumps({'model': 'p:m', 'provider_list': [{'provider_name': 'p', 'openai_base_url': 'https://example.com', 'openai_api_key': 'secret-value', 'model_list': [{'model_name': 'm'}]}]}))
-            generate(root)
+            from unittest.mock import patch
+            with patch('configure.socket.socket') as socket:
+                socket.return_value.__enter__.return_value.getsockname.return_value = ('192.168.1.5', 10000)
+                generate(root)
+            policy = json.loads((root / 'policy.yaml').read_text())
+            rule = policy['network_policies']['laxcode_storage']
+            self.assertEqual(rule['binaries'], [{'path': '/usr/local/bin/laxcode-cloud'}])
+            self.assertEqual(rule['endpoints'][0]['allowed_ips'], ['192.168.1.5/32'])
+            self.assertEqual(rule['endpoints'][0]['rules'], [{'allow': {'method': 'POST', 'path': '/internal/store'}}])
             for path in (root / 'image').rglob('*'):
                 if path.is_file():
                     self.assertNotIn(b'secret-value', path.read_bytes())
             self.assertIn('secret-value', (root / 'settings.json').read_text())
-            self.assertTrue((root / 'image/skills/SKILL.md').is_file())
+            self.assertEqual({str(p.relative_to(root / 'image')) for p in (root / 'image').rglob('*')},
+                             {'bin', 'bin/laxcode-cloud', 'Dockerfile'})
+            public = (root / 'catalog/settings.json').read_text()
+            self.assertEqual((root / 'catalog/settings.json').stat().st_mode & 0o777, 0o444)
+            self.assertNotIn('secret-value', public)
+            self.assertTrue(json.loads(public)['provider_list'][0]['openai_api_key'].startswith('LAXCODE_API_KEY_'))
+            self.assertTrue((root / 'skills/SKILL.md').is_file())
 
     def test_profile_update_uses_current_resource_version(self):
         import json

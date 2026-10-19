@@ -29,7 +29,7 @@ func TestListSkills(t *testing.T) {
 	s := &server{homeDir: home, userRoot: home}
 	request := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
-		s.routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/skills", nil))
+		s.workspaceAPI().Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/skills", nil))
 		if response.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}

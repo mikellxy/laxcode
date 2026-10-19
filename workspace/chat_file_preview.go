@@ -1,4 +1,4 @@
-package run_sse
+package workspace
 
 import (
 	"io"
@@ -11,7 +11,7 @@ import (
 const maxChatTextPreviewBytes = 256 << 10
 const maxChatImagePreviewBytes = 10 << 20
 
-func (s *server) handlePreviewChatFile(w http.ResponseWriter, r *http.Request) {
+func (s *API) HandlePreviewChatFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	project, projectPath, files := s.openChatFileProject(w, r)
