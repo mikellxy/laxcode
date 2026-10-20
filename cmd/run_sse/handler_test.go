@@ -211,15 +211,6 @@ func TestHandleDeleteSession(t *testing.T) {
 	if busy.Code != http.StatusConflict || len(catalog.page.Sessions) != 1 {
 		t.Fatalf("busy session status=%d remaining=%d", busy.Code, len(catalog.page.Sessions))
 	}
-	evaluationUnlock, ok := s.evaluationLocks.TryLock(sessionID)
-	if !ok {
-		t.Fatal("could not lock evaluation creation")
-	}
-	evaluating := request(sessionID, userID)
-	evaluationUnlock()
-	if evaluating.Code != http.StatusConflict || len(catalog.page.Sessions) != 1 {
-		t.Fatalf("evaluation creation status=%d remaining=%d", evaluating.Code, len(catalog.page.Sessions))
-	}
 	if got := request(sessionID, userID); got.Code != http.StatusNoContent || len(catalog.page.Sessions) != 0 {
 		t.Fatalf("delete status=%d remaining=%d body=%s", got.Code, len(catalog.page.Sessions), got.Body.String())
 	}

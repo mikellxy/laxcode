@@ -8,10 +8,10 @@ describe("evaluation API", () => {
     const job = { id: "eval_s1_now", source_session_id: "s1", requirement: "check tests", status: "queued", created_at: "2026-09-27T00:00:00Z", updated_at: "2026-09-27T00:00:00Z" };
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(job), { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(createEvaluation("s1", "/projects/demo", "check tests")).resolves.toEqual(job);
+    await expect(createEvaluation("s1", "check tests")).resolves.toEqual(job);
     expect(fetchMock).toHaveBeenCalledWith("/api/evaluations", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ session_id: "s1", work_dir: "/projects/demo", requirement: "check tests" }),
+      body: JSON.stringify({ session_id: "s1", requirement: "check tests" }),
     }));
   });
 

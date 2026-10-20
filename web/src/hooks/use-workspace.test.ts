@@ -52,6 +52,44 @@ function workspaceFixture() {
 beforeEach(() => { vi.resetAllMocks(); });
 
 describe("workspace send coordination", () => {
+  it("keeps sandbox and first-output waiting in per-session memory", async () => {
+    const response = deferred();
+    vi.mocked(createSession).mockResolvedValue({ session_id: "first", project_id: "project" } as Awaited<ReturnType<typeof createSession>>);
+    vi.mocked(streamChat).mockReturnValue(response.promise);
+    const render = workspaceFixture();
+    const sending = render().send("hello");
+    await vi.waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1));
+    const onEvent = vi.mocked(streamChat).mock.calls[0][3];
+    onEvent({ type: "prepare", data: {} });
+    expect(render().stream.waitingFor).toBe("sandbox");
+    onEvent({ type: "start", data: { session_id: "first" } });
+    expect(render().stream.waitingFor).toBe("reply");
+    onEvent({ type: "message", data: { delta: "" } });
+    expect(render().stream.waitingFor).toBe("reply");
+    onEvent({ type: "message", data: { delta: "hello" } });
+    expect(render().stream.waitingFor).toBeUndefined();
+    onEvent({ type: "done", data: { session_id: "first", result: "hello", token_used: { token_input: 1, token_output: 1 }, window_token: { token_input: 1, token_output: 1 }, context_window: 100 } });
+    response.resolve();
+    await sending;
+    expect(render().stream).toMatchObject({ messages: [], running: false });
+    expect(render().stream.waitingFor).toBeUndefined();
+  });
+
+  it("clears preparation immediately when the request is canceled", async () => {
+    vi.mocked(createSession).mockResolvedValue({ session_id: "first", project_id: "project" } as Awaited<ReturnType<typeof createSession>>);
+    vi.mocked(streamChat).mockImplementation((_id, _task, signal, onEvent) => {
+      onEvent({ type: "prepare", data: {} });
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("canceled", "AbortError")), { once: true }));
+    });
+    const render = workspaceFixture();
+    const sending = render().send("hello");
+    await vi.waitFor(() => expect(render().stream.waitingFor).toBe("sandbox"));
+    render().cancel();
+    await sending;
+    expect(render().stream.waitingFor).toBeUndefined();
+    expect(render().stream).toMatchObject({ running: false, error: "已取消本轮对话" });
+  });
+
   it("lets another draft send while a previously created session is still streaming", async () => {
     const first = deferred();
     vi.mocked(createSession)

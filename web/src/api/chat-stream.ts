@@ -1,7 +1,7 @@
 import { ApiError, request } from "./client";
 import type { ErrorPayload, StreamEvent } from "../types/api";
 
-const eventNames = new Set(["start", "reasoning", "message", "tool_call", "done", "error"]);
+const eventNames = new Set(["prepare", "start", "reasoning", "message", "tool_call", "done", "error"]);
 
 export function parseSSEFrame(frame: string): StreamEvent | null {
   let event = "message";

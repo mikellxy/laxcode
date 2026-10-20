@@ -351,15 +351,20 @@ Content-Type: application/json
 ```json
 {
   "session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
-  "work_dir": "/absolute/project/path",
   "requirement": "重点检查测试覆盖和用户验收条件"
 }
 ```
 
-`work_dir` 必须与 Session 持久化的工作目录一致。成功返回 `202 Accepted` 和
-`queued` job；同一源 Session 同时只运行一个评估任务。后端把源会话目录快照到
-`${work_dir}/eval/${session_id}`，用 `eval_${session_id}_${date_time}` 作为独立
-Judge Session，并把最终 Markdown 报告写入 `${HOME}/.laxcode/eval/`。
+请求仅传 `session_id` 和 `requirement`，工作目录从源 Session 读取，独立 Judge
+Session 也使用该工作目录。后端先获取源 Session 锁，再获取项目锁；源会话或项目忙、
+已有 `queued/running` 评估时返回 `409`，不创建 job。同一源 Session 同时只运行一个评估任务。
+
+创建 `queued` job 后，在请求内把源会话目录快照到 `${work_dir}/eval/${session_id}`，
+并完成独立 Judge Session 的装配；Session ID 由会话层生成。初始化失败或请求取消时，
+将 job 标记为 `failed` 并返回错误。初始化成功、确认请求未取消并登记后台任务后，
+返回 `202 Accepted` 和 `queued` job；前端在等待响应期间显示“评估任务初始化中…”。
+源 Session 和项目锁仅持有到初始化完成，后台模型执行使用服务级 context，
+把最终 Markdown 报告写入 `${HOME}/.laxcode/eval/`。
 
 查询当前源 Session 的全部评估任务：
 
@@ -432,13 +437,28 @@ Web 前端先创建项目并展示空聊天页，延迟到用户首次发送消�
 
 ### 流开始前的 HTTP 错误
 
-- `400`：JSON 非法或 `task` 为空。
-- `409`：相同 Session 已有一轮对话正在执行。
+- proxy 身份校验失败、请求体读取失败或超过 1 MiB 时返回 `400`。
+- proxy 全局对话并发达到上限时返回 `429`，保留 `SERVER_BUSY` 和 `retry_action`。
 - `500`：服务端不支持流式响应等启动错误。
 
 收到响应后应先检查 HTTP 状态和 `Content-Type`。进入 `text/event-stream` 后，后续业务错误通过 `event: error` 表达，HTTP 状态仍然是 `200`。
+proxy 发送 `prepare` 后，启动失败和沙箱返回的 HTTP 错误（包括 `400/409`）均转换为
+SSE `error`，保留上游 `code`、`message` 和 `retry_action`。proxy 启动失败使用
+`SANDBOX_UNAVAILABLE`，对 `/chat` 提示 `resend`，对 `/resume` 提示 `resume`；
+未知上游响应使用 `UPSTREAM_ERROR`。直连沙箱时，流开始前仍可能收到原始 HTTP 错误。
 
 ### SSE 事件
+
+#### prepare
+
+```text
+event: prepare
+data: {}
+```
+
+proxy 在用户身份校验、全局并发限流和有界读取请求体后立即发送并 Flush，
+早于等待用户生命周期锁、启动沙箱和转发请求。前端显示“正在进入您的专属安全沙箱…”，
+使用循环三点动效；不创建聊天消息，不写入历史、SQLite 或浏览器持久化存储。
 
 #### start
 
@@ -448,6 +468,9 @@ data: {"session_id":"97e310f4-b757-427a-92f4-d2d88956d54a"}
 ```
 
 装配完成后发送。显式创建 Session 时应与请求中的 ID 一致。
+前端只把等待提示改为“已进入您的专属安全沙箱，正在准备回复…”，保持同一个动效。
+收到首个包含非空白内容的 `reasoning` / `message`，或收到 `tool_call` 时收起提示；
+`error`、取消、断流和 `done` 也会收起提示并停止动效。该状态只保留在当前页面的会话内存中。
 
 #### reasoning
 

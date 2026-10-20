@@ -23,11 +23,9 @@ export function EvaluationPanel({ sessionID, workDir, disabled }: { sessionID?: 
     refetchInterval: (query) => query.state.data?.jobs.some((job) => job.status === "queued" || job.status === "running") ? 1500 : false,
   });
   const create = useMutation({
-    mutationFn: () => createEvaluation(sessionID!, workDir!, requirement.trim()),
-    onSuccess: async () => {
-      setRequirement("");
-      await client.invalidateQueries({ queryKey: ["evaluations", sessionID] });
-    },
+    mutationFn: () => createEvaluation(sessionID!, requirement.trim()),
+    onSuccess: () => setRequirement(""),
+    onSettled: () => client.invalidateQueries({ queryKey: ["evaluations", sessionID] }),
   });
   if (!workDir) return null;
   const hasActiveJob = jobs.data?.jobs.some((job) => job.status === "queued" || job.status === "running") ?? false;
@@ -41,7 +39,7 @@ export function EvaluationPanel({ sessionID, workDir, disabled }: { sessionID?: 
       <header><div><strong>评估当前会话</strong><small>提交后由独立 Judge 异步执行</small></div><button onClick={() => setOpen(false)} aria-label="关闭评估面板"><X size={15} /></button></header>
       <textarea value={requirement} maxLength={65536} onChange={(event) => setRequirement(event.target.value)} placeholder="输入本次评估 requirement，例如重点检查测试覆盖和验收条件…" />
       {create.isError && <p className="evaluation-error">{create.error instanceof Error ? create.error.message : "创建评估任务失败"}</p>}
-      <button className="evaluation-submit" disabled={!canSubmit} onClick={() => create.mutate()}>{create.isPending ? <><LoaderCircle className="spin" size={14} />提交中…</> : "开始评估"}</button>
+      <button className="evaluation-submit" disabled={!canSubmit} onClick={() => create.mutate()}>{create.isPending ? <><LoaderCircle className="spin" size={14} />评估任务初始化中…</> : "开始评估"}</button>
       <div className="evaluation-list-heading"><strong>评估任务</strong><span>{jobs.data?.jobs.length ?? 0}</span></div>
       <div className="evaluation-list">
         {jobs.isLoading && <p className="evaluation-empty">加载中…</p>}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,7 +19,6 @@ import (
 	"github.com/mikellxy/laxcode/internal/domain/evaluation"
 	"github.com/mikellxy/laxcode/internal/domain/prompt"
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
-	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/layout"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
 	"github.com/mikellxy/laxcode/workspace"
@@ -28,7 +28,6 @@ const maxEvaluationRequirementBytes = 64 << 10
 
 type createEvaluationRequest struct {
 	SessionID   string `json:"session_id"`
-	WorkDir     string `json:"work_dir"`
 	Requirement string `json:"requirement"`
 }
 
@@ -65,14 +64,9 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, "requirement is too large")
 		return
 	}
-	workDir, err := normalizeWorkDir(req.WorkDir)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	unlock, ok := s.evaluationLocks.TryLock(req.SessionID)
+	unlock, ok := s.locks.TryLock(req.SessionID)
 	if !ok {
-		writeJSONError(w, http.StatusConflict, "an evaluation is already being created for this session")
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "source session is busy", "")
 		return
 	}
 	defer unlock()
@@ -89,10 +83,17 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusConflict, "only code sessions can be evaluated")
 		return
 	}
-	if filepath.Clean(source.WorkDir) != workDir {
-		writeJSONError(w, http.StatusConflict, "work_dir does not match the selected session")
+	workDir, err := normalizeWorkDir(source.WorkDir)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	unlockProject, ok := s.lockChatProject(workDir)
+	if !ok {
+		writeJSONProtocolError(w, http.StatusConflict, ErrorCodeSessionBusy, "project is busy", "")
+		return
+	}
+	defer unlockProject()
 
 	existing, err := s.evaluations.ListEvaluationJobs(r.Context(), req.SessionID)
 	if err != nil {
@@ -121,14 +122,28 @@ func (s *server) handleCreateEvaluation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.startEvaluation(job)
+	chatID := uuid.NewString()
+	assembled, err := s.prepareEvaluation(telemetry.ContextWithChatID(r.Context(), chatID), job)
+	if err == nil {
+		// Snapshot copying is not cancellable; never launch a worker for an abandoned request.
+		err = r.Context().Err()
+	}
+	if err != nil {
+		if assembled != nil {
+			assembled.Cleanup()
+		}
+		s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "initialize evaluation failed: "+err.Error())
+		return
+	}
+	s.startEvaluation(job, assembled, chatID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(s.evaluationToDTO(job))
 }
 
-func (s *server) startEvaluation(job evaluation.Job) {
-	models, modelErr := s.models.ForTask()
+func (s *server) startEvaluation(job evaluation.Job, assembled *agentasm.Assembled, chatID string) {
+	ctx := telemetry.ContextWithChatID(s.evaluationCtx, chatID)
 	s.evaluationWG.Add(1)
 	s.activeEvaluations.Add(1)
 	go func() {
@@ -139,54 +154,55 @@ func (s *server) startEvaluation(job evaluation.Job) {
 				s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", fmt.Sprintf("evaluation worker panicked: %v", recovered))
 			}
 		}()
-		if modelErr != nil {
-			s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", modelErr.Error())
-			return
-		}
-		if err := s.runEvaluation(s.evaluationCtx, job, models); err != nil {
+		defer assembled.Cleanup()
+		if err := s.runEvaluation(ctx, job, assembled); err != nil {
 			s.finishEvaluationJob(job.ID, evaluation.StatusFailed, "", err.Error())
 		}
 	}()
 }
 
-func (s *server) runEvaluation(ctx context.Context, job evaluation.Job, models *ai_models.Manager) error {
-	ctx = telemetry.ContextWithChatID(ctx, uuid.NewString())
-	if err := s.evaluations.UpdateEvaluationJob(ctx, job.ID, evaluation.StatusRunning, "", ""); err != nil {
-		return err
+// The caller holds the source session lock and then the project lock throughout initialization.
+func (s *server) prepareEvaluation(ctx context.Context, job evaluation.Job) (assembled *agentasm.Assembled, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("evaluation initialization panicked: %v", recovered)
+		}
+	}()
+	models, err := s.models.ForTask()
+	if err != nil {
+		return nil, err
 	}
 	sourceDir := layout.SessionDir(s.homeDir, job.SourceSessionID)
 	snapshotDir := layout.EvaluationSnapshotDir(job.WorkDir, job.SourceSessionID)
-	copyErr := func() error {
-		unlock, ok := s.locks.TryLock(job.SourceSessionID)
-		if !ok {
-			return errors.New("source session is busy")
-		}
-		defer unlock()
-		return copySessionSnapshot(sourceDir, snapshotDir, job.WorkDir)
-	}()
-	if copyErr != nil {
-		return fmt.Errorf("copy evaluation snapshot: %w", copyErr)
+	if err := copySessionSnapshot(sourceDir, snapshotDir, job.WorkDir); err != nil {
+		return nil, fmt.Errorf("copy evaluation snapshot: %w", err)
 	}
 	info, err := os.Stat(job.SnapshotHistory)
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
 			err = errors.New("history is not a regular file")
 		}
-		return fmt.Errorf("validate evaluation history: %w", err)
+		return nil, fmt.Errorf("validate evaluation history: %w", err)
 	}
-	reportPath := layout.EvaluationReport(s.homeDir, job.ID)
 
-	assembled, err := s.assembleEvaluation(ctx, agentasm.Input{
+	assembled, err = s.assembleEvaluation(ctx, agentasm.Input{
 		Models: models, Mode: agentasm.ModeEvaluate, WorkDir: job.WorkDir, HomeDir: s.homeDir, Tracer: s.tracer,
 		UserRoot: s.userRoot, TempDir: s.tempDir, Repository: s.contextRepo,
 		SystemPrompt: prompt.GetEvaluateSysPrompt(job.SnapshotHistory),
 	})
 	if err != nil {
-		return fmt.Errorf("assemble evaluator: %w", err)
+		return assembled, fmt.Errorf("assemble evaluator: %w", err)
 	}
+	return assembled, nil
+}
+
+func (s *server) runEvaluation(ctx context.Context, job evaluation.Job, assembled *agentasm.Assembled) error {
+	if err := s.evaluations.UpdateEvaluationJob(ctx, job.ID, evaluation.StatusRunning, "", ""); err != nil {
+		return err
+	}
+	reportPath := layout.EvaluationReport(s.homeDir, job.ID)
 	msg, runErr := assembled.Service.Chat(ctx,
 		prompt.GetEvaluateUserPrompt(job.SnapshotHistory, job.Requirement, reportPath))
-	assembled.Cleanup()
 	if runErr != nil {
 		return fmt.Errorf("run evaluator: %w", runErr)
 	}
@@ -202,7 +218,9 @@ func (s *server) runEvaluation(ctx context.Context, job evaluation.Job, models *
 func (s *server) finishEvaluationJob(id, status, reportPath, errorMessage string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = s.evaluations.UpdateEvaluationJob(ctx, id, status, reportPath, errorMessage)
+	if err := s.evaluations.UpdateEvaluationJob(ctx, id, status, reportPath, errorMessage); err != nil {
+		slog.ErrorContext(ctx, "update evaluation job failed", "job_id", id, "status", status, "error", err)
+	}
 }
 
 func (s *server) stopEvaluations() {

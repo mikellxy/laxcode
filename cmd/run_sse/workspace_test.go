@@ -16,12 +16,7 @@ func (s *server) workspaceAPI() *workspace.API {
 			if !ok {
 				return nil, errors.New("session busy")
 			}
-			evaluationUnlock, ok := s.evaluationLocks.TryLock(id)
-			if !ok {
-				unlock()
-				return nil, errors.New("evaluation busy")
-			}
-			return func() { evaluationUnlock(); unlock() }, nil
+			return unlock, nil
 		},
 	}}
 }

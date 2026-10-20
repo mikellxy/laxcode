@@ -32,6 +32,7 @@ export type RetryAction = "resume" | "resend";
 export type ErrorPayload = { code: string; message: string; retry_action?: RetryAction };
 
 export type StreamEvent =
+  | { type: "prepare"; data: Record<string, never> }
   | { type: "start"; data: { session_id: string } }
   | { type: "reasoning"; data: { delta: string } }
   | { type: "message"; data: { delta: string } }

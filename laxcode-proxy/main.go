@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -214,6 +216,11 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	streaming := r.Method == "POST" && (r.URL.Path == "/chat" || strings.HasSuffix(r.URL.Path, "/resume"))
+	var stream *preparedStream
+	retryAction := "resend"
+	if strings.HasSuffix(r.URL.Path, "/resume") {
+		retryAction = "resume"
+	}
 	if streaming {
 		select {
 		case p.chats <- struct{}{}:
@@ -222,31 +229,58 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", "5")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(429)
-			action := "resend"
-			if strings.HasSuffix(r.URL.Path, "/resume") {
-				action = "resume"
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"message": "服务繁忙，请稍后重试", "code": "SERVER_BUSY", "retry_action": action})
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "服务繁忙，请稍后重试", "code": "SERVER_BUSY", "retry_action": retryAction})
 			return
 		}
+		if _, ok := w.(http.Flusher); !ok {
+			jsonError(w, 500, "streaming unsupported")
+			return
+		}
+		// HTTP/1 may consume unread request data when prepare is flushed.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			jsonError(w, 400, "read request body failed")
+			return
+		}
+		_ = r.Body.Close()
+		r.Body = http.NoBody
+		if len(body) != 0 {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		r.ContentLength = int64(len(body))
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+		stream = &preparedStream{ResponseWriter: w, header: make(http.Header)}
+		if err := stream.send("prepare", struct{}{}); err != nil {
+			return
+		}
+		w = stream
+	}
+	writeProxyError := func(status int, message, retry string) {
+		if stream != nil {
+			_ = stream.send("error", streamError{Code: "SANDBOX_UNAVAILABLE", Message: message, RetryAction: retry})
+			return
+		}
+		jsonError(w, status, message)
 	}
 	u := p.user(id)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	if err = u.lock(ctx); err != nil {
-		jsonError(w, 503, "sandbox startup timed out")
+		writeProxyError(503, "sandbox startup timed out", retryAction)
 		return
 	}
 	if err := p.prepareWorkspace(id, u); err != nil {
 		u.unlock()
-		jsonError(w, 500, "workspace unavailable")
+		writeProxyError(500, "workspace unavailable", retryAction)
 		return
 	}
 	endpoint, err := p.ensure(ctx, id, u)
 	if err != nil {
 		u.unlock()
 		log.Printf("sandbox %s: %v", id, err)
-		jsonError(w, 503, "sandbox unavailable; inspect deployment logs")
+		writeProxyError(503, "sandbox unavailable; inspect deployment logs", retryAction)
 		return
 	}
 	u.active++
@@ -268,6 +302,9 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				u.endpoint = nil
 				u.unlock()
 			}
+			if stream != nil {
+				return stream.adaptResponse(response)
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -275,7 +312,7 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			u.endpoint = nil
 			u.unlock()
 			log.Printf("sandbox request failed: %v", err)
-			jsonError(w, 502, "sandbox connection failed")
+			writeProxyError(502, "sandbox connection failed", "")
 		},
 	}
 	reverse.ServeHTTP(w, r)

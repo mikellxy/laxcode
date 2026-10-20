@@ -49,7 +49,6 @@ type server struct {
 	catalog            session.SessionCatalogRepository
 	projects           session.ProjectRepository
 	evaluations        evaluation.Repository
-	evaluationLocks    *sessionLocks
 	evaluationCtx      context.Context
 	evaluationCancel   context.CancelFunc
 	evaluationWG       sync.WaitGroup
@@ -82,7 +81,6 @@ func newServer(homeDir string, planMode bool, models *ai_models.Manager) *server
 		assembleEvaluation: agentasm.Assemble,
 		locks:              newSessionLocks(),
 		projectLocks:       newSessionLocks(),
-		evaluationLocks:    newSessionLocks(),
 		evaluationCtx:      evaluationCtx,
 		evaluationCancel:   evaluationCancel,
 	}
