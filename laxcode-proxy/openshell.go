@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,9 +17,13 @@ import (
 )
 
 type sandboxState struct {
-	Name  string `json:"name"`
-	ID    string `json:"id"`
-	Phase string `json:"phase"`
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Phase     string `json:"phase"`
+	Admission struct {
+		State         string `json:"state"`
+		PolicyVersion uint32 `json:"policy_version"`
+	} `json:"configuration_admission"`
 }
 type sandboxRuntime interface {
 	Lookup(context.Context, string) (*sandboxState, error)
@@ -67,6 +72,26 @@ func (o *openshellRuntime) Lookup(ctx context.Context, id string) (*sandboxState
 	s := list.Sandboxes[0]
 	if s.Name != sandboxName(id) {
 		return nil, errors.New("sandbox name does not match user")
+	}
+	if strings.EqualFold(s.Phase, "Ready") {
+		if s.Admission.State != "accepted" || s.Admission.PolicyVersion == 0 {
+			return nil, errors.New("sandbox configuration is not admitted")
+		}
+		raw, err := runOpenShell(ctx, "policy", "get", s.Name, "--rev", strconv.FormatUint(uint64(s.Admission.PolicyVersion), 10), "--output", "json")
+		if err != nil {
+			return nil, err
+		}
+		var policy struct {
+			Status  string `json:"status"`
+			Version uint32 `json:"version"`
+			Active  uint32 `json:"active_version"`
+		}
+		if err = json.Unmarshal(raw, &policy); err != nil {
+			return nil, err
+		}
+		if policy.Status != "loaded" || policy.Version != s.Admission.PolicyVersion || policy.Active != policy.Version {
+			return nil, errors.New("sandbox policy is not loaded")
+		}
 	}
 	return &s, nil
 }

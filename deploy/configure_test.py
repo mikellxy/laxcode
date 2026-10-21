@@ -3,6 +3,16 @@ import unittest
 from configure import prepare
 
 class ConfigTest(unittest.TestCase):
+    def test_public_domain_scope_and_invalid_entries(self):
+        from configure import network_hosts
+        hosts = network_hosts({'additional_domains': ['example.com', 'github.com']})
+        self.assertEqual(hosts.count('github.com'), 1)
+        self.assertIn('**.*.*', hosts)
+        self.assertIn('example.com', hosts)
+        for host in ['*', '**', '*.com', '127.0.0.1', 'https://example.com', 'example.com:443', 'UPPER.com', 'a..com']:
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                network_hosts({'additional_domains': [host]})
+
     def test_credentials_are_removed_without_mutating_source(self):
         source = {'model': 'ark:m', 'provider_list': [{'provider_name': 'ark', 'openai_base_url': 'https://example.com/api/v1', 'openai_api_key': 'real-secret', 'model_list': [{'model_name': 'm'}]}]}
         original = copy.deepcopy(source)
@@ -34,14 +44,20 @@ class ReleaseConfigTest(unittest.TestCase):
             (root / 'Dockerfile').write_text('FROM base\n')
             (root / 'settings.json').write_text(json.dumps({'model': 'p:m', 'provider_list': [{'provider_name': 'p', 'openai_base_url': 'https://example.com', 'openai_api_key': 'secret-value', 'model_list': [{'model_name': 'm'}]}]}))
             from unittest.mock import patch
-            with patch('configure.socket.socket') as socket:
+            with patch('configure.socket.socket') as socket, patch('configure.platform.system', return_value='Linux'), patch('configure.require_guard') as guard:
                 socket.return_value.__enter__.return_value.getsockname.return_value = ('192.168.1.5', 10000)
                 generate(root)
+            guard.assert_called_once_with('192.168.1.5')
             policy = json.loads((root / 'policy.yaml').read_text())
             rule = policy['network_policies']['laxcode_storage']
             self.assertEqual(rule['binaries'], [{'path': '/usr/local/bin/laxcode-cloud'}])
             self.assertEqual(rule['endpoints'][0]['allowed_ips'], ['192.168.1.5/32'])
             self.assertEqual(rule['endpoints'][0]['rules'], [{'allow': {'method': 'POST', 'path': '/internal/store'}}])
+            public_rule = policy['network_policies']['laxcode_public']
+            self.assertEqual(public_rule['binaries'], [{'path': '/**'}])
+            self.assertIn('**.*.*', [e['host'] for e in public_rule['endpoints']])
+            self.assertTrue(all(e['ports'] == [80, 443] and 'allowed_ips' not in e
+                                and e['enforcement'] == 'enforce' for e in public_rule['endpoints']))
             for path in (root / 'image').rglob('*'):
                 if path.is_file():
                     self.assertNotIn(b'secret-value', path.read_bytes())

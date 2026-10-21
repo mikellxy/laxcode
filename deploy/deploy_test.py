@@ -28,7 +28,7 @@ class DeployTest(unittest.TestCase):
             (release / 'settings.json').write_text(json.dumps({'model': 'p:m', 'provider_list': [{
                 'provider_name': 'p', 'openai_base_url': 'https://example.com',
                 'openai_api_key': 'secret-value', 'model_list': [{'model_name': 'm'}]}]}))
-            with patch('configure.socket.socket') as socket:
+            with patch('configure.socket.socket') as socket, patch('configure.require_guard'):
                 socket.return_value.__enter__.return_value.getsockname.return_value = ('192.168.1.5', 10000)
                 generate(release)
             expected = (release / 'catalog/settings.json').read_bytes()
@@ -42,7 +42,7 @@ class DeployTest(unittest.TestCase):
             self.assertNotIn(b'secret-value', expected)
 
     def archive(self, root, extra=None, corrupt=False):
-        files = {name: b'content' for name in ('bin/laxcode-cloud', 'bin/laxcode-proxy', 'settings.json', 'configure.py', 'Dockerfile', 'skills/SKILL.md')}
+        files = {name: b'content' for name in ('bin/laxcode-cloud', 'bin/laxcode-proxy', 'bin/laxcode-manager', 'manager/install.py', 'network.json', 'settings.json', 'configure.py', 'Dockerfile', 'skills/SKILL.md')}
         manifest = {'format': 1, 'os': {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()],
                     'arch': {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'amd64'}[platform.machine()],
                     'openshell': module.VERSION, 'base_image': module.BASE_IMAGE,
@@ -110,7 +110,7 @@ class DeployTest(unittest.TestCase):
             def unpack(archive, stage):
                 (stage / 'manifest.json').write_text('{}')
                 return {'arch': 'arm64'}
-            with patch.object(module, 'run', side_effect=run), patch.object(module, 'unpack', side_effect=unpack), patch.object(module.shutil, 'which', return_value='/bin/tool'), patch.object(module, 'stop') as stop:
+            with patch.object(module, 'verify_docker_parent'), patch.object(module, 'run', side_effect=run), patch.object(module, 'unpack', side_effect=unpack), patch.object(module.shutil, 'which', return_value='/bin/tool'), patch.object(module, 'stop') as stop:
                 with self.assertRaisesRegex(RuntimeError, 'build failed'):
                     module.restart(base, state, {})
                 stop.assert_not_called()
@@ -134,7 +134,7 @@ class DeployTest(unittest.TestCase):
                     return '[{"Os":"linux","Architecture":"arm64"}]'
                 if len(args) > 2 and args[2] == 'register' and (release / 'marker').read_text() == 'new':
                     raise RuntimeError('provider failed')
-            with patch.object(module, 'run', side_effect=run), patch.object(module, 'unpack', side_effect=unpack), patch.object(module.shutil, 'which', return_value='/bin/tool'), patch.object(module, 'ensure_gateway'), patch.object(module, 'sandboxes', return_value=[]), patch.object(module, 'stop'), patch.object(module, 'start_proxy') as start:
+            with patch.object(module, 'verify_docker_parent'), patch.object(module, 'run', side_effect=run), patch.object(module, 'unpack', side_effect=unpack), patch.object(module.shutil, 'which', return_value='/bin/tool'), patch.object(module, 'ensure_gateway'), patch.object(module, 'sandboxes', return_value=[]), patch.object(module, 'stop'), patch.object(module, 'start_proxy') as start:
                 with self.assertRaisesRegex(RuntimeError, 'provider failed'):
                     module.restart(base, state, {})
                 self.assertEqual((release / 'marker').read_text(), 'old')
@@ -149,6 +149,14 @@ class DeployTest(unittest.TestCase):
             config = (state / 'gateway.toml').read_text()
             self.assertIn('sandbox_label = "laxcode"', config)
             self.assertIn('image_pull_policy = "never"', config)
+
+    def test_wrong_default_parent_rejected_and_probe_removed(self):
+        with patch.object(module.platform, 'system', return_value='Linux'), \
+                patch.object(module, 'run', side_effect=['container', '', '42', '']) as run, \
+                patch.object(module.Path, 'read_text', return_value='0::/system.slice/docker-test.scope\n'):
+            with self.assertRaisesRegex(RuntimeError, 'default cgroup parent'):
+                module.verify_docker_parent('base')
+            self.assertEqual(run.call_args.args, ('docker', 'rm', '-f', 'container'))
 
 
 if __name__ == '__main__':

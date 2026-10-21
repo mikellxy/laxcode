@@ -1,0 +1,21 @@
+[Unit]
+Description=LaxCode network quota manager
+Requires=laxcode.slice
+After=local-fs.target laxcode.slice
+RequiresMountsFor=/sys/fs/bpf /var/lib/laxcode-manager
+Before=docker.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStartPre=/usr/bin/mountpoint -q /sys/fs/bpf
+ExecStart=/usr/local/bin/laxcode-manager -config /etc/laxcode-manager/config.json
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=30
+UMask=0077
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

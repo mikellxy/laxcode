@@ -19,7 +19,7 @@ import time
 import urllib.request
 
 VERSION = '0.1.4'
-BASE_IMAGE = 'laxcode-tools:go1.26.6-v1'
+BASE_IMAGE = 'laxcode-tools:go1.26.6-v2'
 ENDPOINT = 'http://127.0.0.1:18080'
 LABEL = 'laxcode-app=laxcode'
 
@@ -54,7 +54,7 @@ def unpack(archive, dest):
         raise RuntimeError('Release OS/architecture or dependency version does not match this host')
     actual = {str(p.relative_to(dest)): hashlib.sha256(p.read_bytes()).hexdigest()
               for p in dest.rglob('*') if p.is_file() and p != dest / 'manifest.json'}
-    if actual != manifest['files'] or not {'bin/laxcode-proxy', 'bin/laxcode-cloud', 'Dockerfile', 'configure.py', 'settings.json'} <= actual.keys():
+    if actual != manifest['files'] or not {'bin/laxcode-proxy', 'bin/laxcode-cloud', 'bin/laxcode-manager', 'manager/install.py', 'Dockerfile', 'configure.py', 'settings.json', 'network.json'} <= actual.keys():
         raise RuntimeError('Release file checksums do not match manifest')
     if not (dest / 'skills').is_dir():
         raise RuntimeError('Release skills directory missing')
@@ -219,6 +219,22 @@ def start_proxy(base, state, env):
     wait_ready(state, 'proxy', 'http://127.0.0.1:5173/healthz')
 
 
+def verify_docker_parent(image):
+    if platform.system() != 'Linux':
+        return
+    # Verify the daemon's effective default, including flags outside daemon.json.
+    ident = run('docker', 'create', '--network=none', '--entrypoint=/bin/sleep',
+                image, '30', capture=True).strip()
+    try:
+        run('docker', 'start', ident, capture=True)
+        pid = int(run('docker', 'inspect', '--format', '{{.State.Pid}}', ident, capture=True))
+        groups = Path(f'/proc/{pid}/cgroup').read_text().splitlines()
+        if not any(line.startswith('0::/laxcode.slice/') for line in groups):
+            raise RuntimeError('Docker default cgroup parent is not laxcode.slice; run the dedicated-host migration first')
+    finally:
+        run('docker', 'rm', '-f', ident, capture=True)
+
+
 def restart(base, state, env):
     for binary in ('docker', 'openshell', 'openshell-gateway'):
         if not shutil.which(binary):
@@ -231,10 +247,13 @@ def restart(base, state, env):
         stage = Path(temporary) / 'laxcode'
         stage.mkdir()
         manifest = unpack(base / 'laxcode.tar.gz', stage)
+        if (base / 'network.json').exists():
+            shutil.copy2(base / 'network.json', stage / 'network.json')
         for image in (BASE_IMAGE, f'ghcr.io/nvidia/openshell/supervisor:{VERSION}', f'ghcr.io/nvidia/openshell/sandbox:{VERSION}'):
             details = json.loads(run('docker', 'image', 'inspect', image, capture=True))[0]
             if details['Os'] != 'linux' or details['Architecture'] != manifest['arch']:
                 raise RuntimeError(f'Preinstalled image architecture mismatch: {image}')
+        verify_docker_parent(BASE_IMAGE)
         run(sys.executable, stage / 'configure.py', 'generate', stage)
         digest = hashlib.sha256((stage / 'manifest.json').read_bytes()).hexdigest()[:16]
         image = 'laxcode-cloud:' + digest

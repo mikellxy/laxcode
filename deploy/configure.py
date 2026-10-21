@@ -8,8 +8,58 @@ from pathlib import Path
 import subprocess
 import socket
 import ipaddress
+import http.client
+import platform
+import re
 import sys
 from urllib.parse import urlsplit
+
+DEFAULT_DOMAINS = ['github.com', 'golang.org', 'go.dev', 'goproxy.cn',
+                   'npmjs.org', 'pypi.org', 'pythonhosted.org']
+
+
+def network_hosts(source):
+    if not isinstance(source, dict) or set(source) != {'additional_domains'}:
+        raise ValueError('network.json requires additional_domains only')
+    domains = source['additional_domains']
+    if not isinstance(domains, list) or len(domains) > 256:
+        raise ValueError('additional_domains must be a list with at most 256 entries')
+    result = ['**.*.*', *DEFAULT_DOMAINS]
+    for host in domains:
+        if (not isinstance(host, str) or len(host) > 253 or host != host.lower()
+                or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+', host)
+                or any(len(part) > 63 for part in host.split('.'))):
+            raise ValueError('additional_domains requires lowercase DNS names without wildcards, URLs or ports')
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('IP literals are not domain policy entries')
+        if host not in result:
+            result.append(host)
+    return result
+
+
+def require_guard(host_ip):
+    class UnixConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(self.timeout)
+            self.sock.connect('/run/laxcode-manager/control.sock')
+    conn = UnixConnection('manager', timeout=12)
+    try:
+        conn.request('GET', '/readyz')
+        response = conn.getresponse()
+        ready = json.loads(response.read(65536))
+        if (response.status != 200 or not ready.get('ready')
+                or ready.get('cgroup_parent') != '/sys/fs/cgroup/laxcode.slice'
+                or ready.get('sandbox_namespace') != 'laxcode'
+                or ready.get('workplaces_root') != str(Path.home() / 'laxcode')
+                or {'address': host_ip, 'port': 5173, 'protocol': 'tcp'} not in ready.get('control_peers', [])):
+            raise ValueError('Quota guard is not ready for this deployment')
+    finally:
+        conn.close()
 
 
 def prepare(source):
@@ -98,6 +148,15 @@ def generate(release):
                                  'enforcement': 'enforce', 'allowed_ips': [host_ip + '/32'],
                                  'rules': [{'allow': {'method': 'POST', 'path': '/internal/store'}}]}],
                   'binaries': [{'path': '/usr/local/bin/laxcode-cloud'}]}}}
+    network_path = release / 'network.json'
+    hosts = network_hosts(json.loads(network_path.read_text()) if network_path.exists()
+                          else {'additional_domains': []})
+    if platform.system() == 'Linux':
+        require_guard(host_ip)
+        policy['network_policies']['laxcode_public'] = {
+            'endpoints': [{'host': host, 'ports': [80, 443], 'protocol': 'rest',
+                           'access': 'full', 'enforcement': 'enforce'} for host in hosts],
+            'binaries': [{'path': '/**'}]}
     (release / 'policy.yaml').write_text(json.dumps(policy, indent=2))
 
 

@@ -6,7 +6,7 @@ os="${TARGETOS:-$(go env GOOS)}"
 arch="${TARGETARCH:-$(go env GOARCH)}"
 case "$os/$arch" in darwin/arm64|darwin/amd64|linux/arm64|linux/amd64) ;; *) echo 'Unsupported host OS/architecture' >&2; exit 1 ;; esac
 if [ "${1:-}" = --prepare-images ]; then
-  docker build --platform="linux/$arch" -f deploy/Dockerfile.tools -t laxcode-tools:go1.26.6-v1 deploy
+  docker build --platform="linux/$arch" -f deploy/Dockerfile.tools -t laxcode-tools:go1.26.6-v2 deploy
   for name in supervisor sandbox; do
     docker pull --platform="linux/$arch" "ghcr.io/nvidia/openshell/$name:0.1.4"
   done
@@ -32,7 +32,9 @@ mkdir -p "$stage/bin"
 CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -tags=webdist -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-proxy" ./laxcode-proxy
 # The cloud executable always runs in a Linux sandbox, including on macOS.
 CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-cloud" ./cmd/main
-cp deploy/defaults/settings.json deploy/configure.py deploy/Dockerfile "$stage/"
+CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-manager" ./laxcode-manager
+cp deploy/defaults/settings.json deploy/defaults/network.json deploy/configure.py deploy/Dockerfile "$stage/"
+cp -R deploy/manager "$stage/manager"
 cp -R deploy/defaults/skills "$stage/skills"
 python3 - "$stage" "$os" "$arch" <<'PY'
 import hashlib, json, os, pathlib, sys, tarfile
@@ -43,7 +45,7 @@ for path in sorted(root.rglob('*')):
         sys.exit('Package must contain only regular files and directories')
     if path.is_file():
         files[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
-(root / 'manifest.json').write_text(json.dumps({'format': 1, 'os': sys.argv[2], 'arch': sys.argv[3], 'openshell': '0.1.4', 'base_image': 'laxcode-tools:go1.26.6-v1', 'files': files}, indent=2))
+(root / 'manifest.json').write_text(json.dumps({'format': 1, 'os': sys.argv[2], 'arch': sys.argv[3], 'openshell': '0.1.4', 'base_image': 'laxcode-tools:go1.26.6-v2', 'files': files}, indent=2))
 os.umask(0o077)
 output = pathlib.Path('deploy/laxcode.tar.gz')
 temp = output.with_suffix('.gz.tmp')

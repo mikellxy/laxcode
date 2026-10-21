@@ -55,7 +55,7 @@ func TestStorageAcrossDockerMount(t *testing.T) {
 	command := exec.CommandContext(ctx, "docker", "run", "--rm", "--network=bridge", "--user=1000:1000",
 		"--mount", "type=bind,src="+root+",dst=/workplace",
 		"--mount", "type=bind,src="+binary+",dst=/workspace.test,readonly",
-		"-e", "LAXCODE_SQLITE_CHILD=1", "-e", "LAXCODE_SQLITE_URL="+callback, "laxcode-tools:go1.26.6-v1", "/workspace.test", "-test.run=^TestSQLiteMountedWorker$", "-test.v")
+		"-e", "LAXCODE_SQLITE_CHILD=1", "-e", "LAXCODE_SQLITE_URL="+callback, "laxcode-tools:go1.26.6-v2", "/workspace.test", "-test.run=^TestSQLiteMountedWorker$", "-test.v")
 	if runtime.GOOS == "linux" {
 		command.Args = append([]string{"docker", "run", "--add-host=host.docker.internal:host-gateway"}, command.Args[2:]...)
 	}

@@ -3,6 +3,7 @@ module github.com/mikellxy/laxcode
 go 1.26.6
 
 require (
+	github.com/cilium/ebpf v0.19.0
 	github.com/google/uuid v1.6.0
 	github.com/libtnb/sqlite v1.2.2
 	github.com/openai/openai-go/v3 v3.52.0

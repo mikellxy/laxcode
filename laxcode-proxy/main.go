@@ -66,6 +66,7 @@ type proxyServer struct {
 	catalog   workspace.Catalog
 	skills    string
 	storeKey  []byte
+	quota     *quotaClient
 }
 
 func newProxy(runtime sandboxRuntime, root string, assets fs.FS, idle time.Duration, maxChats int) *proxyServer {
@@ -99,7 +100,20 @@ func (p *proxyServer) user(id string) *userState {
 }
 func (p *proxyServer) ensure(ctx context.Context, id string, u *userState) (*url.URL, error) {
 	if u.endpoint != nil {
-		return u.endpoint, nil
+		if p.quota != nil {
+			state, err := p.runtime.Lookup(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if state == nil || !strings.EqualFold(state.Phase, "Ready") {
+				u.endpoint = nil
+			} else if err = p.quota.ensure(ctx, id, state.ID); err != nil {
+				return nil, err
+			}
+		}
+		if u.endpoint != nil {
+			return u.endpoint, nil
+		}
 	}
 	root, err := initializeWorkplace(p.root, id)
 	if err != nil {
@@ -152,6 +166,11 @@ func (p *proxyServer) ensure(ctx context.Context, id string, u *userState) (*url
 	if err != nil {
 		return nil, err
 	}
+	if p.quota != nil {
+		if err = p.quota.ensure(ctx, id, state.ID); err != nil {
+			return nil, err
+		}
+	}
 	for {
 		req, _ := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(endpoint.String(), "/")+"/healthz", nil)
 		resp, e := p.client.Do(req)
@@ -200,6 +219,31 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parsed.String()
+	if r.URL.Path == "/api/network-usage" {
+		if r.Method != "GET" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if p.quota == nil {
+			writeQuotaError(w, &quotaError{})
+			return
+		}
+		day := r.URL.Query().Get("day")
+		if day != "" {
+			if _, err := time.Parse(time.DateOnly, day); err != nil {
+				jsonError(w, 400, "invalid day")
+				return
+			}
+		}
+		usage, err := p.quota.usage(r.Context(), id, day)
+		if err != nil {
+			writeQuotaError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(usage)
+		return
+	}
 	if !executionRequest(r) {
 		u := p.user(id)
 		if err := u.lock(r.Context()); err != nil {
@@ -214,6 +258,17 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		u.api.ServeHTTP(w, r)
 		return
+	}
+	if p.quota != nil {
+		usage, err := p.quota.usage(r.Context(), id, "")
+		if err != nil || usage.Stale {
+			writeQuotaError(w, &quotaError{})
+			return
+		}
+		if usage.Exhausted {
+			writeQuotaError(w, &quotaError{Exhausted: true, ResetAt: usage.ResetAt})
+			return
+		}
 	}
 	streaming := r.Method == "POST" && (r.URL.Path == "/chat" || strings.HasSuffix(r.URL.Path, "/resume"))
 	var stream *preparedStream
@@ -280,6 +335,19 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		u.unlock()
 		log.Printf("sandbox %s: %v", id, err)
+		var quota *quotaError
+		if errors.As(err, &quota) {
+			if stream != nil {
+				code, message := "NETWORK_QUOTA_UNAVAILABLE", "网络配额服务暂不可用，请稍后重试"
+				if quota.Exhausted {
+					code, message = "NETWORK_QUOTA_EXHAUSTED", "当日公网流量额度已用尽，下次重置："+quota.ResetAt
+				}
+				_ = stream.send("error", streamError{Code: code, Message: message, RetryAction: retryAction})
+			} else {
+				writeQuotaError(w, err)
+			}
+			return
+		}
 		writeProxyError(503, "sandbox unavailable; inspect deployment logs", retryAction)
 		return
 	}
@@ -436,7 +504,11 @@ func run() error {
 	providers := flag.String("providers-file", "/run/laxcode/providers.json", "registered provider names")
 	idle := flag.Duration("idle-timeout", 30*time.Minute, "stop inactive sandboxes after this duration")
 	maxChats := flag.Int("max-chats", 2, "global concurrent chat limit")
+	managerSocket := flag.String("manager-socket", defaultManagerSocket(), "host quota manager Unix socket (required on Linux)")
 	flag.Parse()
+	if defaultManagerSocket() != "" && *managerSocket == "" {
+		return errors.New("manager-socket is required on Linux")
+	}
 	if *idle <= 0 || *maxChats < 1 {
 		return errors.New("idle-timeout and max-chats must be positive")
 	}
@@ -477,6 +549,9 @@ func run() error {
 		return err
 	}
 	p := newProxy(runtime, *root, assets, *idle, *maxChats)
+	if *managerSocket != "" {
+		p.quota = newQuotaClient(*managerSocket)
+	}
 	p.catalog, p.skills = catalog, *skills
 	keyPath := filepath.Join(*root, ".proxy-store-key")
 	if key, err := os.ReadFile(keyPath); err == nil {

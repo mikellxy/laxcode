@@ -1,6 +1,6 @@
 # 宿主机部署
 
-单实例部署：宿主机运行 Docker、OpenShell gateway 和 laxcode-proxy。proxy 内嵌前端，每个用户只有一个 OpenShell 沙箱，沙箱运行 Linux laxcode-cloud。应用发布不重启 gateway，不使用 Docker-in-Docker。
+单实例部署：宿主机运行 Docker、OpenShell gateway 和 laxcode-proxy；Linux 另运行独立的 laxcode-manager 配额服务。proxy 内嵌前端，每个用户只有一个 OpenShell 沙箱，沙箱运行 Linux laxcode-cloud。应用发布不重启 gateway，不使用 Docker-in-Docker。
 
 ## 一次性准备机器
 
@@ -13,12 +13,12 @@
 
 ```sh
 ./deploy/build.sh --prepare-images
-# 构建固定 laxcode-tools:go1.26.6-v1，拉取两个 OpenShell 0.1.4 镜像
+# 构建固定 laxcode-tools:go1.26.6-v2，拉取两个 OpenShell 0.1.4 镜像
 ```
 
 将以下镜像预装进 ECS 系统镜像，或一次性 docker save/load 搬运：
 
-- `laxcode-tools:go1.26.6-v1`
+- `laxcode-tools:go1.26.6-v2`
 - `ghcr.io/nvidia/openshell/supervisor:0.1.4`
 - `ghcr.io/nvidia/openshell/sandbox:0.1.4`
 
@@ -40,6 +40,9 @@ cp deploy/defaults/settings.example.json deploy/defaults/settings.json
 laxcode.tar.gz
 ├── bin/laxcode-proxy       # 内嵌前端，宿主机程序
 ├── bin/laxcode-cloud       # Linux 沙箱程序
+├── bin/laxcode-manager     # Linux 宿主配额服务
+├── manager/                # 一次性 Docker 父组迁移安装器、systemd 单元
+├── network.json            # 公网两段域名补充列表
 ├── settings.json           # 真实密钥，仅供宿主机注册 provider
 ├── skills/                 # 默认内置 Skills
 ├── Dockerfile              # FROM 固定工具镜像 + COPY
@@ -59,9 +62,9 @@ cd ~/laxcode_deploy
 ./deploy.sh stop
 ```
 
-Linux 使用同样的流程，通过 scp 或 CI/CD 将文件放到目标目录。每次更新同时分发最新 deploy.sh 和 laxcode.tar.gz。
+Linux 首次启用必须先按 [manager 安装说明](../laxcode-manager/README.md#linux-首次安装) 完成专用 Docker 父组迁移及 guard 安装；预先在构建机制作工具镜像，再载入 ECS。迁移会重启 Docker，要求维护窗口和无现存容器。manager 独立于应用发布，其 DB/pins 不随应用更新或回滚。之后通过 scp 或 CI/CD 将发布文件放到目标目录。每次更新同时分发最新 deploy.sh 和 laxcode.tar.gz。
 
-`restart` 获取部署锁，解压到临时目录，校验文件，生成不含真实密钥的独立 Docker build context，使用预装镜像构建，然后确保专用网关可用。之后停止 proxy，只删除带 `laxcode-app=laxcode` 标签的应用沙箱，替换发布目录，重新注册/更新 provider，启动 proxy 并检查健康状态。已有发布保留一份 `.previous`，正常异常时尝试恢复旧发布；用户工作目录始终不参与替换。突然断电或强制终止部署时可重新执行 restart。
+`restart` 获取部署锁，解压到临时目录，校验文件；Linux 先验证 Docker 实际默认父组和 manager readiness，再生成公网 policy 以及不含真实密钥的独立 Docker build context，使用预装镜像构建，然后确保专用网关可用。之后停止 proxy，只删除带 `laxcode-app=laxcode` 标签的应用沙箱，替换发布目录，重新注册/更新 provider，启动 proxy 并检查健康状态。已有发布保留一份 `.previous`，正常异常时尝试恢复旧发布；用户工作目录始终不参与替换。突然断电或强制终止部署时可重新执行 restart。
 
 沙箱删除会终止当时正在执行的会话任务，请在适当时段更新。空闲 30 分钟的沙箱平时只 stop，下次请求 start 原沙箱；应用更新才删除并重建。
 
@@ -74,6 +77,18 @@ Linux 使用同样的流程，通过 scp 或 CI/CD 将文件放到目标目录�
 - 日志：`state/proxy.log`、`state/gateway.log`。
 
 内测版以 `X-USERID` UUID 标识用户，静态页面和 `/healthz` 无需身份；尚无登录验证，公网访问控制由部署方配置。部署脚本管理后台进程，本版不安装应用开机自启服务。
+
+## 公网域名配置
+
+构建默认配置为 `deploy/defaults/network.json`。部署机器可在 `deploy.sh` 旁创建 `network.json`，覆盖包内列表且跨发布保留：
+
+```json
+{"additional_domains": ["example.com", "rust-lang.org"]}
+```
+
+首版已开放三段及以上域名 `**.*.*`，以及 github.com、golang.org、go.dev、goproxy.cn、npmjs.org、pypi.org、pythonhosted.org；上面的列表只补充域名。只填小写域名，不填 URL、端口或通配符。修改后执行 `./deploy.sh restart`，通过重建沙箱生效，正在执行的任务会终止，当天额度不重置。
+
+公网范围限 HTTP(S) 80/443，eBPF 仍阻断非公网地址；不承诺任意网站或任意协议。macOS 不启用通用公网 policy。manager 的日额度及控制对端配置位于 `/etc/laxcode-manager/config.json`，详见 [配置说明](../laxcode-manager/README.md#两个配置入口)。
 
 ## 用户目录与密钥
 
@@ -101,6 +116,8 @@ proxy 首次打开一个用户的数据接口时，将发布包 `catalog/setting
 
 ## 数据接口与沙箱执行
 
+`GET /api/network-usage?day=YYYY-MM-DD` 返回公网流量配额（省略 day 为北京时间今天），不启动沙箱。Linux 执行前验证 manager；不可用返回 503，额度耗尽返回 429，已开始 SSE 时发送对应错误事件。文件和历史接口保持可用。
+
 只有 `POST /chat`、`POST /api/sessions/{session_id}/resume` 和 `POST /api/evaluations` 会启动或唤醒沙箱。项目、会话、历史、上下文用量、性能统计、模型选择、Skills、文件预览/下载、评估列表和报告由 proxy 直接处理，查询与轮询不会刷新沙箱空闲计时。
 
 共享 `workspace` 模块复用现有模型目录、SQLite 仓储及路径规则。SQLite 仍位于用户的 `agenthome/.laxcode/sessions/sessions.db`，但仅 proxy 打开数据库；cloud 通过内部存储接口访问同一仓储。这样避免 macOS 与 Docker Desktop Linux 跨内核共享 SQLite WAL/文件锁。JSONL 备份、trace、报告和项目产物继续保存在原目录。
@@ -117,4 +134,4 @@ proxy 首次打开一个用户的数据接口时，将发布包 `catalog/setting
 LAXCODE_DOCKER_SQLITE_TEST=1 go test ./workspace -run TestStorageAcrossDockerMount -v
 ```
 
-该测试使用临时目录和一次性容器，需要预装 `laxcode-tools:go1.26.6-v1`。
+该测试使用临时目录和一次性容器，需要预装 `laxcode-tools:go1.26.6-v2`。

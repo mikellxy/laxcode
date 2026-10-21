@@ -53,3 +53,38 @@ func TestSandboxUsesTrustedReadOnlySettingsMount(t *testing.T) {
 		t.Fatalf("user workspace must be writable and platform settings must come from the trusted release read-only: %+v", mounts)
 	}
 }
+
+func TestReadySandboxRequiresLoadedAdmittedPolicy(t *testing.T) {
+	bin := t.TempDir()
+	script := `#!/bin/sh
+if [ "$1" = sandbox ]; then
+  cat "$LAXCODE_SANDBOX_JSON"
+else
+  cat "$LAXCODE_POLICY_JSON"
+fi
+`
+	if err := os.WriteFile(filepath.Join(bin, "openshell"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	sandboxFile, policyFile := filepath.Join(bin, "sandbox.json"), filepath.Join(bin, "policy.json")
+	t.Setenv("LAXCODE_SANDBOX_JSON", sandboxFile)
+	t.Setenv("LAXCODE_POLICY_JSON", policyFile)
+	raw, _ := json.Marshal(map[string]any{"sandboxes": []any{map[string]any{
+		"id": "sandbox-id", "name": sandboxName(testID), "phase": "Ready",
+		"configuration_admission": map[string]any{"state": "accepted", "policy_version": 1},
+	}}})
+	if err := os.WriteFile(sandboxFile, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"pending", "failed", "loaded"} {
+		raw, _ = json.Marshal(map[string]any{"status": status, "version": 1, "active_version": 1})
+		if err := os.WriteFile(policyFile, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := (&openshellRuntime{}).Lookup(context.Background(), testID)
+		if (err == nil) != (status == "loaded") {
+			t.Fatal(status, got, err)
+		}
+	}
+}

@@ -6,7 +6,7 @@ RUN npm install --prefix /opt/laxcode-excalidraw --omit=dev --no-audit --no-fund
 FROM golang:1.26.6-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash python3 ripgrep jq fontconfig fonts-noto-cjk \
+    && apt-get install -y --no-install-recommends bash python3 python3-pip python3-venv curl git ca-certificates ripgrep jq fontconfig fonts-noto-cjk \
     && jq --version \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,7 +17,7 @@ RUN ln -s /opt/laxcode-excalidraw/node_modules/mcp-excalidraw-server/dist/bin.js
     && node --version \
     && excalidraw-canvas --version
 
-ENV GOTOOLCHAIN=local GOPROXY=off PIP_NO_INDEX=1 HOME=/workplace/agenthome
+ENV GOTOOLCHAIN=local GOPROXY=https://goproxy.cn GOSUMDB=sum.golang.org HOME=/workplace/agenthome
 RUN mkdir -p /sandbox && chown 1000:1000 /sandbox
 WORKDIR /sandbox
 USER 1000:1000
