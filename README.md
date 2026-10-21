@@ -1,8 +1,12 @@
-# LaxCode Cloud
+# LaxCode 云Agent
 
-`cloud` 分支用于单实例 OpenShell 云端部署，本地模式由独立分支维护。
+![LaxCode 模块架构：proxy、manager、OpenShell 沙箱与 laxcode-cloud](docs/images/laxcode-cloud-architecture.png)
 
-宿主机运行 Docker、OpenShell 0.1.4 和 laxcode-proxy。proxy 提供前端，通过 `X-USERID` 将请求转发到每用户独立沙箱；沙箱只运行 laxcode-cloud，Bash 直接在其中执行。
+[编辑架构图（Excalidraw）](docs/images/laxcode-cloud-architecture.excalidraw) · [网络配额与首次迁移](laxcode-manager/README.md)
+
+用于单实例 OpenShell 云端部署，本地模式由其他独立分支维护。
+
+宿主机运行 Docker、OpenShell 0.1.4 和 laxcode-proxy；Linux 公网配额由独立的 laxcode-manager 与内核 eBPF 执行。proxy 提供前端，通过 `X-USERID` 将请求转发到每用户独立沙箱；laxcode-cloud 和 Bash 工具在 workload 中执行，supervisor 负责网络策略与凭据注入。
 
 ```sh
 # 在 deploy/defaults/settings.json 中配置预置模型和真实 API Key
