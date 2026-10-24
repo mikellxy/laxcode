@@ -1,9 +1,5 @@
 #!/bin/sh
-
-SCRIPT_PATH=$(realpath "$0")
-SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
-
-echo "scp $SCRIPT_DIR/{deploy.sh,laxcode.tar.gz} $ECS_USER_IP:/root/laxcode_deploy/"
-
-scp $SCRIPT_DIR/{deploy.sh,laxcode.tar.gz} \
-$ECS_USER_IP:/root/laxcode_deploy/
+set -eu
+: "${ECS_USER_IP:?Set ECS_USER_IP, for example root@115.190.115.149}"
+cd "$(dirname "$0")/.."
+scp release/laxcode.tar.gz "$ECS_USER_IP:/root/laxcode_deploy/laxcode.tar.gz"

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -21,7 +20,7 @@ import (
 
 type kernelMetadata struct {
 	ABI, Ready             uint32
-	Instance, DB, Boot     [16]byte
+	DB                     [16]byte
 	ConfigHash             [32]byte
 	ParentID, LowWatermark uint64
 }
@@ -70,7 +69,7 @@ func bootNS() (uint64, error) {
 }
 
 func openKernel(c config, db uuid.UUID) (_ *kernel, err error) {
-	if unsafe.Sizeof(usage{}) != 56 || unsafe.Sizeof(peerKey{}) != 20 || unsafe.Sizeof(kernelMetadata{}) != 104 {
+	if unsafe.Sizeof(usage{}) != 56 || unsafe.Sizeof(peerKey{}) != 20 || unsafe.Sizeof(kernelMetadata{}) != 72 {
 		return nil, errors.New("BPF ABI size mismatch")
 	}
 	if err = rlimit.RemoveMemlock(); err != nil {
@@ -80,14 +79,6 @@ func openKernel(c config, db uuid.UUID) (_ *kernel, err error) {
 		return nil, err
 	}
 	parentID, err := cgroupID(c.CgroupParent)
-	if err != nil {
-		return nil, err
-	}
-	bootRaw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
-		return nil, err
-	}
-	boot, err := uuid.Parse(strings.TrimSpace(string(bootRaw)))
 	if err != nil {
 		return nil, err
 	}
@@ -145,14 +136,30 @@ func openKernel(c config, db uuid.UUID) (_ *kernel, err error) {
 		}
 		replacements["metadata"] = m
 		zero := uint32(0)
+		if m.ValueSize() != uint32(unsafe.Sizeof(k.meta)) {
+			// ABI 1 has the same ready offset; preserve its remaining fields.
+			if m.ValueSize() == 104 {
+				raw, e := m.LookupBytes(zero)
+				if e != nil {
+					return nil, e
+				}
+				if len(raw) == 104 && binary.LittleEndian.Uint32(raw[:4]) == 1 {
+					binary.LittleEndian.PutUint32(raw[4:8], 0)
+					if err = m.Update(zero, raw, ebpf.UpdateExist); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return nil, errors.New("pinned metadata ABI size mismatch; use reset_quota.py during maintenance")
+		}
 		if err = m.Lookup(zero, &k.meta); err != nil {
 			return nil, err
 		}
 		disable := func() { k.meta.Ready = 0; _ = m.Update(zero, k.meta, ebpf.UpdateExist) }
-		if k.meta.ABI != abiVersion || k.meta.DB != [16]byte(db) || k.meta.Boot != [16]byte(boot) ||
+		if k.meta.ABI != abiVersion || k.meta.DB != [16]byte(db) ||
 			k.meta.ParentID != parentID || k.meta.ConfigHash != hash || k.meta.Ready > 1 {
 			disable()
-			return nil, errors.New("pinned ABI/DB/boot/parent/config mismatch; guard disabled, inspect state")
+			return nil, errors.New("pinned ABI/DB/parent/config mismatch; guard disabled, inspect state")
 		}
 		for name := range spec.Maps {
 			if name == "metadata" {
@@ -170,7 +177,7 @@ func openKernel(c config, db uuid.UUID) (_ *kernel, err error) {
 		return nil, fmt.Errorf("load BPF: %w", err)
 	}
 	if k.fresh {
-		k.meta = kernelMetadata{ABI: abiVersion, Instance: uuid.New(), DB: db, Boot: boot, ConfigHash: hash, ParentID: parentID, LowWatermark: c.LowWatermark}
+		k.meta = kernelMetadata{ABI: abiVersion, DB: db, ConfigHash: hash, ParentID: parentID, LowWatermark: c.LowWatermark}
 		if err = k.objects.Maps["metadata"].Update(uint32(0), k.meta, ebpf.UpdateNoExist); err != nil {
 			return nil, err
 		}

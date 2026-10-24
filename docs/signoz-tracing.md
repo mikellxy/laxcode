@@ -56,7 +56,7 @@ SigNoz 与 LaxCode 二进制运行在同一台主机时，在启动 LaxCode 前�
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 export OTEL_SERVICE_NAME="laxcode"
 
-./bin/laxcode
+go run ./cmd/main
 ```
 
 其中：

@@ -44,7 +44,7 @@ type containerSummary struct {
 }
 type binding struct {
 	Sandbox, User, Container string
-	Cgroup                   uint64
+	Cgroup, WorkloadCgroup   uint64
 }
 
 func newDocker(socket string) *dockerClient {
@@ -235,42 +235,65 @@ func (d *dockerClient) discover(ctx context.Context, cfg config) (map[string]bin
 		if ws != sid || ss != sid || role != "supervisor" || w.Config.Labels["openshell.ai/sandbox-name"] != s.Config.Labels["openshell.ai/sandbox-name"] {
 			return nil, errors.New("supervisor/workload identity mismatch")
 		}
-		if !s.State.Running {
+		if !s.State.Running || !w.State.Running {
 			continue
 		}
 		if s.HostConfig.NetworkMode != "host" || w.HostConfig.NetworkMode != "none" {
 			return nil, errors.New("unexpected OpenShell network mode")
 		}
-		start, rel, err := processIdentity(s.State.Pid)
+		workloadNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", w.State.Pid))
 		if err != nil {
 			return nil, err
 		}
-		path := filepath.Join("/sys/fs/cgroup", rel)
-		if !strings.HasPrefix(path, cfg.CgroupParent+"/") {
-			return nil, fmt.Errorf("supervisor outside guarded parent: %s", sid)
+		hostNS, err := os.Readlink("/proc/1/ns/net")
+		if err != nil || workloadNS == hostNS {
+			return nil, errors.New("workload must have an isolated network namespace")
 		}
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil || resolved != path {
-			return nil, errors.New("noncanonical supervisor cgroup")
-		}
-		cgid, err := cgroupID(path)
+		cgid, err := d.guardedCgroup(ctx, s, cfg.CgroupParent)
 		if err != nil {
 			return nil, err
 		}
-		start2, rel2, err := processIdentity(s.State.Pid)
+		workloadID, err := d.guardedCgroup(ctx, w, cfg.CgroupParent)
 		if err != nil {
 			return nil, err
 		}
-		again, err := d.inspect(ctx, s.ID)
-		if err != nil {
-			return nil, err
+		if cgid == workloadID {
+			return nil, errors.New("supervisor and workload must have distinct cgroups")
 		}
-		if start != start2 || rel != rel2 || !again.State.Running || again.State.Pid != s.State.Pid {
-			return nil, errors.New("supervisor changed during discovery")
-		}
-		result[sid] = binding{sid, user, s.ID, cgid}
+		result[sid] = binding{sid, user, s.ID, cgid, workloadID}
 	}
 	return result, nil
+}
+
+func (d *dockerClient) guardedCgroup(ctx context.Context, c container, parent string) (uint64, error) {
+	start, rel, err := processIdentity(c.State.Pid)
+	if err != nil {
+		return 0, err
+	}
+	path := filepath.Join("/sys/fs/cgroup", rel)
+	if !strings.HasPrefix(path, parent+"/") {
+		return 0, fmt.Errorf("container outside guarded parent: %s", c.ID)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved != path {
+		return 0, errors.New("noncanonical container cgroup")
+	}
+	id, err := cgroupID(path)
+	if err != nil {
+		return 0, err
+	}
+	start2, rel2, err := processIdentity(c.State.Pid)
+	if err != nil {
+		return 0, err
+	}
+	again, err := d.inspect(ctx, c.ID)
+	if err != nil {
+		return 0, err
+	}
+	if start != start2 || rel != rel2 || !again.State.Running || again.State.Pid != c.State.Pid {
+		return 0, errors.New("container changed during discovery")
+	}
+	return id, nil
 }
 
 // Events only prompt reconciliation: their attributes are never trusted as identity.

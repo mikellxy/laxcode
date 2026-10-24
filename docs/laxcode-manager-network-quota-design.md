@@ -29,7 +29,7 @@
 | `laxcode-proxy/main.go:ensure` | 查找、创建/唤醒沙箱并等待 Ready | 转发用户任务前等待 manager 完成映射 |
 | `deploy/configure.py:generate` | 生成内部存储访问策略 | 增加受控的公网出网策略生成与校验 |
 | `deploy/Dockerfile.tools` | 旧 v1 为离线工具链 | v2 使用 goproxy.cn、保留 sumdb 校验，加入 pip/venv、curl/git，移除 PIP_NO_INDEX |
-| `deploy/deploy.sh` | 独立 gateway；应用更新时保留 gateway，重建应用沙箱 | manager 与其状态独立于应用发布目录管理 |
+| `deploy/deploy.py` | 独立 gateway；应用更新时保留 gateway，重建应用沙箱 | manager 二进制随包发布，账本和 pins 独立保留 |
 | `deploy/build.sh` | 打包 proxy/cloud、配置及镜像构建输入 | Linux 发布包增加 manager；无需在运行时安装编译器 |
 
 官方 0.1.4 Docker driver 为一个沙箱创建 workload 和 supervisor 两个容器：
@@ -71,7 +71,7 @@ flowchart TB
 一个宿主进程承担以下工作，不再拆分多个守护服务：
 
 1. 管理 Docker 发现、用户到 supervisor cgroup 的映射。
-2. 加载、挂载、pin 和接管 eBPF 对象，检查 ABI 与运行代次。
+2. 加载、挂载、pin 和接管 eBPF 对象，检查 ABI、DB 身份、父组和配置兼容性。
 3. 以 DB 事务发放配额，消费补充事件，并定期扫描兜底。
 4. 定期保存累计快照，恢复进程重启及内核状态丢失后的账本。
 5. 通过宿主 Unix Socket 提供就绪状态和用户用量，不暴露公网管理端口。
@@ -129,6 +129,8 @@ Go 侧使用 `github.com/cilium/ebpf v0.19.0` 加载对象、操作 Maps、管�
 | 经确认的宿主 DNS resolver 地址与端口 | 允许必要解析、不计量；按实际 TCP/UDP、IPv4/IPv6 配置 |
 | 其他内网、回环、链路本地及元数据目标 | 不因本方案扩大权限，默认拒绝；包括云元数据目标 |
 | 其他合法公网对端 | 绑定用户后按额度计量；OpenShell policy 还必须允许 |
+
+本表指 supervisor 的对外连接。已核验 `network=none` workload 自己的隔离网络回环另按 6.4 节处理，不代表放开宿主回环。
 
 eBPF 按 ingress/egress 区分远端地址和端口：发出方向取目的地址/端口，接收方向取源地址/端口。IPv4-mapped IPv6 必须归一化；不能通过地址表示差异绕过内网限制。无法完整解析必要通信规则时不得误判为豁免。
 
@@ -196,13 +198,19 @@ manager 在 Docker 容器处于运行态时就可以绑定，不等待 OpenShell
 - 本选择会改变该 Docker daemon 下所有新容器的默认父组。因此首版要求专用 Docker 工作负载；其他容器不能被自动标成“不计量放行”。共享 Docker 主机需要另行隔离，不直接套用本配置。
 - 已存在的容器不会自动迁移。首次开启时停止并重建 LaxCode 沙箱，逐个确认 supervisor 位于受管 slice；发现越界则 readiness 失败，proxy 不接收任务。
 
-这是明确的宿主配置变更；`deploy/manager/install.py --migrate-docker` 只在专用 Docker 无任何现存容器时执行首次迁移。本次 ECS 测试使用临时隔离父组，没有执行生产迁移。
+Docker 父组配置在制作 ECS 基础镜像时完成；应用部署只启动 slice 并核验实际父组，不再执行 systemd manager 安装或 Docker 迁移。基础环境准备必须在专用 Docker 无现存业务容器时完成。
 
 ### 6.3 启动就绪分层
 
-manager 的 systemd 单元在 Docker 之前启动。先完成 DB 打开、对象接管/加载、父组 guard 安装，再发出 systemd ready 通知，让 Docker 继续启动；随后连接 Docker API 并恢复映射。不能同时配置“manager 等 Docker ready”与“Docker 等 manager ready”，造成启动死锁。
+当前部署由 `deploy.py` 直接启动 manager，不安装 systemd 服务。Docker 可随基础系统自启，但 OpenShell 容器必须保持无自动重启策略。手动部署时先完成 DB 打开、对象接管/加载、父组 guard 安装及 Docker 对账，再启动 gateway/proxy 和业务沙箱。宿主重启后需手动部署；不得让业务容器先于 guard 自动恢复。代码保留可选的 systemd ready 通知，但当前部署不使用。
 
 对 proxy 的 `/readyz` 则要求 guard、DB、Docker 对账完成且距最近成功对账小于 10 秒。Docker 事件断开自动重连，5 秒全量对账兜底；对账失败撤销归属并标记未就绪。DB/Map 不变量或明显时钟跳变使 guard 关闭，修复原因后重启接管；manager 进程直接退出则内核仍可消费原授权。
+
+### 6.4 workload 内部回环
+
+OpenShell 0.1.4 的 `network=none` workload 在创建控制套接字前，会通过本网络命名空间内的回环 TCP 做启动自检。父组 guard 覆盖 workload，因此不能把它与 supervisor 访问宿主回环混为一谈。
+
+manager 核验 workload/supervisor 的 Docker 身份、独立 cgroup、workload 的 `network=none` 和非宿主网络命名空间后，在已有 `cgroup_owner` 表中用值 0 标记 workload（真实用户主键始终为正数）。eBPF 只豁免该标记对应的 IPv4/IPv6 回环通信；未核验 workload、supervisor 对宿主回环的访问以及其他非公网目标继续拒绝。标记随容器发现同步撤销，不增加 Map、不改变账本或 Map ABI；guard 未就绪时仍拒绝。
 
 ## 7. eBPF Maps、ABI 与数据面
 
@@ -212,8 +220,8 @@ manager 的 systemd 单元在 Docker 之前启动。先完成 DB 打开、对象
 
 | Map | Key | Value / 所有权 |
 | --- | --- | --- |
-| `metadata` | 固定 key | ABI 版本、map-set ID、宿主 boot ID；manager 初始化和校验 |
-| `cgroup_owner` | `u64 cgroup_id` | `u64 user_key`；manager 写 |
+| `metadata` | 固定 key | ABI 版本、DB ID、配置哈希、父组 ID、ready 与低水位；manager 初始化和校验 |
+| `cgroup_owner` | `u64 cgroup_id` | 正数为 supervisor 的 user_key；0 为已核验隔离 workload 的回环标记；manager 写 |
 | `user_bucket` | `u64 user_key` | `u64 bucket_id`；manager 发布当前周期 |
 | `bucket_meta` | `u64 bucket_id` | 用户和单调时钟截止时间；日期由 DB 中 bucket 关联，发布后不可原地修改 |
 | `grants` | `u64 bucket_id` | 累计授权上限和授权版本；manager 写，eBPF 只读 |
@@ -225,7 +233,7 @@ manager 的 systemd 单元在 Docker 之前启动。先完成 DB 打开、对象
 
 所有跨边界结构使用固定宽度整数及显式 padding，不存 Go string、指针、浮点 GB 或路径字符串。IPv4/IPv6 地址、端口的字节序在头文件中固定；C/Go 生成绑定校验 `sizeof`、offset、对齐和端序。
 
-额度与计数分开，manager **不得读取旧 `used` 后，把包含新额度的整个 usage value 写回**，否则会覆盖并发增长的计数。`grants` 使用 HASH element 的整项发布；grant 只增，版本递增。manager 是唯一写入者，补额度按用户串行处理；迟到结果必须验证 map-set 和 bucket 身份。
+额度与计数分开，manager **不得读取旧 `used` 后，把包含新额度的整个 usage value 写回**，否则会覆盖并发增长的计数。`grants` 使用 HASH element 的整项发布；grant 只增，版本递增。manager 是唯一写入者，补额度按用户串行处理；迟到结果必须验证 active epoch 和 bucket 身份。
 
 `usage` 的 RX/TX 合计检查与累加使用同一 `bpf_spin_lock`，不能只对两个独立计数器各做一次原子加法。快照使用支持锁的 Map lookup 读取一致的 RX/TX。helper 调用、Map lookup、时间读取、Ring Buffer 操作都放在持锁区之外；锁内只做有界内存检查及修改。
 
@@ -233,9 +241,11 @@ manager 的 systemd 单元在 Docker 之前启动。先完成 DB 打开、对象
 
 ```text
 提取方向、远端地址/协议/端口
+  guard 未就绪：DROP
+  cg = bpf_skb_cgroup_id(skb)
+  若 cgroup_owner[cg] 为保留值 0 且为回环地址：PASS（仅已核验隔离 workload）
   若精确匹配必要通信对端：PASS，不计入用户额度
   若 address_class 最长前缀匹配不是 PUBLIC：DROP
-  cg = bpf_skb_cgroup_id(skb)
   查询 cgroup_owner[cg]、user_bucket[user]、bucket_meta、grants、usage
   任一映射缺失、组不受管、周期过期：DROP
   读取当前时间、授权快照；获取 usage 锁
@@ -257,17 +267,17 @@ manager 的 systemd 单元在 Docker 之前启动。先完成 DB 打开、对象
 
 首版 Map 固定容量：4096 个用户指针、8192 个 cgroup/bucket、64 个控制对端、128 个地址前缀；满表报错并关闭 guard，不能淘汰余额。旧日 bucket 在截止 60 秒后保存最终快照、关闭 epoch，再清理内核条目。
 
-Maps 和 BPF links pin 到 `/sys/fs/bpf/laxcode-manager/`，目录仅宿主管理员可写。pin 保持内核引用，不是落盘，不能跨宿主重启。程序升级优先复用兼容 Maps；ABI 不兼容时保持外部流量关闭，保守结清旧 epoch，再创建新对象。不能先卸掉 guard 再慢慢恢复账本。
+Maps 和 BPF links pin 到 `/sys/fs/bpf/laxcode-manager/`，目录仅宿主管理员可写。pin 保持内核引用，不是落盘，不能跨宿主重启。程序升级优先复用兼容 Maps；ABI 不兼容时拒绝接管。显式维护必须先停止应用并确认父组无进程，再由 reset_quota.py 标记账本待恢复并清理 pins，重新部署 guard 后才启动业务。不能在沙箱仍运行时卸载 guard。
 
 ## 8. 账本结构与一致性协议
 
 ### 8.1 独立数据库
 
-DB 位于 `/var/lib/laxcode-manager/quota.db`，不放进应用发布目录或用户挂载目录，不复用用户 `sessions.db`。使用 SQLite WAL、`synchronous=FULL`、busy timeout、外键；同目录 `manager.lock` 防止两个 manager 同时发放授权。DB 与 map-set 身份必须匹配，不能直接采用旧余额覆盖内核。
+DB 位于 `/var/lib/laxcode-manager/quota.db`，不放进应用发布目录或用户挂载目录，不复用用户 `sessions.db`。使用 SQLite WAL、`synchronous=FULL`、busy timeout、外键；同目录 `manager.lock` 防止两个 manager 同时发放授权。DB 实例 ID 必须与内核 metadata 中的 DB ID 匹配，不能直接采用旧余额覆盖内核。
 
-实现时另有单行账本 metadata 保存 DB 实例 UUID、schema 版本和当前 map-set 身份。恢复比较现存内核的授权版本与 DB；内核比 DB 更新视为异常。若 DB 和内核状态同时丢失，仅凭旧 DB 备份不能自动证明它是否最新：备份恢复必须走显式运维恢复流程，在决定保守占用前保持公网拒绝，不能伪装成普通进程重启。
+单行账本 metadata 保存 DB 实例 UUID、已完成恢复的系统 boot ID 和最新记账日期；schema 版本由 PRAGMA user_version 保存。恢复比较现存内核的授权版本与 DB；内核比 DB 更新视为异常。若 DB 和内核状态同时丢失，仅凭旧 DB 备份不能自动证明它是否最新：备份恢复必须走显式运维恢复流程，在决定保守占用前保持公网拒绝，不能伪装成普通进程重启。
 
-下列是设计字段含义；可执行 schema 以 `ledger.go` 为准，实际表名为 `metadata/users/user_days/epochs`，`PRAGMA user_version=1`。`epochs` 另存 BOOTTIME `deadline`，其余列采用简短的 `id/user_id/map_set/granted/rx/tx/version` 命名：
+下列是设计字段含义；可执行 schema 以 `ledger.go` 为准，实际表名为 `metadata/users/user_days/epochs`，`PRAGMA user_version=2`。`epochs` 另存 BOOTTIME `deadline`，其余列采用简短的 `id/user_id/granted/rx/tx/version` 命名：
 
 ```sql
 CREATE TABLE users (
@@ -284,7 +294,6 @@ CREATE TABLE quota_epochs (
   bucket_id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_key INTEGER NOT NULL,
   day TEXT NOT NULL,
-  map_set_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('active', 'closed', 'unknown')),
   granted_bytes INTEGER NOT NULL DEFAULT 0 CHECK (granted_bytes >= 0),
   confirmed_rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (confirmed_rx_bytes >= 0),
@@ -316,7 +325,7 @@ CREATE UNIQUE INDEX one_active_epoch
 
 在同一个 `BEGIN IMMEDIATE` 事务中：
 
-1. 验证用户、日期、map-set、active epoch 及 `0 <= U <= G`；幂等更新确认的 RX/TX。
+1. 验证用户、日期、active epoch 及 `0 <= U <= G`；幂等更新确认的 RX/TX。
 2. 如果内核尚未安装 DB 已提交的授权，先安排恢复该授权，不把同一个请求当成新充值。
 3. 计算 `delta = min(max(0, U + B - G), Q - H)`，所有中间值检查范围。
 4. `delta > 0` 时更新 `granted_bytes = G + delta`，版本递增。事务提交后才更新内核 `grants[bucket]`。
@@ -337,7 +346,7 @@ sequenceDiagram
     K->>K: 后续包可使用新授权
 ```
 
-授权消息使用累计上限，不使用“加 16 MiB”式增量。每用户只允许一个补充流程在运行；重试先检查 DB 版本，已提交结果可以重复安装而不会重复发放。manager 丢失 map-set 所有权后的迟到响应不得写入新对象。
+授权消息使用累计上限，不使用“加 16 MiB”式增量。每用户只允许一个补充流程在运行；重试先检查 DB 版本，已提交结果可以重复安装而不会重复发放。旧 epoch 转为 unknown 后，迟到的 checkpoint 不得再发放授权；manager 单实例锁和互斥锁串行保护这些操作。
 
 ### 8.3 内核用量回写
 
@@ -370,22 +379,25 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    A["获取单实例锁，打开 DB"] --> B{"同一 boot / map-set<br/>ABI 与 DB 身份匹配？"}
-    B -->|"是"| C["接管 pinned Maps / links<br/>保留实时 used"]
-    C --> D["回写最新快照<br/>按 DB 版本补装授权"]
-    B -->|"内核状态确已丢失"| E["旧 active epoch 置 unknown<br/>保留授权占用"]
-    E --> F["建立新 map-set 与 guard<br/>先保持未知公网拒绝"]
-    D --> G["Docker 全量对账<br/>恢复 cgroup 到用户关联"]
-    F --> G
-    G --> H["创建 / 复用当天 bucket<br/>持久化授权后发布映射"]
-    H --> I["运行就绪，proxy 可转发用户任务"]
+    A["获取单实例锁，打开/迁移 DB"] --> B["openKernel：创建或接管对象<br/>检查 ABI / DB / 父组 / 配置"]
+    B --> C{"账本 boot_id<br/>等于当前系统 boot_id？"}
+    C -->|"是"| D["保留 active epoch"]
+    C -->|"否或为空"| E["一个事务：旧 active 置 unknown<br/>保留授权占用，保存当前 boot_id"]
+    D --> F["refresh(false)：保存计数快照<br/>补装已提交授权"]
+    E --> F
+    F --> G["启用 guard，进行 Docker 对账<br/>恢复 cgroup 到用户关联"]
+    G --> H["对账成功后 API ready"]
 ```
 
 DB/map 身份不匹配且无法证明是正常状态丢失，必须诊断并保持拒绝，不能把未知状态当零用量初始化。关闭 manager 进程不卸载 pinned guard；LaxCode 每次应用启动也不重置 Maps。
 
+`openKernel` 只负责内核对象的兼容性与创建/接管；不在内核 metadata 中保存 boot ID 或随机 map-set ID。`adopt(currentBootID)` 负责账本跨开机的恢复，不依赖 `fresh`：即使新 pins 已创建后进程在 adopt 前崩溃，下次接管已有 Maps 也能补完恢复；事务已提交则不重复处理。
+
+运维约定同次开机不随意销毁 Maps。显式维护使用发布包 `reset_quota.py`：停止应用/manager、确认父 cgroup 无进程、持有部署锁及 manager 锁，在 SQLite FULL 事务提交 `boot_id=''` 后移除专属 pins。下次启动即使 OS 未重启，也会保守恢复。脚本保留账本，可在部分删除失败后重试；不得直接 rm pins 或清空账本。ABI 2 metadata 为 72 字节；旧 ABI 1 需维护清理，账本 schema 1 自动事务迁移到 2，仅删除 map_set 列。
+
 ### 10.2 cgroup 重建
 
-同一 boot、map-set 和日期下，一个用户的 bucket 独立于 supervisor 生命周期。新 cgroup 只绑定现有 user_key，继续消费原 bucket；清理旧 cgroup 不回收用户状态。短暂存在两个 supervisor 时仍共享一个受锁保护的累计量。
+同一开机期间和日期下，一个用户的 bucket 独立于 supervisor 生命周期。新 cgroup 只绑定现有 user_key，继续消费原 bucket；清理旧 cgroup 不回收用户状态。短暂存在两个 supervisor 时仍共享一个受锁保护的累计量。
 
 ### 10.3 自然日切换
 
@@ -405,7 +417,7 @@ manager 负责墙上时间到北京时间日期的转换；eBPF 不自行解释�
 | DB 已提交、Map 尚未安装 | 同 epoch 重装绝对累计上限，不重复充值 |
 | Map 已安装、manager 收到响应前退出 | 接管后比对 DB 版本，重复安装无害 |
 | 内核已累计、DB 快照未保存 | 同 boot 读取 pinned 计数补写 |
-| ECS 重启或 Maps 被销毁 | 旧 epoch unknown，授权继续占用；新 epoch 从余下额度发放 |
+| ECS 重启或运维脚本清理 Maps | 旧 epoch unknown，授权继续占用；新 epoch 从余下额度发放 |
 | 正常应用发布、proxy 重启 | 不重启额度周期；重新发现 cgroup |
 | Ring Buffer 满、Docker 事件断流 | 定期扫描/全量对账兜底；未知组保持拒绝 |
 | DB 恢复旧备份、Map ABI 不明 | readiness 失败，人工诊断；不静默初始化 |
@@ -445,17 +457,17 @@ proxy 在 `ensure` 等待 OpenShell Ready 后调用 manager，再转发用户任
 ### 12.2 运行位置
 
 ```text
-/usr/local/bin/laxcode-manager              # 宿主程序，示意安装位置
-/etc/laxcode-manager/config.json           # 管理配置
+/root/laxcode_deploy/laxcode/bin/laxcode-manager # 随包发布的宿主程序
+/root/laxcode_deploy/state/manager.json           # 管理配置
 /var/lib/laxcode-manager/quota.db           # 持久账本与 DB 身份
 /run/laxcode-manager/control.sock          # proxy 调用
 /var/lib/laxcode-manager/manager.lock       # 单实例
 /sys/fs/bpf/laxcode-manager/               # pinned Maps / links
 ```
 
-Linux 首版按 root system service 部署，原因是需要 Docker socket、宿主 PID/cgroup、BPF 加载与挂载权限；这些权限本身具有宿主管理能力。不要把 manager 放到用户沙箱里，也不向 workload 暴露 Docker socket 或 manager socket。后续有实际需求再细化 capabilities，不在首版增加权限代理服务。
+Linux 按 root 后台进程部署，由 deploy.py 管理 PID，原因是需要 Docker socket、宿主 PID/cgroup、BPF 加载与挂载权限；这些权限本身具有宿主管理能力。不要把 manager 放到用户沙箱里，也不向 workload 暴露 Docker socket 或 manager socket。后续有实际需求再细化 capabilities，不在首版增加权限代理服务。
 
-配置示例（控制对端地址必须替换为安装器探测的实际地址）：
+配置示例（控制对端地址必须替换为首次部署探测的实际地址）：
 
 ```json
 {
@@ -480,20 +492,20 @@ Linux 首版按 root system service 部署，原因是需要 Docker socket、宿
 
 必要通信对端从已验证的 gateway/store/DNS 配置生成，不能硬编码本文示例。校验 `0 < W < B <= Q`、路径归属、目录权限、Map 容量以及 DB 整数范围。
 
-域名入口为 `deploy/defaults/network.json`，部署时 `deploy.sh` 旁的 `network.json` 优先覆盖，格式 `{"additional_domains":["example.com"]}`；重新执行 `deploy.sh restart` 生效。它只补充域名，不改变内核地址分类或日额度。配额配置位于 `/etc/laxcode-manager/config.json`，二者使用和维护步骤见 manager README。
+域名入口为 `deploy/defaults/network.json`，部署时 `/root/laxcode_deploy/network.json` 优先覆盖，格式 `{"additional_domains":["example.com"]}`；重新执行 `python3 deploy.py` 生效。它只补充域名，不改变内核地址分类或日额度。配额配置位于 `/root/laxcode_deploy/state/manager.json`，二者使用和维护步骤见 manager README。
 
-### 12.3 发布顺序与回滚
+### 12.3 固定目录发布顺序
 
-1. 宿主预检和最小 Linux 原型验证通过；确认 Docker 是否专用，检查现有 cgroup 规则，不覆盖其他 BPF 程序。
-2. 安装 manager 与专用 slice，安排 Docker 父组配置迁移；在重新创建受管容器前装好 guard。
-3. 停止应用沙箱并核对无越界 supervisor；启动 Docker/gateway，manager 完成发现。
-4. 配额保护已就绪后，再启用新的公网 policy 和工具镜像，最后启动支持绑定检查的 proxy。
-5. 普通应用更新保留 manager、DB 和 pinned 对象；manager 自身升级按 ABI 兼容协议执行。
-6. 回滚应用不能恢复旧 DB、清空账本或卸载 guard。若要停用配额，先停止用户任务并恢复离线 policy，再显式卸载受管 BPF；不能留下无限制联网沙箱。
+1. 基础镜像完成 Docker 父组、内核和运行镜像准备；应用包固定 Linux amd64，包含 deploy.py。
+2. 下载单一 tar.gz，使用 `tar --unlink-first` 直接覆盖固定目录；不备份旧包、不使用临时发布目录或目录切换。
+3. deploy.py 校验制品和宿主，停止 proxy、清理旧沙箱、重启 manager；保留配置、账本和 pinned 对象。
+4. guard 就绪后启动/复用 gateway，删除剩余旧沙箱，生成新 policy 和公开配置。
+5. 离线构建固定 laxcode-cloud:current，删除旧应用镜像；注册 provider 并启动 proxy。
+6. 不自动回滚；需要旧代码时从 TOS 下载旧制品重新部署，不能恢复旧 DB、清空账本或卸载 guard。失败后检查日志并重试；ABI 或 pinned 配置不兼容需单独维护迁移。
 
 ## 13. 可观测性与错误处理
 
-`/readyz` 提供 map-set、ABI、父组、namespace、绑定数、最近对账时间、错误原因及 per-CPU 拒绝计数汇总（解析、地址、未绑定、过期、配额、事件丢失）。用量接口提供最后确认时间；日志记录对账、DB 和不变量错误，重复相同错误合并。首版不增加 metrics server。
+`/readyz` 提供 ABI、父组、namespace、绑定数、最近对账时间、错误原因及 per-CPU 拒绝计数汇总（解析、地址、未绑定、过期、配额、事件丢失）。用量接口提供最后确认时间；日志记录对账、DB 和不变量错误，重复相同错误合并。首版不增加 metrics server。
 
 日志不记录 provider 凭据或用户请求正文。逐包拒绝只累计计数，不产生逐包日志；详细授权和版本保留于 SQLite。
 
@@ -556,6 +568,19 @@ Linux 首版按 root system service 部署，原因是需要 Docker socket、宿
 实际 OpenShell 测试使用独立临时 DB/pins/父组，先以离线 policy 创建沙箱，再把测试 supervisor 放入已挂载 guard 的父组，绑定成功后才热更新公网 policy。此举只用于隔离验证，**不能替代生产 Docker 默认父组迁移**。测试沙箱使用宿主已有 v1 工具镜像并显式设置下载环境，因此也不能视作 v2 发布镜像的完整构建验收。
 
 仍未执行：生产安装器迁移、完整宿主重启、v2 镜像和完整发布包构建、IPv6 公网传输、吞吐/锁竞争压力、Map/Ring Buffer 满容量，以及真实零点长连接和 PID 高频复用压力。私网域名样例在 DNS 阶段解析失败，未据此宣称完成 DNS rebinding 端到端验证；最终目标地址分类由真实内核分类及私网 IP 请求验证。首次正式启用应在维护窗口完成迁移及这些环境相关验收。
+
+### 2026-10-22 单包部署验证记录
+
+在 Ubuntu 24.04、内核 6.8.0-142-generic、Docker 29.9.2、官方 OpenShell 0.1.4 的 ECS 上，使用独立测试目录和虚拟模型凭据验证：
+
+- 本机交叉编译 Linux amd64，唯一制品 `release/laxcode.tar.gz` 包含 deploy.py；manifest、三个 ELF 架构及仅文件条目的 tar 格式验证通过。
+- 首次部署、运行中 `tar --unlink-first` 原目录覆盖、第二版默认重启、同版重复部署、stop 后重启均通过。发布目录 inode 不变，无临时发布目录或旧版本备份。
+- 旧沙箱和旧应用镜像删除，仅保留 `laxcode-cloud:current`；废弃程序/Skills 文件清除。适配 Docker 29 已自动回收旧 manifest 的情况。
+- 用户文件、manager 配置、DB 身份、BPF map-set 和父 cgroup 保留；更新前后确认用量均为 16,034 字节，累计授权均为 16 MiB，没有清零。已删除 workload 的回环标记正常撤销。
+- 实际运行包内 laxcode-cloud，通过 OpenShell service 路由检查健康并访问公网 HTTPS；未调用真实模型。容器自动重启策略确认为 no。
+- 20 项 Python 部署/配置测试、Go manager/proxy 回归以及 ECS 上全部内核/账本测试通过。内核回归覆盖未知组阻断、隔离 workload 的 IPv4/IPv6 回环、非回环阻断、guard 未就绪阻断、宿主回环阻断、共享双向配额和 pinned 恢复。
+
+本次发现并修复：全父组 guard 会拦截 OpenShell workload 的本地回环启动自检；此前只移动 supervisor 的验证未覆盖该条件。修正复用 `cgroup_owner` 的保留值 0，不增加 Map，不改变账本/Map ABI。实际整机重启、TOS 上传及真实模型调用不在本轮验证范围；跨 boot 的陈旧 PID 识别由单元测试覆盖。
 
 ## 15. 主要取舍与未解决前置项
 

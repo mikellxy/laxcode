@@ -19,7 +19,7 @@ type ledger struct {
 }
 type epoch struct {
 	ID, User                           uint64
-	UUID, Day, MapSet, Status          string
+	UUID, Day, Status                  string
 	Granted, RX, TX, Version, Deadline uint64
 }
 type usageResponse struct {
@@ -57,12 +57,23 @@ func openLedger(path string, limit, chunk uint64) (*ledger, error) {
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return nil, err
 	}
-	if version != 0 && version != 1 {
+	if version < 0 || version > 2 {
 		return nil, fmt.Errorf("unsupported ledger schema %d", version)
 	}
-	_, err = db.Exec(`
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if version == 1 {
+		if _, err = tx.Exec(`ALTER TABLE metadata DROP COLUMN map_set;
+ALTER TABLE epochs DROP COLUMN map_set;`); err != nil {
+			return nil, err
+		}
+	}
+	_, err = tx.Exec(`
 CREATE TABLE IF NOT EXISTS metadata (
- id INTEGER PRIMARY KEY CHECK(id=1), db_id TEXT NOT NULL, map_set TEXT NOT NULL DEFAULT '',
+ id INTEGER PRIMARY KEY CHECK(id=1), db_id TEXT NOT NULL,
  boot_id TEXT NOT NULL DEFAULT '', last_day TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE);
@@ -72,7 +83,7 @@ CREATE TABLE IF NOT EXISTS user_days (
 );
 CREATE TABLE IF NOT EXISTS epochs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, day TEXT NOT NULL,
- map_set TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','closed','unknown')),
+ status TEXT NOT NULL CHECK(status IN ('active','closed','unknown')),
  granted INTEGER NOT NULL DEFAULT 0 CHECK(granted>=0),
  rx INTEGER NOT NULL DEFAULT 0 CHECK(rx>=0), tx INTEGER NOT NULL DEFAULT 0 CHECK(tx>=0),
  version INTEGER NOT NULL DEFAULT 0 CHECK(version>=0), deadline INTEGER NOT NULL,
@@ -81,8 +92,11 @@ CREATE TABLE IF NOT EXISTS epochs (
  CHECK(rx+tx<=granted)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS active_epoch ON epochs(user_id,day) WHERE status='active';
-PRAGMA user_version=1;`)
+PRAGMA user_version=2;`)
 	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
 	if _, err = db.Exec("INSERT OR IGNORE INTO metadata(id,db_id) VALUES(1,?)", uuid.NewString()); err != nil {
@@ -105,35 +119,35 @@ PRAGMA user_version=1;`)
 
 // Called only after kernel identity/ABI verification. Missing kernel state never
 // returns an old epoch's unobserved authorization to the daily balance.
-func (l *ledger) adopt(mapSet, boot string, fresh bool) error {
+func (l *ledger) adopt(boot string) error {
+	if boot == "" {
+		return errors.New("empty current boot ID")
+	}
 	tx, err := l.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var oldMap, oldBoot string
-	if err = tx.QueryRow("SELECT map_set,boot_id FROM metadata WHERE id=1").Scan(&oldMap, &oldBoot); err != nil {
+	var oldBoot string
+	if err = tx.QueryRow("SELECT boot_id FROM metadata WHERE id=1").Scan(&oldBoot); err != nil {
 		return err
 	}
-	if oldMap == mapSet && oldBoot == boot {
+	if oldBoot == boot {
 		return tx.Commit()
-	}
-	if !fresh {
-		return errors.New("pinned map-set and ledger identity disagree")
 	}
 	if _, err = tx.Exec("UPDATE epochs SET status='unknown' WHERE status='active'"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("UPDATE metadata SET map_set=?,boot_id=? WHERE id=1", mapSet, boot); err != nil {
+	if _, err = tx.Exec("UPDATE metadata SET boot_id=? WHERE id=1", boot); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-const epochColumns = "e.id,e.user_id,u.uuid,e.day,e.map_set,e.status,e.granted,e.rx,e.tx,e.version,e.deadline"
+const epochColumns = "e.id,e.user_id,u.uuid,e.day,e.status,e.granted,e.rx,e.tx,e.version,e.deadline"
 
 func scanEpoch(row interface{ Scan(...any) error }) (e epoch, err error) {
-	err = row.Scan(&e.ID, &e.User, &e.UUID, &e.Day, &e.MapSet, &e.Status, &e.Granted, &e.RX, &e.TX, &e.Version, &e.Deadline)
+	err = row.Scan(&e.ID, &e.User, &e.UUID, &e.Day, &e.Status, &e.Granted, &e.RX, &e.TX, &e.Version, &e.Deadline)
 	return
 }
 func (l *ledger) active() ([]epoch, error) {
@@ -153,18 +167,18 @@ func (l *ledger) active() ([]epoch, error) {
 	return result, rows.Err()
 }
 
-func (l *ledger) ensure(id, day, mapSet string, deadline uint64) (epoch, error) {
+func (l *ledger) ensure(id, day string, deadline uint64) (epoch, error) {
 	tx, err := l.db.Begin()
 	if err != nil {
 		return epoch{}, err
 	}
 	defer tx.Rollback()
-	var last, current string
-	if err = tx.QueryRow("SELECT last_day,map_set FROM metadata WHERE id=1").Scan(&last, &current); err != nil {
+	var last string
+	if err = tx.QueryRow("SELECT last_day FROM metadata WHERE id=1").Scan(&last); err != nil {
 		return epoch{}, err
 	}
-	if current != mapSet || day < last {
-		return epoch{}, errors.New("stale map-set or backwards accounting date")
+	if day < last {
+		return epoch{}, errors.New("backwards accounting date")
 	}
 	if _, err = tx.Exec("UPDATE metadata SET last_day=? WHERE id=1", day); err != nil {
 		return epoch{}, err
@@ -186,9 +200,9 @@ func (l *ledger) ensure(id, day, mapSet string, deadline uint64) (epoch, error) 
 	if closed != 0 {
 		return epoch{}, errors.New("accounting date is already closed")
 	}
-	_, err = tx.Exec(`INSERT INTO epochs(user_id,day,map_set,status,deadline,updated_at)
-SELECT ?,?,?,'active',?,? WHERE NOT EXISTS(SELECT 1 FROM epochs WHERE user_id=? AND day=? AND status='active')`,
-		user, day, mapSet, deadline, time.Now().UTC().Format(time.RFC3339Nano), user, day)
+	_, err = tx.Exec(`INSERT INTO epochs(user_id,day,status,deadline,updated_at)
+SELECT ?,?,'active',?,? WHERE NOT EXISTS(SELECT 1 FROM epochs WHERE user_id=? AND day=? AND status='active')`,
+		user, day, deadline, time.Now().UTC().Format(time.RFC3339Nano), user, day)
 	if err != nil {
 		return epoch{}, err
 	}
@@ -196,15 +210,12 @@ SELECT ?,?,?,'active',?,? WHERE NOT EXISTS(SELECT 1 FROM epochs WHERE user_id=? 
 	if err != nil {
 		return epoch{}, err
 	}
-	if e.MapSet != mapSet {
-		return epoch{}, errors.New("epoch belongs to another map-set")
-	}
 	return e, tx.Commit()
 }
 
 // Persist cumulative authorization before exposing it to the kernel. Usage is a
 // locked cumulative snapshot, never a delta that can be applied twice.
-func (l *ledger) checkpoint(id uint64, mapSet string, u usage, refill bool) (epoch, error) {
+func (l *ledger) checkpoint(id uint64, u usage, refill bool) (epoch, error) {
 	tx, err := l.db.Begin()
 	if err != nil {
 		return epoch{}, err
@@ -214,7 +225,7 @@ func (l *ledger) checkpoint(id uint64, mapSet string, u usage, refill bool) (epo
 	if err != nil {
 		return epoch{}, err
 	}
-	if e.MapSet != mapSet || e.Status != "active" || u.RX < e.RX || u.TX < e.TX ||
+	if e.Status != "active" || u.RX < e.RX || u.TX < e.TX ||
 		u.RX > e.Granted || u.TX > e.Granted-u.RX {
 		return epoch{}, errors.New("usage snapshot violates epoch invariants")
 	}

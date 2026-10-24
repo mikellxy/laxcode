@@ -33,10 +33,10 @@ struct usage {
 struct event { __u64 bucket, version; };
 struct metadata {
     __u32 abi, ready;
-    __u8 instance[16], db[16], boot[16], config_hash[32];
+    __u8 db[16], config_hash[32];
     __u64 parent_id, low_watermark;
 };
 _Static_assert(sizeof(struct peer) == 20, "peer ABI");
 _Static_assert(sizeof(struct usage) == 56, "usage ABI");
-_Static_assert(sizeof(struct metadata) == 104, "metadata ABI");
+_Static_assert(sizeof(struct metadata) == 72, "metadata ABI");
 #endif

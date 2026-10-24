@@ -2,6 +2,7 @@
 """Register credentials outside sandboxes and produce their public model catalog."""
 import copy
 import hashlib
+import shutil
 import json
 import os
 from pathlib import Path
@@ -113,12 +114,47 @@ def cli(*args, env=None, check=True):
     return result.returncode == 0
 
 
+def host_address():
+    # UDP connect selects a route without sending any packets.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(('8.8.8.8', 80))
+        host = route.getsockname()[0]
+    address = ipaddress.ip_address(host)
+    if not address.is_private or address.is_loopback:
+        raise ValueError('A private host address is required for sandbox storage callbacks')
+    return host
+
+
+def manager_configuration():
+    peers = [{'address': '127.0.0.1', 'port': 18080, 'protocol': 'tcp'},
+             {'address': host_address(), 'port': 5173, 'protocol': 'tcp'}]
+    dns = set()
+    for line in Path('/etc/resolv.conf').read_text().splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == 'nameserver':
+            address = ipaddress.ip_address(parts[1])
+            if address.is_link_local or address.is_unspecified or address.is_multicast:
+                raise ValueError('Unsupported DNS control peer')
+            dns.add(str(address))
+    if not dns:
+        raise ValueError('No DNS resolvers found')
+    for address in sorted(dns):
+        for protocol in ('tcp', 'udp'):
+            peers.append({'address': address, 'port': 53, 'protocol': protocol})
+    return {'sandbox_namespace': 'laxcode', 'workplaces_root': str(Path.home() / 'laxcode'),
+            'control_peers': peers, 'daily_limit_bytes': 5000000000,
+            'grant_chunk_bytes': 16777216, 'refill_low_watermark_bytes': 4194304}
+
+
 def generate(release):
     catalog, registrations = prepare(json.loads((release / 'settings.json').read_text()))
+    # Regenerate only after old sandboxes have released these bind mounts.
+    for name in ('image', 'catalog', 'profiles'):
+        if (release / name).exists():
+            shutil.rmtree(release / name)
     image = release / 'image'
     image.mkdir()
     (image / 'bin').mkdir()
-    import shutil
     shutil.copy2(release / 'bin/laxcode-cloud', image / 'bin/laxcode-cloud')
     # Build context deliberately excludes the release's real settings and credentials.
     shutil.copy2(release / 'Dockerfile', image / 'Dockerfile')
@@ -130,13 +166,7 @@ def generate(release):
     for profile, _, _ in registrations:
         (profiles / (profile['id'] + '.json')).write_text(json.dumps(profile))
     (release / 'providers.json').write_text(json.dumps([p['id'] for p, _, _ in registrations]))
-    # Choose the host's private address, reachable from both Docker Desktop and Linux.
-    # Connecting a UDP socket selects a route without sending any packets.
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
-        route.connect(('8.8.8.8', 80))
-        host_ip = route.getsockname()[0]
-    if not ipaddress.ip_address(host_ip).is_private or ipaddress.ip_address(host_ip).is_loopback:
-        raise ValueError('A private host address is required for sandbox storage callbacks')
+    host_ip = host_address()
     (release / 'store-url').write_text(f'http://{host_ip}:5173/internal/store')
     policy = {'version': 1,
               'filesystem_policy': {'include_workdir': True,
@@ -148,7 +178,9 @@ def generate(release):
                                  'enforcement': 'enforce', 'allowed_ips': [host_ip + '/32'],
                                  'rules': [{'allow': {'method': 'POST', 'path': '/internal/store'}}]}],
                   'binaries': [{'path': '/usr/local/bin/laxcode-cloud'}]}}}
-    network_path = release / 'network.json'
+    network_path = release.parent / 'network.json'
+    if not network_path.exists():
+        network_path = release / 'network.json'
     hosts = network_hosts(json.loads(network_path.read_text()) if network_path.exists()
                           else {'additional_domains': []})
     if platform.system() == 'Linux':

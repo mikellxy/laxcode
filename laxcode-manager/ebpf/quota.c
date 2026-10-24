@@ -25,7 +25,7 @@ INLINE __u16 be16(const __u8 *p) { return ((__u16)p[0] << 8) | p[1]; }
 
 /* Fail closed on fragments, unknown extension chains, or truncated transport.
  * Supervisor TCP/DNS needs neither raw fragments nor arbitrary IP protocols. */
-INLINE int parse(struct __sk_buff *skb, int ingress, struct peer *peer) {
+INLINE int parse(struct __sk_buff *skb, int ingress, struct peer *peer, int *loopback) {
     __u8 h[40] = {};
     if (bpf_skb_load_bytes(skb, 0, h, 20)) return 0;
     __u32 offset = 0;
@@ -35,11 +35,15 @@ INLINE int parse(struct __sk_buff *skb, int ingress, struct peer *peer) {
         peer->address[10] = 0xff; peer->address[11] = 0xff;
         if (ingress) __builtin_memcpy(peer->address + 12, h + 12, 4);
         else __builtin_memcpy(peer->address + 12, h + 16, 4);
+        *loopback = peer->address[12] == 127;
         peer->proto = h[9];
     } else if ((h[0] >> 4) == 6) {
         if (bpf_skb_load_bytes(skb, 0, h, 40)) return 0;
         if (ingress) __builtin_memcpy(peer->address, h + 8, 16);
         else __builtin_memcpy(peer->address, h + 24, 16);
+        __u8 prefix = 0;
+        for (int i = 0; i < 15; i++) prefix |= peer->address[i];
+        *loopback = prefix == 0 && peer->address[15] == 1;
         peer->proto = h[6]; offset = 40;
         /* Hop-by-hop and destination options only; no routing/NAT64 tunnels. */
         for (int i = 0; i < 4; i++) {
@@ -65,18 +69,22 @@ INLINE int parse(struct __sk_buff *skb, int ingress, struct peer *peer) {
 
 INLINE int account(struct __sk_buff *skb, int ingress) {
     struct peer peer = {};
-    if (!parse(skb, ingress, &peer)) { diagnostic(0); return 0; }
+    int loopback = 0;
+    if (!parse(skb, ingress, &peer, &loopback)) { diagnostic(0); return 0; }
     __u32 zero = 0;
     struct metadata *meta = bpf_map_lookup_elem(&metadata, &zero);
     if (!meta || !meta->ready) { diagnostic(1); return 0; }
+    __u64 cg = bpf_skb_cgroup_id(skb);
+    __u64 *user = bpf_map_lookup_elem(&cgroup_owner, &cg);
+    /* User IDs are positive. Zero marks a verified network=none workload,
+     * whose private loopback is required by the OpenShell bootstrap self-test. */
+    if (cg && user && !*user && loopback) return 1;
     if (bpf_map_lookup_elem(&control_peers, &peer)) return 1;
     struct prefix prefix = {.prefixlen = 128};
     __builtin_memcpy(prefix.address, peer.address, 16);
     __u32 *public = bpf_map_lookup_elem(&address_class, &prefix);
     if (!public || !*public) { diagnostic(2); return 0; }
-    __u64 cg = bpf_skb_cgroup_id(skb);
-    __u64 *user = bpf_map_lookup_elem(&cgroup_owner, &cg);
-    if (!cg || !user) { diagnostic(3); return 0; }
+    if (!cg || !user || !*user) { diagnostic(3); return 0; }
     __u64 user_id = *user;
     __u64 *bucket = bpf_map_lookup_elem(&user_bucket, &user_id);
     if (!bucket) { diagnostic(3); return 0; }

@@ -12,7 +12,7 @@ import (
 	_ "time/tzdata"
 )
 
-const abiVersion = 1
+const abiVersion = 2
 
 type controlPeer struct {
 	Address  string `json:"address"`

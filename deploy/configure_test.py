@@ -30,6 +30,35 @@ class ConfigTest(unittest.TestCase):
 
 
 class ReleaseConfigTest(unittest.TestCase):
+    def test_repeat_generation_uses_external_network_without_changing_package(self):
+        import json
+        from pathlib import Path
+        import tempfile
+        from unittest.mock import patch
+        from configure import generate
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / 'laxcode'
+            (root / 'bin').mkdir(parents=True)
+            (root / 'bin/laxcode-cloud').write_bytes(b'binary')
+            (root / 'Dockerfile').write_text('FROM base\n')
+            (root / 'network.json').write_text('{"additional_domains":[]}')
+            (base / 'network.json').write_text('{"additional_domains":["example.org"]}')
+            original = (root / 'network.json').read_bytes()
+            source = {'model': 'p:m', 'provider_list': [{'provider_name': 'p', 'openai_base_url': 'https://example.com',
+                      'openai_api_key': 'secret-value', 'model_list': [{'model_name': 'm'}]}]}
+            (root / 'settings.json').write_text(json.dumps(source))
+            with patch('configure.host_address', return_value='192.168.1.5'), \
+                    patch('configure.platform.system', return_value='Linux'), patch('configure.require_guard'):
+                generate(root)
+                (root / 'profiles/obsolete.json').write_text('{}')
+                generate(root)
+            self.assertEqual((root / 'network.json').read_bytes(), original)
+            self.assertFalse((root / 'profiles/obsolete.json').exists())
+            endpoints = json.loads((root / 'policy.yaml').read_text())['network_policies']['laxcode_public']['endpoints']
+            self.assertIn('example.org', [item['host'] for item in endpoints])
+            self.assertNotIn('secret-value', (root / 'catalog/settings.json').read_text())
+
     def test_build_context_excludes_real_credentials(self):
         import json
         from pathlib import Path

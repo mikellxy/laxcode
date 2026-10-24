@@ -1,7 +1,0 @@
-[Unit]
-Description=LaxCode guarded Docker parent
-Before=docker.service
-
-[Slice]
-CPUAccounting=yes
-MemoryAccounting=yes

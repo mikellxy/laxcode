@@ -1,6 +1,6 @@
 .PHONY: build build-web build-cloud vet test clean
 build:
-	go build -o bin/laxcode-cloud ./cmd/main
+	./deploy/build.sh
 build-web:
 	pnpm --dir web install --frozen-lockfile
 	pnpm --dir web build
@@ -13,4 +13,4 @@ test:
 	pnpm --dir web test
 	python3 -m unittest discover -s deploy -p '*_test.py'
 clean:
-	rm -f bin/laxcode-cloud bin/laxcode-proxy
+	rm -rf release

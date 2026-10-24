@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,7 +29,30 @@ func TestNetworkHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("QUOTA_CGROUP")+"/cgroup.procs", []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
 		os.Exit(3)
 	}
-	conn, err := net.DialTimeout("tcp", os.Getenv("QUOTA_ENDPOINT"), 300*time.Millisecond)
+	endpoint := os.Getenv("QUOTA_ENDPOINT")
+	if address := os.Getenv("QUOTA_SELF_LOOPBACK"); address != "" {
+		if err := exec.Command("ip", "link", "set", "lo", "up").Run(); err != nil {
+			os.Exit(4)
+		}
+		if address == "192.0.2.1" {
+			if err := exec.Command("ip", "addr", "add", address+"/32", "dev", "lo").Run(); err != nil {
+				os.Exit(5)
+			}
+		}
+		listener, err := net.Listen("tcp", net.JoinHostPort(address, "0"))
+		if err != nil {
+			os.Exit(6)
+		}
+		endpoint = listener.Addr().String()
+		go func() {
+			conn, err := listener.Accept()
+			if err == nil {
+				conn.Write(bytes.Repeat([]byte("x"), 128))
+				conn.Close()
+			}
+		}()
+	}
+	conn, err := net.DialTimeout("tcp", endpoint, 300*time.Millisecond)
 	if err != nil {
 		fmt.Print("0")
 		os.Exit(0)
@@ -38,6 +62,69 @@ func TestNetworkHelper(t *testing.T) {
 	conn.Close()
 	fmt.Print(n)
 	os.Exit(0)
+}
+
+func TestKernelWorkloadLoopback(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root required")
+	}
+	c := defaultConfig()
+	c.CgroupParent = fmt.Sprintf("/sys/fs/cgroup/laxcode-quota-loop-%d.slice", os.Getpid())
+	c.PinPath = fmt.Sprintf("/sys/fs/bpf/laxcode-quota-loop-%d", os.Getpid())
+	c.ControlPeers = []controlPeer{{"127.0.0.1", 9, "tcp"}}
+	if err := os.Mkdir(c.CgroupParent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(c.CgroupParent)
+	k, err := openKernel(c, uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { k.close(); os.RemoveAll(c.PinPath) }()
+	if err := k.enable(c.LowWatermark); err != nil {
+		t.Fatal(err)
+	}
+	group := filepath.Join(c.CgroupParent, "workload")
+	if err := os.Mkdir(group, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(group)
+	probe := func(address string) int {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestNetworkHelper$")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
+		cmd.Env = append(os.Environ(), "QUOTA_HELPER=1", "QUOTA_CGROUP="+group, "QUOTA_SELF_LOOPBACK="+address)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("isolated loopback probe: %s %v", out, err)
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if probe("127.0.0.1") != 0 {
+		t.Fatal("unknown workload bypassed guard")
+	}
+	id, err := cgroupID(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.objects.Maps["cgroup_owner"].Update(id, uint64(0), ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{"127.0.0.1", "::1"} {
+		if n := probe(address); n != 128 {
+			t.Fatalf("verified workload loopback %s blocked: %d", address, n)
+		}
+	}
+	if probe("192.0.2.1") != 0 {
+		t.Fatal("workload marker allowed non-loopback traffic")
+	}
+	k.disable()
+	if probe("127.0.0.1") != 0 {
+		t.Fatal("disabled guard allowed workload loopback")
+	}
 }
 func TestKernelGuard(t *testing.T) {
 	if os.Geteuid() != 0 {

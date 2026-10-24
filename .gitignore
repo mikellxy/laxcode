@@ -2,11 +2,7 @@
 .idea
 .DS_Store
 /.pnpm-store/
-/bin/*
-!/bin/win/
-/bin/win/*
-!/bin/win/laxcode.exe
-!/bin/win/laxcode-web.exe
+/release/
 
 # Legacy project-local LaxCode data (new data lives under $HOME/.laxcode)
 .laxcode
@@ -31,6 +27,3 @@ web/vite.config.d.ts
 /deploy/defaults/settings.json
 
 /deploy/__pycache__/
-
-/deploy/laxcode.tar.gz
-/deploy/laxcode.tar.gz.tmp

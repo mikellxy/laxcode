@@ -11,8 +11,7 @@ LaxCode `sse server` 模式（`cmd/run_sse`）的 Go 示例客户端：向 `POST
 `OPENAI_BASE_URL` / `OPENAI_MODEL`，或 `~/.laxcode/settings.json`）：
 
 ```shell
-make build
-./bin/laxcode -addr=127.0.0.1:8080
+go run ./cmd/main -addr=127.0.0.1:8080
 ```
 
 再跑客户端：

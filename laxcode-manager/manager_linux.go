@@ -11,7 +11,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
-	"github.com/google/uuid"
 )
 
 type manager struct {
@@ -30,7 +29,6 @@ type manager struct {
 	wake      chan struct{}
 }
 
-func (m *manager) mapSet() string { return uuid.UUID(m.k.meta.Instance).String() }
 func (m *manager) healthy() bool {
 	return m.ready && m.fatal == nil && time.Since(m.lastScan) < 10*time.Second
 }
@@ -71,7 +69,7 @@ func (m *manager) syncEpoch(e epoch, refill bool) (epoch, error) {
 		return e, errors.New("kernel authorization exceeds durable ledger")
 	}
 	remaining := g.Bytes - u.RX - u.TX
-	e, err = m.l.checkpoint(e.ID, m.mapSet(), u, refill && remaining <= m.cfg.LowWatermark)
+	e, err = m.l.checkpoint(e.ID, u, refill && remaining <= m.cfg.LowWatermark)
 	if err != nil {
 		return e, err
 	}
@@ -87,7 +85,7 @@ func (m *manager) ensureUser(id string) (epoch, error) {
 	if err != nil {
 		return epoch{}, err
 	}
-	e, err := m.l.ensure(id, day, m.mapSet(), boot+uint64(next.Sub(now)))
+	e, err := m.l.ensure(id, day, boot+uint64(next.Sub(now)))
 	if err != nil {
 		return e, err
 	}
@@ -151,13 +149,20 @@ func (m *manager) reconcile(ctx context.Context) error {
 			return err
 		}
 		wanted[b.Cgroup] = e.User
+		// Zero grants only workload-local loopback, never supervisor/public traffic.
+		if _, exists := wanted[b.WorkloadCgroup]; exists || b.WorkloadCgroup == 0 {
+			err = errors.New("workload cgroup identity conflict")
+			m.fail(err)
+			return err
+		}
+		wanted[b.WorkloadCgroup] = 0
 	}
 	// Remove stale mappings before publishing new ones.
 	it := m.k.objects.Maps["cgroup_owner"].Iterate()
 	var cg, user uint64
 	var remove []uint64
 	for it.Next(&cg, &user) {
-		if wanted[cg] != user {
+		if owner, exists := wanted[cg]; !exists || owner != user {
 			remove = append(remove, cg)
 		}
 	}
@@ -199,9 +204,6 @@ func (m *manager) refresh(refill bool) error {
 		return err
 	}
 	for _, e := range all {
-		if e.MapSet != m.mapSet() {
-			return errors.New("active epoch has wrong map-set")
-		}
 		_, err = m.syncEpoch(e, refill && now < e.Deadline)
 		if err != nil {
 			return err
@@ -327,7 +329,7 @@ func (m *manager) handler() http.Handler {
 		writeJSON(w, status, map[string]any{"ready": status == 200, "cgroup_parent": m.cfg.CgroupParent,
 			"sandbox_namespace": m.cfg.Namespace, "control_peers": m.cfg.ControlPeers,
 			"workplaces_root": m.cfg.WorkplacesRoot,
-			"abi":             abiVersion, "map_set_id": m.mapSet(), "bindings": len(m.bindings),
+			"abi":             abiVersion, "bindings": len(m.bindings),
 			"last_reconcile_at": m.lastScan, "error": m.lastError, "diagnostics": counts})
 	})
 	mux.HandleFunc("POST /v1/sandboxes/{id}/ensure", func(w http.ResponseWriter, r *http.Request) {

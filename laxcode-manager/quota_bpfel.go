@@ -29,9 +29,7 @@ type quotaMetadata struct {
 	_            structs.HostLayout
 	Abi          uint32
 	Ready        uint32
-	Instance     [16]uint8
 	Db           [16]uint8
-	Boot         [16]uint8
 	ConfigHash   [32]uint8
 	ParentId     uint64
 	LowWatermark uint64

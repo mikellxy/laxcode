@@ -1,94 +1,133 @@
 # 宿主机部署
 
-单实例部署：宿主机运行 Docker、OpenShell gateway 和 laxcode-proxy；Linux 另运行独立的 laxcode-manager 配额服务。proxy 内嵌前端，每个用户只有一个 OpenShell 沙箱，沙箱运行 Linux laxcode-cloud。应用发布不重启 gateway，不使用 Docker-in-Docker。
+固定 Linux amd64 单实例部署。宿主机运行 Docker、OpenShell 0.1.4 gateway、laxcode-manager 和 laxcode-proxy；每用户沙箱运行 laxcode-cloud。manager/proxy 由 `deploy.py` 直接启动，不安装 systemd 服务。Docker 和 Caddy 由基础环境管理。
 
-## 一次性准备机器
+## 基础环境
 
-- macOS：Docker Desktop 4.92.0（已验证），开启 **Settings → Resources → Network → Enable host networking**，关闭与 host networking 不兼容的 Enhanced Container Isolation。
-- Linux ECS：预装 Docker Engine、Python 3、OpenShell CLI 和 openshell-gateway **0.1.4**；本版使用 Docker driver，系统须满足该版本 OpenShell 的内核要求。
-- OpenShell CLI、gateway、supervisor 和 sandbox runtime 版本一致。Docker 和这些可执行程序须在部署用户的 PATH 中。
-- Docker 必须是本机 Unix socket；用户具有 Docker 访问权限。ECS 使用 root；macOS 使用当前用户。Linux 首次初始化用户目录时，proxy 将目录所有权设置为沙箱 UID/GID 1000。
+使用已经准备好的 LaxCode ECS 基础镜像：Python 3、Docker Engine（systemd driver、cgroup v2）、OpenShell CLI/gateway **0.1.4**，以及已挂载的 `/sys/fs/bpf`。Docker 使用 `/var/run/docker.sock`，默认 `cgroup-parent` 必须为 `laxcode.slice`；部署以 root 执行，部署进程和 gateway/manager 自身位于该 slice 之外。
 
-在有网络的对应架构机器上，预先准备工具链和运行时镜像：
-
-```sh
-./deploy/build.sh --prepare-images
-# 构建固定 laxcode-tools:go1.26.6-v2，拉取两个 OpenShell 0.1.4 镜像
-```
-
-将以下镜像预装进 ECS 系统镜像，或一次性 docker save/load 搬运：
+预装以下 Linux amd64 镜像，不在每次应用发布中搬运：
 
 - `laxcode-tools:go1.26.6-v2`
 - `ghcr.io/nvidia/openshell/supervisor:0.1.4`
 - `ghcr.io/nvidia/openshell/sandbox:0.1.4`
 
-工具链包含 Go 1.26.6、Node 22、Python、Bash、rg、jq、中文字体和 excalidraw-canvas。制作机器镜像后固定这些镜像；改变工具链时升级基础镜像标签。应用部署只 COPY，不下载依赖。amd64 ECS 的预装镜像必须是 linux/amd64，不能直接复用 Mac arm64 镜像。
+需要重新制作基础镜像时，可在有网络的构建机执行 `sh deploy/build.sh --prepare-images`，再用 docker save/load 搬运。该命令固定构建/拉取 Linux amd64 镜像。工具链包含 Go 1.26.6、Node 22、Python、Bash、rg、jq、中文字体和 excalidraw-canvas。应用部署使用预装工具镜像离线 COPY 新 cloud 二进制。
 
-## 构建发布包
+OpenShell workload 初始化需要隔离网络内的回环自检。manager 会核验其网络隔离和 cgroup 后允许这段内部通信，不放开 supervisor 访问宿主回环、私网或元数据目标。
+
+此流程不修改 dockerd 配置，不安装 manager service，也不自动迁移旧 systemd 安装。重装基础系统后直接使用；存在旧 manager service 的机器需先完成基础环境迁移。
+
+## 构建和 CI 制品
 
 ```sh
+# 首次准备配置；已有真实配置时不要覆盖
 cp deploy/defaults/settings.example.json deploy/defaults/settings.json
-# 编辑真实模型配置和 API Key；已有真实配置时不要覆盖
-./deploy/build.sh
+# 编辑真实模型配置和 API Key，或由 CI 注入该文件
+cd deploy
+sh build.sh
 ```
 
-构建需要 Go 1.26.6、Node/pnpm、Python 3，以及构建依赖下载能力或已准备的缓存。`settings.json` 和 `laxcode.tar.gz` 均被 Git 忽略，压缩包权限为 0600。
+本机 macOS、Linux 和 CI 均固定交叉编译 **Linux amd64**，无需设置 TARGETOS/TARGETARCH。构建需要 Go 1.26.6、Node/pnpm、Python 3，以及依赖下载能力或已准备的缓存。
 
-本机运行默认生成本机 OS/CPU 的 proxy；cloud 始终是相同 CPU 的 Linux 二进制。Linux amd64 CI 默认产出 Linux amd64 包，也可以显式使用 `TARGETOS=linux TARGETARCH=amd64 ./deploy/build.sh`。部署时会检查目标 OS、CPU、依赖版本和文件 SHA-256。
+唯一发布制品为仓库根目录的 **`release/laxcode.tar.gz`**，权限 0600。整个 `/release/` 和真实 `deploy/defaults/settings.json` 被 Git 忽略。仓库不再使用根目录 `bin/`；压缩包内的 `bin/` 只用于组织三个部署程序。tar 仅写文件条目，目录由解压时自动创建，避免 `--unlink-first` 尝试移除已有非空目录。
 
 ```text
-laxcode.tar.gz
-├── bin/laxcode-proxy       # 内嵌前端，宿主机程序
-├── bin/laxcode-cloud       # Linux 沙箱程序
-├── bin/laxcode-manager     # Linux 宿主配额服务
-├── manager/                # 一次性 Docker 父组迁移安装器、systemd 单元
-├── network.json            # 公网两段域名补充列表
-├── settings.json           # 真实密钥，仅供宿主机注册 provider
-├── skills/                 # 默认内置 Skills
-├── Dockerfile              # FROM 固定工具镜像 + COPY
-├── configure.py
-└── manifest.json
+release/laxcode.tar.gz
+└── laxcode/
+    ├── deploy.py
+    ├── reset_quota.py         # 维护时停止服务并清理配额 BPF pins
+    ├── bin/laxcode-proxy       # 内嵌前端
+    ├── bin/laxcode-cloud       # 沙箱程序
+    ├── bin/laxcode-manager     # 宿主配额服务
+    ├── settings.json          # 真实凭据，仅宿主注册 provider 使用
+    ├── network.json
+    ├── skills/
+    ├── Dockerfile
+    ├── configure.py
+    └── manifest.json          # 架构、依赖版本、文件 SHA-256
 ```
 
-## 安装与更新
+CI 下载代码、注入配置后执行上述构建，再将 `release/laxcode.tar.gz` 上传 TOS，使用 `laxcode.{uuid}.tar.gz` 作为对象名。UUID 和上传由流水线负责；build/deploy 不管理远端版本。包内含真实凭据，TOS 使用私有访问。
+
+## 安装与覆盖更新
+
+在 ECS 上执行以下命令；`TOS_URL` 填本次制品的可下载地址（例如私有对象的预签名 URL）：
 
 ```sh
-mkdir -p ~/laxcode_deploy
-cp deploy/deploy.sh deploy/laxcode.tar.gz ~/laxcode_deploy/
-cd ~/laxcode_deploy
-./deploy.sh restart
-./deploy.sh status
-# 停止 proxy 和应用沙箱，保留网关及用户数据
-./deploy.sh stop
+mkdir -p /root/laxcode_deploy
+cd /root/laxcode_deploy
+curl --fail --location "$TOS_URL" -o laxcode.tar.gz.download &&
+  mv -f laxcode.tar.gz.download laxcode.tar.gz &&
+  tar --unlink-first -xzf laxcode.tar.gz &&
+  cd laxcode &&
+  python3 deploy.py
 ```
 
-Linux 首次启用必须先按 [manager 安装说明](../laxcode-manager/README.md#linux-首次安装) 完成专用 Docker 父组迁移及 guard 安装；预先在构建机制作工具镜像，再载入 ECS。迁移会重启 Docker，要求维护窗口和无现存容器。manager 独立于应用发布，其 DB/pins 不随应用更新或回滚。之后通过 scp 或 CI/CD 将发布文件放到目标目录。每次更新同时分发最新 deploy.sh 和 laxcode.tar.gz。
+临时下载文件仅防止中断时留下半个包，不备份旧压缩包。**直接解压到固定 `laxcode/` 目录**，不创建临时发布目录、不移动发布目录。`--unlink-first` 在写入前移除同名旧文件，避免向正在执行的二进制原地写入。解压成功后立即执行部署；这不是无中断发布，解压到重启之间旧服务可能读取新文件，不要并行执行多次下载/解压/部署。
 
-`restart` 获取部署锁，解压到临时目录，校验文件；Linux 先验证 Docker 实际默认父组和 manager readiness，再生成公网 policy 以及不含真实密钥的独立 Docker build context，使用预装镜像构建，然后确保专用网关可用。之后停止 proxy，只删除带 `laxcode-app=laxcode` 标签的应用沙箱，替换发布目录，重新注册/更新 provider，启动 proxy 并检查健康状态。已有发布保留一份 `.previous`，正常异常时尝试恢复旧发布；用户工作目录始终不参与替换。突然断电或强制终止部署时可重新执行 restart。
+```sh
+cd /root/laxcode_deploy/laxcode
+python3 deploy.py          # 默认 restart，也可显式传 restart
+python3 deploy.py status   # manager、gateway、proxy PID
+python3 deploy.py stop     # 删除应用沙箱，停止三个后台进程
+```
 
-沙箱删除会终止当时正在执行的会话任务，请在适当时段更新。空闲 30 分钟的沙箱平时只 stop，下次请求 start 原沙箱；应用更新才删除并重建。
+部署脚本执行：
 
-- 应用入口：`http://localhost:5173`，proxy 监听 `0.0.0.0:5173`。
-- 专用 gateway：`127.0.0.1:18080`，健康检查 `127.0.0.1:18081/health`；仅回环监听。
-- 现有系统默认 OpenShell 网关不受影响；LaxCode 使用独立 XDG 配置、数据库和 Docker `sandbox_label=laxcode`。
-- 运行状态、PID、日志、网关数据库/密钥：`~/laxcode_deploy/state/`。
-- 当前发布：`~/laxcode_deploy/laxcode/`；不在这里保存用户文件。
-- proxy 模型目录：当前发布中的 `catalog/settings.json`，仅含环境变量名，不含真实 API Key；临时镜像构建目录 `image/` 在构建后删除。
-- 日志：`state/proxy.log`、`state/gateway.log`。
+1. 校验新包文件、宿主架构、依赖镜像、Docker 默认父组和 bpffs。
+2. 停止 proxy；已有 gateway 时先删除本应用沙箱；停止旧 manager。
+3. 在原目录清理新 manifest 未列出的旧文件和旧生成文件，保留包内文件。
+4. 首次生成 `state/manager.json`，之后复用；启动新 manager 并等待 guard 与 Docker 对账就绪。
+5. 确保专用 gateway 可用，清理剩余旧沙箱，再生成配置。冷启动也先安装 guard 才启动 gateway。
+6. 离线构建固定 **`laxcode-cloud:current`**，删除旧应用镜像，注册 provider，启动 proxy 并检查健康状态。
 
-内测版以 `X-USERID` UUID 标识用户，静态页面和 `/healthz` 无需身份；尚无登录验证，公网访问控制由部署方配置。部署脚本管理后台进程，本版不安装应用开机自启服务。
+仅删除带 `laxcode-app=laxcode` 标签的应用沙箱。gateway 已运行时复用；`stop` 会一并停止 gateway。删除沙箱会终止正在执行的任务，用户数据和当天配额保留。
+
+不创建 `.previous` 或镜像版本标签，不备份、不自动回滚。构建成功后按旧镜像 ID 清理（包含上次中断遗留的应用标签镜像），不删除新镜像、不做全局 prune；Docker 共享层和构建缓存可继续复用。失败后检查日志、修复原因并重新运行；需要旧代码时从 TOS 下载旧包再覆盖部署，**不要恢复旧配额 DB 或手工删除 BPF pins**。
+
+## 规则或 ABI 变更后的维护清理
+
+若 manager 因旧的 eBPF 规则或 ABI 不兼容而无法启动，发布包提供专用脚本：
+
+```sh
+cd /root/laxcode_deploy/laxcode
+python3 reset_quota.py
+python3 deploy.py
+```
+
+以 root 执行；脚本会停止应用并删除应用沙箱，终止正在执行的任务。它持有部署锁和 manager 锁，确认父 cgroup 无进程，先清空账本的恢复标记，再删除该服务的 pinned links 和 Maps。DB、用户文件、累计授权保留；下次启动保守占用旧的未确认授权，不退回当天额度。失败可排除原因后重跑，不自动重启服务，也不会自动清空账本。
+
+本版本升级到 BPF ABI 2 / 账本 schema 2；已有 ABI 1 pins 的机器需要执行一次维护清理。schema 自动迁移后旧版 manager 不能直接回滚运行。路径配置注意事项见 [manager 运维说明](../laxcode-manager/README.md#维护时清理-ebpf-挂载)。
+
+## 持久目录和启动行为
+
+| 路径 | 用途 |
+| --- | --- |
+| `/root/laxcode_deploy/laxcode/` | 当前程序和生成配置，脚本清理其中非制品文件，不存放用户文件 |
+| `/root/laxcode_deploy/state/` | PID、日志、部署锁、manager 配置、gateway 数据库/密钥及 XDG 配置 |
+| `/root/laxcode_deploy/network.json` | 可选的机器级域名扩展，覆盖包内默认配置 |
+| `/root/laxcode/` | 用户工作目录及 proxy 内部存储密钥 |
+| `/var/lib/laxcode-manager/` | 配额 SQLite 数据库、WAL/SHM、单实例锁 |
+| `/sys/fs/bpf/laxcode-manager/` | 当前开机周期的 pinned Maps/links |
+
+日志为 `state/manager.log`、`state/gateway.log`、`state/proxy.log`。Unix Socket 位于 `/run/laxcode-manager/control.sock`。模型公开目录是 `laxcode/catalog/settings.json`；`laxcode/image/` 仅为不含真实密钥的 Docker build context，构建后删除，不是临时发布目录。
+
+SSH 退出不停止后台服务。**ECS 重启后需手动执行 `python3 deploy.py`，进程异常退出也不会自动拉起。** Docker/Caddy 自启不等于应用自启。保持 OpenShell 0.1.4 的容器默认无自动重启策略，不手工改成 always/unless-stopped，避免沙箱在 guard 安装前启动。manager 退出不会卸载本次开机的 guard，但不再补充授权；重启接管保留账本。
+
+proxy 监听 `0.0.0.0:5173`，gateway 仅监听 `127.0.0.1:18080`（健康端口 18081）。公网入口使用基础环境中的 Caddy `https://laxcode.cn`；安全组/宿主防火墙禁止公网直接访问 5173、80，Caddy 拒绝 `/internal/store`。内测版尚无登录验证，`X-USERID` UUID 是路由标识。
 
 ## 公网域名配置
 
-构建默认配置为 `deploy/defaults/network.json`。部署机器可在 `deploy.sh` 旁创建 `network.json`，覆盖包内列表且跨发布保留：
+构建默认配置为 `deploy/defaults/network.json`。ECS 可在 **`/root/laxcode_deploy/network.json`** 配置跨发布保留的扩展列表；该文件在 `laxcode/` 外，不会被覆盖解压或清理：
 
 ```json
 {"additional_domains": ["example.com", "rust-lang.org"]}
 ```
 
-首版已开放三段及以上域名 `**.*.*`，以及 github.com、golang.org、go.dev、goproxy.cn、npmjs.org、pypi.org、pythonhosted.org；上面的列表只补充域名。只填小写域名，不填 URL、端口或通配符。修改后执行 `./deploy.sh restart`，通过重建沙箱生效，正在执行的任务会终止，当天额度不重置。
+固定开放三段及以上域名 `**.*.*`，以及 github.com、golang.org、go.dev、goproxy.cn、npmjs.org、pypi.org、pythonhosted.org。列表只补充小写域名，不填 URL、端口、IP 或通配符。修改后在 `laxcode/` 执行 `python3 deploy.py`，通过重建沙箱生效，不重置当天额度。
 
-公网范围限 HTTP(S) 80/443，eBPF 仍阻断非公网地址；不承诺任意网站或任意协议。macOS 不启用通用公网 policy。manager 的日额度及控制对端配置位于 `/etc/laxcode-manager/config.json`，详见 [配置说明](../laxcode-manager/README.md#两个配置入口)。
+公网范围限 HTTP(S) 80/443，eBPF 仍阻断非公网地址；不承诺任意网站或任意协议。manager 的日额度及控制对端配置位于 `state/manager.json`，详见 [配置说明](../laxcode-manager/README.md#两个配置入口)。
 
 ## 用户目录与密钥
 
@@ -105,13 +144,13 @@ Linux 首次启用必须先按 [manager 安装说明](../laxcode-manager/README.
 └── tmp/
 ```
 
-proxy 首次打开一个用户的数据接口时，将发布包 `catalog/settings.json` 中的平台配置原子写入用户的 `agenthome/.laxcode/settings.json`；每次应用发布后，该用户首次访问时同步最新配置，再启动沙箱。沙箱中以发布目录 `catalog/settings.json` 为可信源，单独只读挂载到 `/workplace/agenthome/.laxcode/settings.json`，cloud 从 HOME 默认路径加载。挂载源位于用户工作目录之外，避免用户修改目录结构后篡改下次启动的配置。不要在保留运行中沙箱的情况下单独修改平台配置；正式更新使用 `deploy.sh restart`，先删除旧沙箱再启用新发布。
+proxy 首次打开一个用户的数据接口时，将发布包 `catalog/settings.json` 中的平台配置原子写入用户的 `agenthome/.laxcode/settings.json`；每次应用发布后，该用户首次访问时同步最新配置，再启动沙箱。沙箱中以发布目录 `catalog/settings.json` 为可信源，单独只读挂载到 `/workplace/agenthome/.laxcode/settings.json`，cloud 从 HOME 默认路径加载。挂载源位于用户工作目录之外，避免用户修改目录结构后篡改下次启动的配置。不要在保留运行中沙箱的情况下单独修改平台配置；正式更新使用 `python3 deploy.py`，先删除旧沙箱再启用新发布。
 
 配置中的 API Key 是合法环境变量名。真实密钥经 configure.py 注册给专用 OpenShell gateway，启动沙箱时由 OpenShell 注入占位凭据，cloud 使用 `os.Getenv` 获取占位凭据。proxy 从发布包 `skills/` 首次原子初始化用户 Skills 目录，以后保留用户修改和删除。用户模型选择独立保存在 `model-selection.json`，同步平台配置时不覆盖。
 
 沙箱镜像仅包含 cloud 可执行程序和固定基础工具链，不包含平台配置或默认 Skills，也不执行配置或 Skills 的复制操作。
 
-含真实密钥的源配置、发布包、当前/上一发布目录、gateway 状态仅供部署用户访问。构建镜像的 context 不包含真实 settings.json。
+含真实密钥的源配置、发布包、当前发布目录、gateway 状态仅供部署用户访问。构建镜像的 context 不包含真实 settings.json。
 
 
 ## 数据接口与沙箱执行

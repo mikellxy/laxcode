@@ -51,12 +51,20 @@ func run() error {
 		return err
 	}
 	defer l.db.Close()
+	bootRaw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return err
+	}
+	boot, err := uuid.Parse(strings.TrimSpace(string(bootRaw)))
+	if err != nil {
+		return err
+	}
 	k, err := openKernel(c, l.id)
 	if err != nil {
 		return err
 	}
 	defer k.close()
-	if err = l.adopt(uuid.UUID(k.meta.Instance).String(), uuid.UUID(k.meta.Boot).String(), k.fresh); err != nil {
+	if err = l.adopt(boot.String()); err != nil {
 		k.disable()
 		return err
 	}

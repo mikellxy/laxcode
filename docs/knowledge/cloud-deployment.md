@@ -2,20 +2,20 @@
 
 ## 构建和启动
 
-### 构建本机 proxy 与 Linux cloud 发布包，预装固定工具链和 OpenShell 运行镜像
+### 交叉编译 Linux amd64 单一发布包到 release，预装固定工具链和 OpenShell 运行镜像
 
 - `deploy/build.sh`
 - `deploy/Dockerfile`
 - `deploy/Dockerfile.tools`
 
-### 校验离线发布、替换应用、注册 provider，保持宿主机专用网关运行
+### 校验原目录覆盖后的制品、重启后台 manager 和 proxy、替换固定标签镜像，保留持久状态
 
-- `deploy/deploy.sh`：`restart(base, state, env)`、`ensure_gateway(state, env)`、`start_proxy(base, state, env)`
+- `deploy/deploy.py`：`restart(base, state, env)`、`start_manager(release, state, env)`、`build_image(release)`、`stop_application(state, env)`
 - `laxcode-proxy/main.go`：`func run() error`
 
 ### 注册管理员模型凭据并生成只含环境变量引用的沙箱配置
 
-- `deploy/configure.py`：`prepare(source)`、`generate(release)`、`register(release)`
+- `deploy/configure.py`：`prepare(source)`、`generate(release)`、`register(release)`、`manager_configuration()`
 - `internal/infrastructure/config/config.go`：`func LoadSettingsFromDir(configDir string, args []string) (Conf, error)`
 - `internal/infrastructure/config/configs.go`：`func LoadProviderAPIKeys(providers []Provider) error`
 
