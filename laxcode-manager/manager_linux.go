@@ -85,7 +85,8 @@ func (m *manager) ensureUser(id string) (epoch, error) {
 	if err != nil {
 		return epoch{}, err
 	}
-	e, err := m.l.ensure(id, day, boot+uint64(next.Sub(now)))
+	// Allow the previous day's bucket to bridge the midnight rollover.
+	e, err := m.l.ensure(id, day, boot+uint64(next.Sub(now)+30*time.Second))
 	if err != nil {
 		return e, err
 	}
