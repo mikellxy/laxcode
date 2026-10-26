@@ -50,16 +50,13 @@ type API struct {
 	repo      *sessionrepo.SqliteSessionRepo
 }
 
-// Open synchronizes platform files and opens the user's host-owned repository.
+// Open initializes default skills and opens the user's host-owned repository.
 func Open(root, id string, catalog Catalog, skills string) (*API, error) {
 	home := filepath.Join(root, "agenthome")
 	for _, p := range []string{home, layout.Root(home), layout.SessionRoot(home)} {
 		if err := realDir(p); err != nil {
 			return nil, err
 		}
-	}
-	if err := config.WriteCatalogAtomic(layout.UserSettings(home), catalog); err != nil {
-		return nil, err
 	}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		info, err := os.Lstat(layout.SessionDB(home) + suffix)
