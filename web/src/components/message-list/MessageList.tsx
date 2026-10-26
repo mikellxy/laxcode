@@ -1,9 +1,9 @@
-import { useLayoutEffect, useRef } from "react";
+import { Fragment, useLayoutEffect, useRef } from "react";
 import { ArrowUp, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
 import type { ChatMessage } from "../../types/chat";
 import type { RetryAction } from "../../types/api";
 import type { StreamState } from "../../features/chat/reducer";
-import laxcodeLogo from "../../assets/laxcode-logo.png";
+import { Logo } from "../logo/Logo";
 import { MessageItem } from "../message-item/MessageItem";
 import { ToolMessageBlock } from "../tool-message-block/ToolMessageBlock";
 import { groupMessages } from "./group";
@@ -15,6 +15,8 @@ export function MessageList({ messages, sessionID, hasMore, loading, initialLoad
   const scrollRef = useRef<HTMLDivElement>(null); const restore = useRef<{ height: number; top: number }>(); const atBottom = useRef(true); const sessionRef = useRef(sessionID);
   const waiting = retrying && !error ? waitingFor : undefined;
   const visibleMessages = waiting ? messages.filter((message) => message.role !== "assistant" || message.status !== "streaming" || Boolean(message.content.trim() || message.reasoningContent?.trim())) : messages;
+  const lastUser = waiting ? [...visibleMessages].reverse().find((message) => message.role === "user") : undefined;
+  const waitingStatus = waiting && <div className="sandbox-wait" role="status" aria-live="polite" aria-atomic="true"><span className="typing" aria-hidden="true"><i /><i /><i /></span><span>{waiting === "sandbox" ? "正在进入您的专属安全沙箱…" : "已进入您的专属安全沙箱，正在准备回复…"}</span></div>;
   // 贴底跟随：流式 chunk 原地更新末条消息、数组长度不变，故跟随依赖整个
   // messages；用户上翻离开底部即停止跟随，滚回底部自动恢复；会话切换重置
   // 为贴底，让新会话落到最新消息。behavior "instant" 显式绕过容器的 CSS
@@ -31,10 +33,11 @@ export function MessageList({ messages, sessionID, hasMore, loading, initialLoad
   return <main className="message-scroll" ref={scrollRef} onScroll={trackBottom}>
     <div className="message-column">
       {hasMore && <button className="load-history" onClick={load} disabled={loading}>{loading ? <LoaderCircle className="spin" size={15} /> : <ArrowUp size={15} />}{loading ? "加载中…" : "查看更早消息"}</button>}
-      {initialLoading ? <div className="center-state"><LoaderCircle className="spin" /><span>正在读取会话…</span></div> : visibleMessages.length === 0 && !error && !waiting ? <div className="empty-state"><span className="empty-state-logo"><img src={laxcodeLogo} alt="LaxCode" /></span><h2>从一个想法开始</h2><p>描述你想分析、构建或修改的内容。LaxCode 会在当前工作区中协助你完成。</p></div> : groupMessages(visibleMessages).map((block) => block.kind === "tools"
+      {initialLoading ? <div className="center-state"><LoaderCircle className="spin" /><span>正在读取会话…</span></div> : visibleMessages.length === 0 && !error && !waiting ? <div className="empty-state"><span className="empty-state-logo"><Logo /></span><h2>从一个想法开始</h2><p>描述你想分析、构建或修改的内容。LaxCode 会在当前工作区中协助你完成。</p></div> : groupMessages(visibleMessages).map((block) => block.kind === "tools"
         ? <ToolMessageBlock key={block.messages[0].id} messages={block.messages} />
-        : <MessageItem key={block.message.id} message={block.message} sessionID={sessionID} />)}
-      {waiting && <div className="sandbox-wait" role="status" aria-live="polite" aria-atomic="true"><span className="typing" aria-hidden="true"><i /><i /><i /></span><span>{waiting === "sandbox" ? "正在进入您的专属安全沙箱…" : "已进入您的专属安全沙箱，正在准备回复…"}</span></div>}
+        : <Fragment key={block.message.id}><MessageItem message={block.message} sessionID={sessionID} />{block.message === lastUser && waitingStatus}</Fragment>)}
+      {(!lastUser || initialLoading) && waitingStatus}
+      {!error && !retrying && !initialLoading && retryAction === "resume" && <div className="resume-action"><button onClick={onRetry}><RotateCcw size={15} />继续执行</button></div>}
       {error && <div className="retry-banner" role="alert"><span className="retry-icon"><CircleAlert size={18} /></span><div><strong>本轮执行未完成</strong><p>{error}</p></div>{retryAction && <button onClick={onRetry} disabled={retrying}>{retrying ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{retryAction === "resume" ? "继续执行" : "重新发送"}</button>}</div>}
     </div>
   </main>;

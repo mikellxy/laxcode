@@ -411,7 +411,7 @@ func TestHandleHistoryReturnsPagedDTO(t *testing.T) {
 			{Seq: 7, Role: "tool", ToolSummary: "bash(go test ./...)", CreatedAt: now},
 			{Seq: 8, Role: "assistant", Content: "answer", ReasoningContent: "thinking", CreatedAt: now},
 		},
-		HasMore: true,
+		HasMore: true, CanResume: true,
 	}}
 	s := newTestServer(t, t.TempDir(), false)
 	s.history = repo
@@ -428,7 +428,7 @@ func TestHandleHistoryReturnsPagedDTO(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.HasMore || got.NextBeforeSeq != 7 || len(got.Messages) != 2 {
+	if !got.HasMore || !got.CanResume || got.NextBeforeSeq != 7 || len(got.Messages) != 2 {
 		t.Fatalf("unexpected response: %+v", got)
 	}
 	if got.Messages[0].ToolSummary != "bash(go test ./...)" || got.Messages[0].Content != "" {

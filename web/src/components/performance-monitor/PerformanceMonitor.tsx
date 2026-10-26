@@ -52,7 +52,7 @@ function PerformanceDialog({ sessionID, onClose }: { sessionID: string; onClose:
       {query.data && <PerformanceSummaryView data={query.data} />}
     </div>
     <footer className="confirm-actions performance-actions">
-      <p>耗时单位 ms · 首输出包含推理或正文<br />仅统计已落盘请求，恢复前的等待时间不计入耗时。</p>
+      <p>耗时超过 1 分钟以秒显示，其余为毫秒 · 首输出包含推理或正文<br />仅统计已落盘请求，恢复前的等待时间不计入耗时。</p>
       <button type="button" className="confirm-cancel" disabled={query.isFetching} onClick={() => void query.refetch()}>
         <RefreshCw size={14} className={query.isFetching ? "spin" : undefined} />{query.isFetching ? "加载中…" : "刷新数据"}
       </button>

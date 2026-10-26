@@ -3,8 +3,8 @@
 .guide-topbar, .guide-brand, .guide-footer, .guide-actions { display: flex; align-items: center; }
 .guide-topbar { justify-content: space-between; gap: 16px; }
 .guide-brand { gap: 18px; }
-.guide-brand img { width: 116px; height: 44px; object-fit: contain; }
-.guide-brand > span { padding-left: 18px; border-left: 1px solid #d5ddcf; color: #87907f; font-size: 12px; }
+.guide-brand .laxcode-logo { width: 116px; height: 44px; font-size: 23px; }
+.guide-brand > .guide-label { padding-left: 18px; border-left: 1px solid #d5ddcf; color: #87907f; font-size: 12px; }
 .guide-close { display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border: 1px solid #dae0d3; border-radius: 11px; background: #ffffff9c; color: #7a8778; cursor: pointer; }
 .guide-close:hover { color: #354b3b; background: #fff; }
 .guide-eyebrow { display: block; margin-bottom: 9px; color: #69816b; font-size: 11px; letter-spacing: 1.3px; font-weight: 600; }
@@ -65,7 +65,7 @@
 }
 @media (max-height: 620px) {
   .guide-shell { padding-top: 10px; padding-bottom: 10px; gap: 10px; }
-  .guide-brand img { height: 32px; width: 96px; }
+  .guide-brand .laxcode-logo { height: 32px; width: 96px; font-size: 19px; }
   .guide-eyebrow { margin-bottom: 4px; font-size: 10px; }
   .guide-intro h1 { font-size: 21px; }
   .guide-intro > p { margin-top: 4px; font-size: 11px; line-height: 1.5; }

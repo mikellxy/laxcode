@@ -1,0 +1,8 @@
+.laxcode-logo { position: relative; display: inline-flex; align-items: center; flex: 0 0 auto; width: 4.8em; height: 2em; font-size: 32px; }
+.laxcode-logo-orbit { position: absolute; left: 0; top: 50%; width: 1.65em; height: 1.65em; border: .035em solid #6975ff; border-top-color: #548cff; border-bottom-color: #42c9cb; border-right-color: transparent; border-radius: 50%; transform: translateY(-50%) rotate(-25deg); }
+.laxcode-logo-orbit::before { content: ""; position: absolute; inset: .14em; border: .035em solid transparent; border-top-color: #38bfd7; border-radius: 50%; }
+.laxcode-logo-orbit::after { content: ""; position: absolute; left: .37em; bottom: -.045em; width: .18em; height: .18em; border-radius: 50%; background: #7281ff; }
+.laxcode-logo-word { position: relative; margin-left: .4em; padding-right: .08em; color: #6878f5; background: linear-gradient(105deg, #6975ff 0%, #7283fb 39%, #0ec5bd 52%, #14d8a6 100%); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-family: ui-rounded, "Arial Rounded MT Bold", system-ui, sans-serif; font-size: 1em; font-weight: 800; line-height: 1.2; letter-spacing: -.06em; white-space: nowrap; }
+@media (forced-colors: active) {
+  .laxcode-logo-word { background: none; color: CanvasText; -webkit-text-fill-color: CanvasText; }
+}

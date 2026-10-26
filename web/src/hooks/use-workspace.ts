@@ -102,6 +102,13 @@ export function useWorkspace(userID: string) {
     getNextPageParam: (page) => page.has_more ? page.next_before_seq : undefined,
   });
   const historyMessages = history.data?.pages.slice().reverse().flatMap((page) => page.messages) ?? [];
+  const stream = streamKey ? streams[streamKey] ?? emptyStream() : emptyStream();
+  const historyReady = history.isSuccess && !history.isFetching && !history.isRefetchError;
+  const canResume = historyReady && history.data?.pages[0]?.can_resume === true;
+  // A refreshed persisted state settles uncertain network failures, including lost done frames.
+  const retryAction = stream.running || history.isFetching ? undefined
+    : stream.errorCode === "CONNECTION_INTERRUPTED" && historyReady ? (canResume ? "resume" : undefined)
+    : stream.retryAction ?? (!stream.error && canResume ? "resume" : undefined);
   const contextUsage = useQuery({
     queryKey: ["context", selectedID], enabled: Boolean(selectedID), queryFn: () => getSessionContext(selectedID!),
   });
@@ -126,9 +133,11 @@ export function useWorkspace(userID: string) {
     const controller = new AbortController(); controllers.current.set(sessionID, controller);
     updateStream(sessionID, mode === "send" ? { type: "send", content: task! } : { type: "retry" });
     let failed = false;
+    let terminal = false;
+    let receivedOutput = false;
     try {
-      let terminal = false;
       const onEvent = (event: StreamEvent) => {
+        if (event.type === "reasoning" || event.type === "message" || event.type === "tool_call") receivedOutput = true;
         updateStream(sessionID, { type: "event", event });
         if (event.type === "done") client.setQueryData<ContextData>(["context", sessionID], {
           window_token: event.data.window_token, context_window: event.data.context_window,
@@ -146,13 +155,19 @@ export function useWorkspace(userID: string) {
       else await resumeChat(sessionID, controller.signal, onEvent);
       if (!terminal) {
         failed = true;
-        updateStream(sessionID, { type: "failed", message: "连接意外中断", code: "CONNECTION_INTERRUPTED", retryAction: "resume" });
+        updateStream(sessionID, { type: "failed", message: "连接意外中断", code: "CONNECTION_INTERRUPTED", retryAction: receivedOutput || mode === "resume" ? "resume" : undefined });
       }
     } catch (error) {
-      failed = true;
-      const message = error instanceof DOMException && error.name === "AbortError" ? "已取消本轮对话" : error instanceof Error ? error.message : "发送失败";
-      const apiError = error instanceof ApiError ? error : undefined;
-      updateStream(sessionID, { type: "failed", message, code: apiError?.code, retryAction: apiError?.retryAction ?? (mode === "resume" ? "resume" : undefined) });
+      if (!terminal) {
+        failed = true;
+        if (controller.signal.aborted) {
+          updateStream(sessionID, { type: "failed", message: "已取消本轮对话" });
+        } else if (error instanceof ApiError) {
+          updateStream(sessionID, { type: "failed", message: error.message, code: error.code, retryAction: error.retryAction });
+        } else {
+          updateStream(sessionID, { type: "failed", message: "连接中断，请检查网络后重试", code: "CONNECTION_INTERRUPTED", retryAction: receivedOutput || mode === "resume" ? "resume" : undefined });
+        }
+      }
     } finally {
       controllers.current.delete(sessionID);
       await reconcile(sessionID, failed);
@@ -187,10 +202,10 @@ export function useWorkspace(userID: string) {
   const retry = useCallback(async () => {
     if (!streamKey) return;
     const state = streams[streamKey];
-    if (!state?.retryAction || state.running) return;
-    if (state.retryAction === "resume" && selectedID) await execute(selectedID, "resume");
-    else if (state.task) await send(state.task);
-  }, [selectedID, streamKey, streams, execute, send]);
+    if (!retryAction || state?.running || controllers.current.has(streamKey)) return;
+    if (retryAction === "resume" && selectedID) await execute(selectedID, "resume");
+    else if (state?.task) await send(state.task);
+  }, [selectedID, streamKey, streams, retryAction, execute, send]);
 
   const cancel = useCallback(() => { if (selectedID) controllers.current.get(selectedID)?.abort(); }, [selectedID]);
   useEffect(() => () => { controllers.current.forEach((controller) => controller.abort()); }, []);
@@ -199,7 +214,7 @@ export function useWorkspace(userID: string) {
     projects, sessions, sessionsByProject, allSessions,
     createProject: createProjectMutation, createSession: createSessionMutation, deleteSession: deleteSessionMutation,
     selectedID, selectedProjectID, selectedProject, select, selectProject, startSession, history, historyMessages, contextUsage,
-    stream: streamKey ? streams[streamKey] ?? emptyStream() : emptyStream(),
+    stream, retryAction,
     runningSessionIDs: Object.keys(streams).filter((id) => streams[id].running),
     send, retry, cancel,
   };

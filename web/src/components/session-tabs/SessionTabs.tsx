@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, Folder, LoaderCircle, MessageSquare, Plus, Trash2 } from "lucide-react";
 import type { ContextData, ProjectDTO, SessionDTO } from "../../types/api";
-import laxcodeLogo from "../../assets/laxcode-logo.png";
+import { Logo } from "../logo/Logo";
 import { contextUsageLabel, sessionLabel, workDirLabel } from "./label";
 import { PerformanceMonitor } from "../performance-monitor/PerformanceMonitor";
 
@@ -40,7 +40,7 @@ export function SessionTabs({ projects, sessionsByProject, selectedID, selectedP
   });
 
   return <aside className="sidebar">
-    <div className="brand"><img className="brand-logo" src={laxcodeLogo} alt="LaxCode" /></div>
+    <div className="brand"><Logo className="brand-logo" /></div>
     <button className="new-project" onClick={onCreateProject} disabled={creatingProject}>
       {creatingProject ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}新项目
     </button>

@@ -12,16 +12,37 @@ const request: RequestPerformance = {
 };
 
 describe("performance rendering", () => {
+  it.each([
+    [59999.94, "59,999.9", "ms"],
+    [60000, "60,000.0", "ms"],
+    [60000.01, "60.00", "s"],
+    [65432.1, "65.43", "s"],
+    [65439, "65.44", "s"],
+  ] as const)("formats %s ms consistently across overview, metrics and tables", (value, amount, unit) => {
+    const stats = { count: 1, total_ms: value, avg_ms: value };
+    const html = renderToStaticMarkup(<PerformanceSummaryView data={{ ...empty, chats: [{
+      chat_id: "chat", total_ms: value, llm_generate: stats, tools: { bash: stats },
+      requests: [{ ...request, total_ms: value, first_output_ms: value, llm_generate: stats }],
+    }] }} />);
+    expect(html).toContain(`<dd>${amount}<small>${unit}</small></dd>`);
+    expect(html).toContain(`<dd>${amount} ${unit}</dd>`);
+    expect(html).toContain(`<td>${amount} ${unit}</td>`);
+    expect(html).not.toContain("耗时 (ms)");
+  });
+
   it("shows weighted chat statistics and keeps send/resume first outputs separate", () => {
     const html = renderToStaticMarkup(<PerformanceSummaryView data={{ ...empty, chats: [{
-      chat_id: "chat-one", total_ms: 1500, llm_generate: { count: 3, total_ms: 120, avg_ms: 40 },
+      chat_id: "chat-one", total_ms: 2114.593, llm_generate: { count: 3, total_ms: 120, avg_ms: 40 },
       tools: { bash: { count: 1, total_ms: 0.123, avg_ms: 0.123 } },
       requests: [request, { ...request, trace_id: "trace-resume", request_id: "resume", operation: "resume", status: "error", first_output_ms: null, llm_generate: { count: 1, total_ms: 80, avg_ms: 80 } }],
     }] }} />);
-    expect(html).toContain("1,500");
-    expect(html).toContain("0 ms");
-    expect(html).toContain("40 ms");
-    expect(html).toContain("0.123");
+    expect(html).toContain("2,114.6");
+    expect(html).not.toContain("2,114.593");
+    expect(html).toContain("<td>3</td>");
+    expect(html).toContain("<dd>0.0 ms</dd>");
+    expect(html).toContain("<dd>40.0 ms</dd>");
+    expect(html).toContain("<td>0.1 ms</td>");
+    expect(html).not.toContain("0.123");
     expect(html).toContain("bash");
     expect(html).toContain("恢复");
     expect(html).toContain("执行异常");

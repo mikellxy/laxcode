@@ -458,14 +458,33 @@ func (r *SqliteSessionRepo) ListOriginalHistory(ctx context.Context, id string, 
 	var page session.HistoryPage
 	found := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var count int64
-		if err := tx.Model(&requestContextModel{}).Where("session_id = ?", id).Count(&count).Error; err != nil {
-			return fmt.Errorf("check session existence: %w", err)
-		}
-		if count == 0 {
+		var state requestContextModel
+		err := tx.Select("memory_generation").Where("session_id = ?", id).Take(&state).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
+		if err != nil {
+			return fmt.Errorf("check session existence: %w", err)
+		}
 		found = true
+		// Use the current working set, independent of which history page is requested.
+		var user, tail messageModel
+		memory := func() *gorm.DB {
+			return tx.Model(&messageModel{}).Where("session_id = ? AND message_type = ? AND memory_generation = ?", id, messageTypeMemory, state.MemoryGeneration)
+		}
+		if err := memory().Select("role").Where("role = ?", sharedkernel.RoleUser).Limit(1).Find(&user).Error; err != nil {
+			return err
+		}
+		if err := memory().Select("role", "finish_reason", "tool_calls_json").Order("seq DESC").Limit(1).Find(&tail).Error; err != nil {
+			return err
+		}
+		last := sharedkernel.Message{Role: tail.Role, FinishReason: tail.FinishReason}
+		if len(tail.ToolCallsJSON) > 0 {
+			if err := json.Unmarshal(tail.ToolCallsJSON, &last.ToolCalls); err != nil {
+				return fmt.Errorf("decode recovery tool calls: %w", err)
+			}
+		}
+		page.CanResume = session.CanResume(user.Role == sharedkernel.RoleUser, last)
 
 		query := tx.Model(&messageModel{}).
 			Select("seq", "role", "content", "reasoning_content", "display_content", "chat_id", "created_at").

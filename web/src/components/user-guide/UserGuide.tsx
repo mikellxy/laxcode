@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, ArrowLeft, ArrowRight, BookOpen, Download, X } from "lucide-react";
-import laxcodeLogo from "../../assets/laxcode-logo.png";
+import { Logo } from "../logo/Logo";
 import performanceButton from "../../assets/user-guide/performance_button.png";
 import performance from "../../assets/user-guide/performance.png";
 import callSkill from "../../assets/user-guide/call_skill.png";
@@ -22,7 +22,7 @@ export function UserGuide({ onFinish }: { onFinish: () => void }) {
   return <main className="user-guide" aria-label="新用户引导">
     <div className="guide-shell">
       <header className="guide-topbar">
-        <div className="guide-brand"><img src={laxcodeLogo} alt="LaxCode" /><span>快速上手</span></div>
+        <div className="guide-brand"><Logo /><span className="guide-label">快速上手</span></div>
         <button type="button" className="guide-close" onClick={onFinish} aria-label="关闭引导，进入主页面" title="关闭引导"><X size={20} /></button>
       </header>
       <div className="guide-intro" aria-live="polite" aria-atomic="true">

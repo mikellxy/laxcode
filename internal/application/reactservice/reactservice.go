@@ -192,7 +192,7 @@ func needsRecovery(messages []sharedkernel.Message) bool {
 		return false
 	}
 	tail := messages[len(messages)-1]
-	return tail.Role != sharedkernel.RoleAssistant || len(tail.ToolCalls) != 0 || (tail.FinishReason != "" && tail.FinishReason != sharedkernel.FinishReasonStop)
+	return session.CanResume(true, tail)
 }
 
 // recoverBeforeChat 直接从消息尾部推导上次执行是否收束；若未收束，只补齐

@@ -397,6 +397,7 @@ func (s *API) HandleSwitchModel(w http.ResponseWriter, r *http.Request) {
 }
 
 type HistoryPageDTO struct {
+	CanResume     bool                `json:"can_resume"`
 	Messages      []historyMessageDTO `json:"messages"`
 	NextBeforeSeq uint64              `json:"next_before_seq,omitempty"`
 	HasMore       bool                `json:"has_more"`
@@ -444,7 +445,7 @@ func (s *API) HandleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := HistoryPageDTO{Messages: make([]historyMessageDTO, len(page.Messages)), HasMore: page.HasMore}
+	response := HistoryPageDTO{Messages: make([]historyMessageDTO, len(page.Messages)), HasMore: page.HasMore, CanResume: page.CanResume}
 	for i, msg := range page.Messages {
 		response.Messages[i] = historyMessageDTO{
 			Seq: msg.Seq, Role: msg.Role, Content: msg.Content,

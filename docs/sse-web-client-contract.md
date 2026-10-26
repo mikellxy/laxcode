@@ -321,12 +321,15 @@ GET /api/sessions/{session_id}/messages?limit=50&before_seq={上一页的next_be
     }
   ],
   "next_before_seq": 8,
-  "has_more": true
+  "has_more": true,
+  "can_resume": true
 }
 ```
 
 字段展示规则：
 
+- `can_resume` 表示完整会话的当前持久化工作集尚有未收束的用户轮次，与本页分页范围无关。判定与 `/resume` 一致：存在 user，且末条不是无工具调用、正常结束（`finish_reason` 为空或 `stop`）的 assistant。它不代表当前没有其他请求占用会话，点击恢复时仍由后端检查并发锁。
+- 前端使用最新一页的 `can_resume`，历史加载成功且当前未执行时在列表底部展示“继续执行”；不依赖刷新后会丢失的内存错误状态。错误栏已有恢复按钮时不重复展示，服务端明确不允许重试的错误也不添加按钮。
 - `system` 消息不会返回。
 - `user` 返回 `content`。
 - `assistant` 只返回 `content` 和 `reasoning_content`。
@@ -623,6 +626,11 @@ const visibleMessages = [...historyMessages, ...streamingMessages];
   → done/error 结束当前流
   → 刷新历史消息和 Session 列表
   → 服务端历史到达后移除临时消息
+
+连接异常或刷新页面
+  → 获取最新历史，根据 can_resume 恢复“继续执行”入口
+  → 点击后 POST /api/sessions/{session_id}/resume，不重复追加 user 消息
+  → 已收到 done/error 时，收尾断线不覆盖该终态
 
 用户向上滚动
   → has_more=true 时携带 next_before_seq 请求更早历史

@@ -1,0 +1,12 @@
+.copyable-id { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; }
+.copyable-id-label { flex: 0 0 11ch; }
+.copyable-id-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.topbar .copyable-id-button { position: relative; flex: 0 0 auto; place-items: center; width: 26px; height: 26px; padding: 4px; color: #6955ff; }
+.topbar .copyable-id-button:hover { color: #5841e8; background: #efedff; }
+.copyable-id-button:focus-visible { outline: 2px solid #8677ff; outline-offset: 2px; }
+.copyable-id-tooltip { position: absolute; z-index: 40; right: -4px; bottom: calc(100% + 8px); padding: 8px 12px; border: 1px solid #d5d0ed; border-radius: 10px; color: #25232b; background: #fff; box-shadow: 0 5px 16px #29213b14; font: 13px/1.4 system-ui, sans-serif; white-space: nowrap; pointer-events: none; visibility: hidden; }
+.copyable-id-tooltip::after { content: ""; position: absolute; right: 12px; bottom: -5px; width: 8px; height: 8px; border-right: 1px solid #d5d0ed; border-bottom: 1px solid #d5d0ed; background: #fff; transform: rotate(45deg); }
+.workspace-session .copyable-id-tooltip { bottom: auto; top: calc(100% + 8px); }
+.workspace-session .copyable-id-tooltip::after { top: -5px; bottom: auto; transform: rotate(225deg); }
+.copyable-id-button:hover .copyable-id-tooltip, .copyable-id-button:focus-visible .copyable-id-tooltip, .copyable-id-button[data-feedback="true"] .copyable-id-tooltip { visibility: visible; }
+.copyable-id-announcement { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

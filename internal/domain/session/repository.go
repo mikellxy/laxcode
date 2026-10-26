@@ -21,8 +21,9 @@ type HistoryMessage struct {
 }
 
 type HistoryPage struct {
-	Messages []HistoryMessage
-	HasMore  bool
+	Messages  []HistoryMessage
+	HasMore   bool
+	CanResume bool
 }
 
 // SessionHistoryRepository 是面向历史消息接口的独立读端口，避免把分页查询职责

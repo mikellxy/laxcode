@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
 import { createSession } from "../api/sessions";
-import { streamChat } from "../api/chat-stream";
+import { resumeChat, streamChat } from "../api/chat-stream";
+import { ApiError } from "../api/client";
 import { useWorkspace } from "./use-workspace";
 import type { StreamState } from "../features/chat/reducer";
+
+const queryState = vi.hoisted(() => ({ history: {} as {
+  isSuccess?: boolean; isFetching?: boolean; isRefetchError?: boolean;
+  data?: { pages: { can_resume: boolean; messages: [] }[] };
+} }));
 
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
@@ -18,7 +24,7 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: string[] }) => queryKey[0] === "projects"
     ? { isSuccess: true, data: { projects: [{ project_id: "project", name: "demo" }] } }
     : { isSuccess: true, data: {} },
-  useInfiniteQuery: () => ({}),
+  useInfiniteQuery: () => queryState.history,
   useMutation: () => ({ mutateAsync: createSession }),
 }));
 vi.mock("../api/sessions", () => ({ createSession: vi.fn(), deleteSession: vi.fn(), listAllSessions: vi.fn() }));
@@ -33,8 +39,8 @@ function deferred() {
 }
 
 // Keep hook state/refs across explicit renders; only API/request coordination is exercised.
-function workspaceFixture() {
-  let selection: Selection = { projectID: "project" };
+function workspaceFixture(initial: Selection = { projectID: "project" }) {
+  let selection: Selection = initial;
   let streams: Record<string, StreamState> = {};
   const controllers = { current: new Map<string, AbortController>() };
   const sending = { current: new Set<string>() };
@@ -49,7 +55,84 @@ function workspaceFixture() {
   };
 }
 
-beforeEach(() => { vi.resetAllMocks(); });
+beforeEach(() => { vi.resetAllMocks(); queryState.history = {}; });
+
+describe("conversation recovery", () => {
+  const selected = { projectID: "project", sessionID: "first" };
+  const done = { type: "done", data: { session_id: "first", result: "done", token_used: { token_input: 1, token_output: 1 }, window_token: { token_input: 1, token_output: 1 }, context_window: 100 } } as const;
+
+  it("restores resume from persisted history with no in-memory stream and prevents double clicks", async () => {
+    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
+    const response = deferred();
+    vi.mocked(resumeChat).mockReturnValue(response.promise);
+    const render = workspaceFixture(selected);
+    const page = render();
+    expect(page.retryAction).toBe("resume");
+    const pending = page.retry();
+    await page.retry();
+    expect(resumeChat).toHaveBeenCalledTimes(1);
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(render().retryAction).toBeUndefined();
+    response.resolve();
+    await pending;
+  });
+
+  it("offers resume after output is interrupted even if history cannot be refreshed", async () => {
+    vi.mocked(streamChat).mockImplementation(async (_id, _task, _signal, onEvent) => {
+      onEvent({ type: "message", data: { delta: "working" } });
+      throw new TypeError("network error");
+    });
+    const render = workspaceFixture(selected);
+    await render().send("hello");
+    expect(render().stream.errorCode).toBe("CONNECTION_INTERRUPTED");
+    expect(render().retryAction).toBe("resume");
+    // A fresh snapshot can reveal that the final reply was saved despite a lost done frame.
+    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: false, messages: [] }] } };
+    expect(render().retryAction).toBeUndefined();
+  });
+
+  it("does not guess that a request without output was committed", async () => {
+    vi.mocked(streamChat).mockRejectedValue(new TypeError("network error"));
+    const render = workspaceFixture(selected);
+    await render().send("hello");
+    expect(render().retryAction).toBeUndefined();
+    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
+    expect(render().retryAction).toBe("resume");
+    queryState.history.isFetching = true;
+    expect(render().retryAction).toBeUndefined();
+  });
+
+  it("preserves a received done event when the connection fails during closing", async () => {
+    vi.mocked(streamChat).mockImplementation(async (_id, _task, _signal, onEvent) => {
+      onEvent(done);
+      throw new TypeError("network error");
+    });
+    const render = workspaceFixture(selected);
+    await render().send("hello");
+    expect(render().stream.error).toBeUndefined();
+    expect(render().retryAction).toBeUndefined();
+  });
+
+  it("preserves a server error with no retry even when history is resumable", async () => {
+    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
+    vi.mocked(streamChat).mockImplementation(async (_id, _task, _signal, onEvent) => {
+      onEvent({ type: "error", data: { code: "INTERNAL", message: "Inspect files first" } });
+      throw new TypeError("network error");
+    });
+    const render = workspaceFixture(selected);
+    await render().send("hello");
+    expect(render().stream.error).toBe("Inspect files first");
+    expect(render().retryAction).toBeUndefined();
+  });
+
+  it("does not add resume to a non-retryable API rejection of resume", async () => {
+    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
+    vi.mocked(resumeChat).mockRejectedValue(new ApiError("nothing to resume", 409, "NOTHING_TO_RESUME"));
+    const render = workspaceFixture(selected);
+    await render().retry();
+    expect(render().retryAction).toBeUndefined();
+  });
+});
 
 describe("workspace send coordination", () => {
   it("keeps sandbox and first-output waiting in per-session memory", async () => {

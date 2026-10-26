@@ -156,6 +156,38 @@ func TestListOriginalHistoryFiltersProjectsAndPaginates(t *testing.T) {
 	}
 }
 
+func TestHistoryRecoveryUsesCurrentTailRegardlessOfPage(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	s := createSystem(t, repo, "recovery-history", "system")
+	check := func(want bool) {
+		t.Helper()
+		for _, before := range []uint64{0, 2} {
+			page, found, err := repo.ListOriginalHistory(context.Background(), s.ID, before, 1)
+			if err != nil || !found || page.CanResume != want {
+				t.Fatalf("before=%d can_resume=%v want=%v found=%v err=%v", before, page.CanResume, want, found, err)
+			}
+		}
+	}
+	check(false)
+	user := s.BuildUserMessage("question")
+	appendMessage(t, repo, s, &user)
+	check(true)
+	call := sharedkernel.Message{Role: sharedkernel.RoleAssistant, ToolCalls: []sharedkernel.ToolCall{{ID: "call", Name: "bash"}}, FinishReason: "stop"}
+	appendMessage(t, repo, s, &call)
+	check(true)
+	tool := sharedkernel.Message{Role: sharedkernel.RoleTool, ToolCallID: "call", Content: "done"}
+	appendMessage(t, repo, s, &tool)
+	check(true)
+	answer := sharedkernel.Message{Role: sharedkernel.RoleAssistant, Content: "answer", FinishReason: "stop"}
+	appendMessage(t, repo, s, &answer)
+	check(false)
+	// The resume API consumes memory, so a changed memory tail must beat original history.
+	if err := repo.db.Model(&messageModel{}).Where("session_id = ? AND message_type = ? AND seq = ?", s.ID, messageTypeMemory, s.LastSeq).Update("finish_reason", "cancelled").Error; err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+}
+
 func TestCreateAndListSessionsByUser(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	ctx := context.Background()
