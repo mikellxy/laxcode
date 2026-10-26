@@ -1,6 +1,6 @@
 # LaxCode 沙箱公网流量配额设计
 
-状态：首版已实现；2026-10-20。采用简洁域名 policy、一个 eBPF 地址分类表和持久配额账本；“任意公网域名”不属于官方 OpenShell 0.1.4 首版已验证能力。操作说明见 [laxcode-manager/README.md](../laxcode-manager/README.md)，验证边界见第 14 节；本次未迁移生产 Docker。
+状态：首版于 2026-10-20 实现，epoch 同步于 2026-10-26 按 [重构方案](epoch_opt_v2.md) 更新为 ABI/schema 3。采用简洁域名 policy、一个 eBPF 地址分类表和持久配额账本；“任意公网域名”不属于官方 OpenShell 0.1.4 首版已验证能力。操作说明见 [laxcode-manager/README.md](../laxcode-manager/README.md)，验证边界见第 14 节；本次未迁移生产 Docker。
 
 ## 1. 需求与结论
 
@@ -204,7 +204,7 @@ Docker 父组配置在制作 ECS 基础镜像时完成；应用部署只启动 s
 
 当前部署由 `deploy.py` 直接启动 manager，不安装 systemd 服务。Docker 可随基础系统自启，但 OpenShell 容器必须保持无自动重启策略。手动部署时先完成 DB 打开、对象接管/加载、父组 guard 安装及 Docker 对账，再启动 gateway/proxy 和业务沙箱。宿主重启后需手动部署；不得让业务容器先于 guard 自动恢复。代码保留可选的 systemd ready 通知，但当前部署不使用。
 
-对 proxy 的 `/readyz` 则要求 guard、DB、Docker 对账完成且距最近成功对账小于 10 秒。Docker 事件断开自动重连，5 秒全量对账兜底；对账失败撤销归属并标记未就绪。DB/Map 不变量或明显时钟跳变使 guard 关闭，修复原因后重启接管；manager 进程直接退出则内核仍可消费原授权。
+对 proxy 的 `/readyz` 则要求 guard、DB、Docker 对账完成且距最近成功对账小于 10 秒。Docker 事件断开自动重连，5 秒全量对账兜底；对账失败撤销归属并标记未就绪。DB/Map 不变量异常使 guard 关闭，修复原因后重启接管；manager 进程直接退出则内核仍可消费原授权。
 
 ### 6.4 workload 内部回环
 
@@ -224,16 +224,16 @@ manager 核验 workload/supervisor 的 Docker 身份、独立 cgroup、workload 
 | `cgroup_owner` | `u64 cgroup_id` | 正数为 supervisor 的 user_key；0 为已核验隔离 workload 的回环标记；manager 写 |
 | `user_bucket` | `u64 user_key` | `u64 bucket_id`；manager 发布当前周期 |
 | `bucket_meta` | `u64 bucket_id` | 用户和单调时钟截止时间；日期由 DB 中 bucket 关联，发布后不可原地修改 |
-| `grants` | `u64 bucket_id` | 累计授权上限和授权版本；manager 写，eBPF 只读 |
+| `grants` | `u64 bucket_id` | 累计授权上限；manager 写，eBPF 只读 |
 | `usage` | `u64 bucket_id` | spin lock、RX、TX、drop、通知节流状态；eBPF 写，manager 读取 |
 | `control_peers` | 固定长度对端结构 | 精确 IP、协议、端口豁免；manager 发布 |
 | `address_class` | 128 位规范地址及前缀长度 | 一个 LPM Trie，PUBLIC/BLOCK；固定规则由 manager 加载 |
-| `events` | Ring Buffer | bucket/授权版本低水位提示，不是账本 |
+| `events` | Ring Buffer | userID 低水位提示，不是账本 |
 | `diagnostics` | 有界原因编号 | 未绑定、过期、额度不足、解析错误、事件丢失等计数 |
 
 所有跨边界结构使用固定宽度整数及显式 padding，不存 Go string、指针、浮点 GB 或路径字符串。IPv4/IPv6 地址、端口的字节序在头文件中固定；C/Go 生成绑定校验 `sizeof`、offset、对齐和端序。
 
-额度与计数分开，manager **不得读取旧 `used` 后，把包含新额度的整个 usage value 写回**，否则会覆盖并发增长的计数。`grants` 使用 HASH element 的整项发布；grant 只增，版本递增。manager 是唯一写入者，补额度按用户串行处理；迟到结果必须验证 active epoch 和 bucket 身份。
+额度与计数分开，manager **不得读取旧 `used` 后，把包含新额度的整个 usage value 写回**，否则会覆盖并发增长的计数。`grants` 使用 HASH element 的整项发布；同一 active epoch 的 grant 只增。manager 是唯一写入者，补额度按用户串行处理；迟到结果必须验证 active epoch 和 bucket 身份。
 
 `usage` 的 RX/TX 合计检查与累加使用同一 `bpf_spin_lock`，不能只对两个独立计数器各做一次原子加法。快照使用支持锁的 Map lookup 读取一致的 RX/TX。helper 调用、Map lookup、时间读取、Ring Buffer 操作都放在持锁区之外；锁内只做有界内存检查及修改。
 
@@ -265,9 +265,9 @@ manager 核验 workload/supervisor 的 Docker 身份、独立 cgroup、workload 
 
 ### 7.3 容量、持久引用与对象升级
 
-首版 Map 固定容量：4096 个用户指针、8192 个 cgroup/bucket、64 个控制对端、128 个地址前缀；满表报错并关闭 guard，不能淘汰余额。旧日 bucket 在截止 60 秒后保存最终快照、关闭 epoch，再清理内核条目。
+首版 Map 固定容量：4096 个用户指针、8192 个 cgroup/bucket、64 个控制对端、128 个地址前缀；满表报错并关闭 guard，不能淘汰余额。旧日 bucket 在跨天同步时保存快照、关闭 epoch，切换用户指针后异步清理旧条目。
 
-Maps 和 BPF links pin 到 `/sys/fs/bpf/laxcode-manager/`，目录仅宿主管理员可写。pin 保持内核引用，不是落盘，不能跨宿主重启。程序升级优先复用兼容 Maps；ABI 不兼容时拒绝接管。显式维护必须先停止应用并确认父组无进程，再由 reset_quota.py 标记账本待恢复并清理 pins，重新部署 guard 后才启动业务。不能在沙箱仍运行时卸载 guard。
+Maps 和 BPF links pin 到 `/sys/fs/bpf/laxcode-manager/`，目录仅宿主管理员可写。pin 保持内核引用，不是落盘，不能跨宿主重启。程序升级优先复用兼容 Maps；ABI 不兼容时拒绝接管。显式维护必须先停止应用并确认父组无进程，再由 reset_quota.py 验证保留账本并清理 pins，重新部署 guard 后才启动业务。不能在沙箱仍运行时卸载 guard。
 
 ## 8. 账本结构与一致性协议
 
@@ -275,9 +275,9 @@ Maps 和 BPF links pin 到 `/sys/fs/bpf/laxcode-manager/`，目录仅宿主管�
 
 DB 位于 `/var/lib/laxcode-manager/quota.db`，不放进应用发布目录或用户挂载目录，不复用用户 `sessions.db`。使用 SQLite WAL、`synchronous=FULL`、busy timeout、外键；同目录 `manager.lock` 防止两个 manager 同时发放授权。DB 实例 ID 必须与内核 metadata 中的 DB ID 匹配，不能直接采用旧余额覆盖内核。
 
-单行账本 metadata 保存 DB 实例 UUID、已完成恢复的系统 boot ID 和最新记账日期；schema 版本由 PRAGMA user_version 保存。恢复比较现存内核的授权版本与 DB；内核比 DB 更新视为异常。若 DB 和内核状态同时丢失，仅凭旧 DB 备份不能自动证明它是否最新：备份恢复必须走显式运维恢复流程，在决定保守占用前保持公网拒绝，不能伪装成普通进程重启。
+单行账本 metadata 仅保存 DB 实例 UUID；schema 版本由 PRAGMA user_version 保存。恢复比较现存内核的累计授权与 DB；内核授权超过 DB 视为异常。若 DB 和内核状态同时丢失，仅凭旧 DB 备份不能自动证明它是否最新：备份恢复必须走显式运维恢复流程，在决定保守占用前保持公网拒绝，不能伪装成普通进程重启。
 
-下列是设计字段含义；可执行 schema 以 `ledger.go` 为准，实际表名为 `metadata/users/user_days/epochs`，`PRAGMA user_version=2`。`epochs` 另存 BOOTTIME `deadline`，其余列采用简短的 `id/user_id/granted/rx/tx/version` 命名：
+下列是设计字段含义；可执行 schema 以 `ledger.go` 为准，实际表名为 `metadata/users/user_days/epochs`，`PRAGMA user_version=3`。`epochs` 另存 BOOTTIME `deadline`，其余列采用简短的 `id/user_id/granted/rx/tx` 命名：
 
 ```sql
 CREATE TABLE users (
@@ -294,11 +294,10 @@ CREATE TABLE quota_epochs (
   bucket_id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_key INTEGER NOT NULL,
   day TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('active', 'closed', 'unknown')),
+  status TEXT NOT NULL CHECK (status IN ('active', 'closed')),
   granted_bytes INTEGER NOT NULL DEFAULT 0 CHECK (granted_bytes >= 0),
   confirmed_rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (confirmed_rx_bytes >= 0),
   confirmed_tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (confirmed_tx_bytes >= 0),
-  grant_version INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (user_key, day) REFERENCES user_days(user_key, day),
   CHECK (confirmed_rx_bytes + confirmed_tx_bytes <= granted_bytes)
@@ -314,7 +313,7 @@ CREATE UNIQUE INDEX one_active_epoch
 - `confirmed_used_bytes = SUM(confirmed_rx_bytes + confirmed_tx_bytes)`。
 - `held_bytes = SUM(granted_bytes)`：当天已经持久化发放的总额度，包括旧 epoch。
 - `allocatable_bytes = limit_bytes - held_bytes`：DB 还可以发给内核的额度。
-- `uncertain_bytes`：仅 status=`unknown` 的 `granted - confirmed_used` 总和。
+- `uncertain_bytes`：仅 status=`closed` 的 `granted - confirmed_used` 总和。
 - 活跃 epoch 的 `granted - used` 是内核尚可消费的额度，不应展示成已使用。
 
 实时接口可以在 DB 确认值基础上合并同一 epoch 的内核最新累计值，但不能把持久化授权直接当实际用量。所有字节数使用 64 位整数，并检查溢出与不变量。
@@ -328,7 +327,7 @@ CREATE UNIQUE INDEX one_active_epoch
 1. 验证用户、日期、active epoch 及 `0 <= U <= G`；幂等更新确认的 RX/TX。
 2. 如果内核尚未安装 DB 已提交的授权，先安排恢复该授权，不把同一个请求当成新充值。
 3. 计算 `delta = min(max(0, U + B - G), Q - H)`，所有中间值检查范围。
-4. `delta > 0` 时更新 `granted_bytes = G + delta`，版本递增。事务提交后才更新内核 `grants[bucket]`。
+4. `delta > 0` 时更新 `granted_bytes = G + delta`。事务提交后才更新内核 `grants[bucket]`。
 5. `delta = 0` 且 DB 无剩余时记录当日额度已全部发放；内核可以继续消费已发放但未用完的余额，真正耗尽后停止。
 
 该算法把可消费的超前授权控制在一个配置批次附近，同时每次发放都确认一次累计快照；不反复叠加完整批次造成大额未确认授权。
@@ -342,11 +341,11 @@ sequenceDiagram
     M->>K: 读取同一 epoch 的一致累计快照
     M->>D: BEGIN IMMEDIATE，确认快照，计算并记录新累计授权
     D-->>M: COMMIT 已持久化
-    M->>K: 安装累计上限和版本，不改 used
+    M->>K: 安装累计上限，不改 used
     K->>K: 后续包可使用新授权
 ```
 
-授权消息使用累计上限，不使用“加 16 MiB”式增量。每用户只允许一个补充流程在运行；重试先检查 DB 版本，已提交结果可以重复安装而不会重复发放。旧 epoch 转为 unknown 后，迟到的 checkpoint 不得再发放授权；manager 单实例锁和互斥锁串行保护这些操作。
+授权消息使用累计上限，不使用“加 16 MiB”式增量。每用户只允许一个补充流程在运行；重试以 DB 累计授权为准，已提交结果可以重复安装而不会重复发放。旧 epoch 转为 closed 后，迟到的 checkpoint 不得再发放授权；manager 单实例锁和互斥锁串行保护这些操作。
 
 ### 8.3 内核用量回写
 
@@ -360,14 +359,14 @@ sequenceDiagram
 
 若 DB 最后确认 10 MiB，内核实际已用 11 MiB，DB 授权 16 MiB，掉电会丢失内核计数。此时只能确定实际用量在 10～16 MiB 之间。直接以 10 MiB 重建、重新发放差额，会让已用的部分被再次使用。
 
-处理方式是将旧 epoch 置为 `unknown`，保留其 16 MiB 授权占用；新 epoch 从当天尚未发放的额度申请。界面仍显示已确认 10 MiB、旧 epoch 待确认 6 MiB，不把 16 MiB 伪装为实际使用。由于用途是防滥用，可以接受该保守误差；多次主动破坏状态不能获得更多额度。
+处理方式是将旧 epoch 置为 `closed`，保留其 16 MiB 授权占用；新 epoch 从当天尚未发放的额度申请。界面仍显示已确认 10 MiB、旧 epoch 待确认 6 MiB，不把 16 MiB 伪装为实际使用。由于用途是防滥用，可以接受该保守误差；多次主动破坏状态不能获得更多额度。
 
 ## 9. 补充通知、事件丢失与额度耗尽
 
-通知仅包含 `bucket_id` 和授权版本；manager 收到提示重新扫描 Map 和 DB，不把通知当账本。这样无需信任丢失或迟到的事件内容。
+通知仅包含 `userID`；manager 收到提示调用该用户的 `SyncEpochToEbpf` 重新读取 Map 和 DB，不把通知当账本。这样无需信任丢失或迟到的事件内容。
 
 - 剩余低于 W 时通知，仍继续使用当前授权，不等待 DB。
-- 对相同授权版本节流通知；失败可按单调时钟间隔重试，避免逐包事件风暴。
+- 同一桶按单调时钟以 1 秒间隔节流通知和重试，避免逐包事件风暴。
 - Ring Buffer 写入可能因容量不足失败；事件丢失计数递增。manager 每 1 秒全量扫描活跃用户 bucket，与快照任务共用扫描结果，补足丢失通知。
 - 授权已耗尽但 DB 仍有余额时，补充完成前临时 drop；TCP 可能暂停和重传。不要排队保存全部数据包，也不改成内核内同步 RPC。
 - DB 无可发额度时，不必继续每秒写无变化的拒绝日志；只在状态变化时记录。
@@ -379,21 +378,22 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    A["获取单实例锁，打开/迁移 DB"] --> B["openKernel：创建或接管对象<br/>检查 ABI / DB / 父组 / 配置"]
-    B --> C{"账本 boot_id<br/>等于当前系统 boot_id？"}
-    C -->|"是"| D["保留 active epoch"]
-    C -->|"否或为空"| E["一个事务：旧 active 置 unknown<br/>保留授权占用，保存当前 boot_id"]
-    D --> F["refresh(false)：保存计数快照<br/>补装已提交授权"]
-    E --> F
-    F --> G["启用 guard，进行 Docker 对账<br/>恢复 cgroup 到用户关联"]
-    G --> H["对账成功后 API ready"]
+    A["获取单实例锁，打开 DB"] --> B["openKernel：创建或接管对象<br/>检查 ABI / DB / 父组 / 配置"]
+    B --> C["枚举 active epoch，按用户去重"]
+    C --> D["SyncEpochToEbpf：读取用户指针<br/>缺失时从 DB 找 active epoch"]
+    D --> E{"桶的三张 map 条目"}
+    E -->|"全无"| F["关闭当天旧 active，保留授权占用"]
+    E -->|"部分存在"| G["删除残留，保留原 active"]
+    E -->|"完整"| H["保留实时计数，按需结算跨天桶"]
+    F --> I["统一取得 active、初始化、保存快照及补授权<br/>发布 bucket_meta、user_bucket"]
+    G --> I
+    H --> I
+    I --> J["启用 guard，进行 Docker 对账<br/>对账成功后 API ready"]
 ```
 
-DB/map 身份不匹配且无法证明是正常状态丢失，必须诊断并保持拒绝，不能把未知状态当零用量初始化。关闭 manager 进程不卸载 pinned guard；LaxCode 每次应用启动也不重置 Maps。
+`openKernel` 保留 ABI、DB UUID、父 cgroup、配置哈希及 Ready 校验；不匹配时禁用 guard 并拒绝启动。进程重启不关闭全部 active，启动和运行中的恢复都由 `SyncEpochToEbpf` 按用户串行完成。部分桶条目仅视为初始化中断，删除后按 DB 重建；三项全无才保守关闭当天旧 active。跨天、首次授权、丢失 maps、部分初始化共同进入同一处重建代码。
 
-`openKernel` 只负责内核对象的兼容性与创建/接管；不在内核 metadata 中保存 boot ID 或随机 map-set ID。`adopt(currentBootID)` 负责账本跨开机的恢复，不依赖 `fresh`：即使新 pins 已创建后进程在 adopt 前崩溃，下次接管已有 Maps 也能补完恢复；事务已提交则不重复处理。
-
-运维约定同次开机不随意销毁 Maps。显式维护使用发布包 `reset_quota.py`：停止应用/manager、确认父 cgroup 无进程、持有部署锁及 manager 锁，在 SQLite FULL 事务提交 `boot_id=''` 后移除专属 pins。下次启动即使 OS 未重启，也会保守恢复。脚本保留账本，可在部分删除失败后重试；不得直接 rm pins 或清空账本。ABI 2 metadata 为 72 字节；旧 ABI 1 需维护清理，账本 schema 1 自动事务迁移到 2，仅删除 map_set 列。
+显式维护使用 `reset_quota.py`：停止应用/manager、确认父 cgroup 无进程、持有部署锁及 manager 锁，验证账本后移除专属 pins。脚本保留账本，可在部分删除失败后重试；不得直接 rm pins 或清空账本。ABI 3 中 grants 为 8 字节、usage 为 48 字节、metadata 为 72 字节。此次重构仅修改新建表结构，schema 3 不自动迁移旧数据；部署前按已清空旧数据的约定准备新表。
 
 ### 10.2 cgroup 重建
 
@@ -403,11 +403,11 @@ DB/map 身份不匹配且无法证明是正常状态丢失，必须诊断并保�
 
 manager 负责墙上时间到北京时间日期的转换；eBPF 不自行解释时区。每个 bucket 有单调时钟截止时间，避免 manager 故障后旧日授权无限延续。
 
-到零点时先创建新 user_day/epoch，初始化 usage、持久化首批授权并发布 grants，最后切换 `user_bucket` 到新 bucket。旧 bucket 截止后只允许必要通信；零点 manager 不在线时允许暂时停止公网，不能继续使用过期授权。跨零点的长连接从后续数据包开始计入新 bucket，不要求重连。
+跨天同步时先取得当前日 active epoch，保存旧桶快照并关闭旧 epoch，然后统一初始化新桶 usage、持久化首批授权并发布 grants/bucket_meta，最后切换 `user_bucket` 到新 bucket。旧 bucket 截止后只允许必要通信；零点 manager 不在线时允许暂时停止公网，不能继续使用过期授权。跨零点的长连接从后续数据包开始计入新 bucket，不要求重连。
 
-旧指针仍可能被在途 BPF 调用持有；计量线性化到其使用的有效 bucket，允许日边界存在少量在途误差，不以物理线缆时间实现逐包跨日结算。不要立即删除旧 Maps 条目，应待过期和快照关闭后回收。
+旧指针仍可能被在途 BPF 调用持有；计量线性化到其使用的有效 bucket，允许日边界存在少量在途误差，不以物理线缆时间实现逐包跨日结算。本次接受快照至切换间少量漏计；旧条目由同用户锁保护的异步清理回收，排除执行清理时的当前 epoch。
 
-墙钟与 BOOTTIME 增量相差超过 5 秒时关闭 guard；校准宿主时间后重启，已发布桶的截止不向后延长。DB 记录已见到的最新日期，不接受回退日期或重开已关闭日。时区数据随 Go 二进制嵌入，固定北京时间。
+本轮删除墙钟跳变和记账日期回退检测。每次同步取得用户锁后只取一次 day，后续计算均使用该日期。时区数据随 Go 二进制嵌入，固定北京时间。
 
 ### 10.4 故障矩阵
 
@@ -415,9 +415,9 @@ manager 负责墙上时间到北京时间日期的转换；eBPF 不自行解释�
 | --- | --- |
 | DB 授权提交前崩溃 | 没有新授权，内核不能使用它 |
 | DB 已提交、Map 尚未安装 | 同 epoch 重装绝对累计上限，不重复充值 |
-| Map 已安装、manager 收到响应前退出 | 接管后比对 DB 版本，重复安装无害 |
+| Map 已安装、manager 收到响应前退出 | 接管后比对 DB 累计授权，重复安装无害 |
 | 内核已累计、DB 快照未保存 | 同 boot 读取 pinned 计数补写 |
-| ECS 重启或运维脚本清理 Maps | 旧 epoch unknown，授权继续占用；新 epoch 从余下额度发放 |
+| ECS 重启或运维脚本清理 Maps | 旧 epoch closed，授权继续占用；新 epoch 从余下额度发放 |
 | 正常应用发布、proxy 重启 | 不重启额度周期；重新发现 cgroup |
 | Ring Buffer 满、Docker 事件断流 | 定期扫描/全量对账兜底；未知组保持拒绝 |
 | DB 恢复旧备份、Map ABI 不明 | readiness 失败，人工诊断；不静默初始化 |
@@ -507,7 +507,7 @@ Linux 按 root 后台进程部署，由 deploy.py 管理 PID，原因是需要 D
 
 `/readyz` 提供 ABI、父组、namespace、绑定数、最近对账时间、错误原因及 per-CPU 拒绝计数汇总（解析、地址、未绑定、过期、配额、事件丢失）。用量接口提供最后确认时间；日志记录对账、DB 和不变量错误，重复相同错误合并。首版不增加 metrics server。
 
-日志不记录 provider 凭据或用户请求正文。逐包拒绝只累计计数，不产生逐包日志；详细授权和版本保留于 SQLite。
+日志不记录 provider 凭据或用户请求正文。逐包拒绝只累计计数，不产生逐包日志；累计授权和用量保留于 SQLite。
 
 `/readyz` 不可用必须显示具体原因。核验失败时不自动禁用 guard；告警用户侧可能发生网络暂停，而不是返回误导性的成功。
 
@@ -542,7 +542,7 @@ Linux 按 root 后台进程部署，由 deploy.py 管理 PID，原因是需要 D
 | 发现 | 错误 namespace/role、缺失 UUID、重复关联、PID 复用、cgroup 越界、Docker 断流均不能错绑或放开未知组 |
 | 数据面 | 并行上传/下载、IPv4/IPv6、长连接、TLS、非线性 skb、控制豁免、畸形包、Map 满及 Ring Buffer 满 |
 | 恢复 | kill manager 后规则仍在；重启服务保留内核计数；销毁 Maps/宿主重启不返还未知授权；stop/start 不刷新余额 |
-| 周期 | 北京时间日切、跨日连接、manager 跨零点离线、时钟跳变、迟到旧快照与旧补充结果 |
+| 周期 | 北京时间日切、跨日连接、manager 跨零点离线、迟到旧快照与旧补充结果；本轮不含时钟跳变检测 |
 | 业务 | 新 Go 模块下载成功；额度耗尽后停止公网且内部存储正常；用户轮换身份头不能绕过认证后的 UUID |
 | 性能 | 对比启用前后吞吐、CPU、尾延迟、DB 写频率和锁竞争；目标值依据 ECS 实测确定，不能用未测数字代替 |
 
@@ -556,7 +556,7 @@ Linux 按 root 后台进程部署，由 deploy.py 管理 PID，原因是需要 D
 | --- | --- |
 | 真实内核 guard | 共同父组挂载、未知子组拒绝、精确控制豁免、非公网拒绝、两个子组共享额度、双向计数、单调截止、pinned 接管通过；128 KiB 测试中 RX 128,944 + TX 588 字节未超上限 |
 | 地址分类 | 真实 LPM Map 的 IPv4、IPv6、mapped 及特殊地址案例通过；IPv6 公网传输未测试 |
-| 持久授权恢复 | DB 提交后 Map 尚未更新的恢复、相同 pins 接管、丢失内核状态后旧授权转 unknown、配置身份不符时关闭 guard、修正配置后恢复、部分 pins 缺失、时钟跳变检测通过 |
+| 持久授权恢复（首版历史验收） | DB 提交后 Map 尚未更新的恢复、相同 pins 接管、丢失内核状态后的保守占用、配置身份不符时关闭 guard、部分 pins 缺失通过；首版时钟跳变检测已在 epoch 重构中删除 |
 | 实际 OpenShell 关联 | 从可信 `/workplace` bind source 得到 UUID，按标准标签关联 supervisor；越界父组 readiness 拒绝，进入隔离受管父组后绑定成功 |
 | policy 与 provider | 公网 policy 状态为 `loaded`，active version 与提交版本一致；现有 provider 配置可组合，虚构测试凭据注入通过，未读取或输出真实凭据 |
 | 公网与依赖 | goproxy.cn 模块信息、api.github.com 返回 200；全新缓存下载 `github.com/google/uuid@v1.6.0` 并完成校验 |
@@ -581,6 +581,13 @@ Linux 按 root 后台进程部署，由 deploy.py 管理 PID，原因是需要 D
 - 20 项 Python 部署/配置测试、Go manager/proxy 回归以及 ECS 上全部内核/账本测试通过。内核回归覆盖未知组阻断、隔离 workload 的 IPv4/IPv6 回环、非回环阻断、guard 未就绪阻断、宿主回环阻断、共享双向配额和 pinned 恢复。
 
 本次发现并修复：全父组 guard 会拦截 OpenShell workload 的本地回环启动自检；此前只移动 supervisor 的验证未覆盖该条件。修正复用 `cgroup_owner` 的保留值 0，不增加 Map，不改变账本/Map ABI。实际整机重启、TOS 上传及真实模型调用不在本轮验证范围；跨 boot 的陈旧 PID 识别由单元测试覆盖。
+
+### 14.3 epoch 同步重构验证（2026-10-26）
+
+- ABI 3 的 C 对象和 Go 绑定由 clang 19 重新生成；Linux amd64 构建及 arm64 集成测试编译通过。
+- 在隔离的 Docker Linux 内核上运行完整集成测试：共享配额、独立 workload 回环、用户 ID ring 事件、pins 接管、维护重建，以及 ABI/DB UUID/父 cgroup/配置/Ready 不匹配时拒绝并关闭 guard 均通过。
+- 新增同步测试覆盖 16 种三张 map 完整性与用户指针组合、发布 user_bucket 失败后恢复、跨天及跨天中断重试、同用户并发、目标用户用量查询不受其他用户锁阻塞、追加授权保留 live usage、异步清理失败重试与保护当前 epoch；Linux race 检查通过。
+- macOS 账本与 proxy race 测试、部署脚本 25 项测试通过。未部署 ECS，未操作用户的实际 DB/pins，未进行整机重启或真实午夜长连接验收。
 
 ## 15. 主要取舍与未解决前置项
 

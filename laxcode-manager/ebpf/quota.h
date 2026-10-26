@@ -23,20 +23,20 @@ static long (*bpf_ringbuf_output)(void *, void *, __u64, __u64) = (void *)130;
 
 struct peer { __u8 address[16]; __u16 port; __u8 proto, pad; };
 struct prefix { __u32 prefixlen; __u8 address[16]; };
-struct grant { __u64 bytes, version; };
+struct grant { __u64 bytes; };
 struct bucket_meta { __u64 user, deadline_ns; };
 struct usage {
     struct bpf_spin_lock lock;
     __u32 pad;
-    __u64 rx, tx, drop_bytes, drop_packets, notified_version, last_event_ns;
+    __u64 rx, tx, drop_bytes, drop_packets, last_event_ns;
 };
-struct event { __u64 bucket, version; };
+struct event { __u64 user; };
 struct metadata {
     __u32 abi, ready;
     __u8 db[16], config_hash[32];
     __u64 parent_id, low_watermark;
 };
 _Static_assert(sizeof(struct peer) == 20, "peer ABI");
-_Static_assert(sizeof(struct usage) == 56, "usage ABI");
+_Static_assert(sizeof(struct usage) == 48, "usage ABI");
 _Static_assert(sizeof(struct metadata) == 72, "metadata ABI");
 #endif

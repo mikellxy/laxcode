@@ -43,15 +43,13 @@ def reset_kernel(config):
             raise RuntimeError('Pin directory must be on bpffs')
         if any(p.name not in LINKS + MAPS or p.is_symlink() or not p.is_file() for p in entries):
             raise RuntimeError('Unexpected entries in pin directory; inspect it manually')
-        # Commit the recovery marker BEFORE unlinking. An interrupted reset can be rerun.
-        db = sqlite3.connect((state / 'quota.db').as_uri() + '?mode=rw', uri=True)
+        # Validate the retained ledger before unlinking; empty maps trigger recovery on startup.
+        db = sqlite3.connect((state / 'quota.db').as_uri() + '?mode=ro', uri=True)
         try:
-            db.execute('PRAGMA synchronous=FULL')
-            if db.execute('PRAGMA user_version').fetchone()[0] not in (1, 2):
+            if db.execute('PRAGMA user_version').fetchone()[0] != 3:
                 raise RuntimeError('Unsupported quota ledger schema')
-            with db:
-                if db.execute("UPDATE metadata SET boot_id='' WHERE id=1").rowcount != 1:
-                    raise RuntimeError('Quota ledger metadata missing')
+            if not db.execute('SELECT db_id FROM metadata WHERE id=1').fetchone():
+                raise RuntimeError('Quota ledger metadata missing')
         finally:
             db.close()
         # With manager FDs closed, removing link pins releases their attachments.

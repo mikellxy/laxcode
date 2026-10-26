@@ -94,7 +94,7 @@ INLINE int account(struct __sk_buff *skb, int ingress) {
     struct usage *u = bpf_map_lookup_elem(&usage, &bucket_id);
     __u64 now = bpf_ktime_get_boot_ns();
     if (!bm || !g || !u || bm->user != user_id || now >= bm->deadline_ns) { diagnostic(4); return 0; }
-    __u64 limit = g->bytes, version = g->version, low = meta->low_watermark;
+    __u64 limit = g->bytes, low = meta->low_watermark;
     __u32 len = skb->len;
     int pass = 0, notify = 0;
     bpf_spin_lock(&u->lock);
@@ -106,12 +106,12 @@ INLINE int account(struct __sk_buff *skb, int ingress) {
         u->drop_bytes += len; u->drop_packets++;
     }
     if ((used >= limit || limit - used <= low) &&
-        (u->notified_version != version || now - u->last_event_ns >= 1000000000ULL)) {
-        u->notified_version = version; u->last_event_ns = now; notify = 1;
+        (u->last_event_ns == 0 || now - u->last_event_ns >= 1000000000ULL)) {
+        u->last_event_ns = now; notify = 1;
     }
     bpf_spin_unlock(&u->lock);
     if (notify) {
-        struct event event = {bucket_id, version};
+        struct event event = {user_id};
         if (bpf_ringbuf_output(&events, &event, sizeof(event), 0)) diagnostic(5);
     }
     if (!pass) diagnostic(6);

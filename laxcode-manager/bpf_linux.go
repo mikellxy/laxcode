@@ -69,7 +69,7 @@ func bootNS() (uint64, error) {
 }
 
 func openKernel(c config, db uuid.UUID) (_ *kernel, err error) {
-	if unsafe.Sizeof(usage{}) != 56 || unsafe.Sizeof(peerKey{}) != 20 || unsafe.Sizeof(kernelMetadata{}) != 72 {
+	if unsafe.Sizeof(usage{}) != 48 || unsafe.Sizeof(grant{}) != 8 || unsafe.Sizeof(peerKey{}) != 20 || unsafe.Sizeof(kernelMetadata{}) != 72 {
 		return nil, errors.New("BPF ABI size mismatch")
 	}
 	if err = rlimit.RemoveMemlock(); err != nil {
@@ -272,45 +272,36 @@ func (k *kernel) close() {
 		_ = k.parent.Close()
 	}
 }
-func (k *kernel) snapshot(id uint64) (usage, grant, error) {
-	var u usage
+
+// Read every entry independently: a missing entry is an interrupted initialization.
+func (k *kernel) bucket(id uint64) (*bucketMeta, *grant, *usage, error) {
+	var bm bucketMeta
 	var g grant
-	err := k.objects.Maps["usage"].LookupWithFlags(id, &u, ebpf.LookupLock)
-	if err != nil {
-		return u, g, err
+	var u usage
+	meta, grants, counters := &bm, &g, &u
+	if err := k.objects.Maps["bucket_meta"].Lookup(id, &bm); errors.Is(err, ebpf.ErrKeyNotExist) {
+		meta = nil
+	} else if err != nil {
+		return nil, nil, nil, err
 	}
-	err = k.objects.Maps["grants"].Lookup(id, &g)
-	return u, g, err
+	if err := k.objects.Maps["grants"].Lookup(id, &g); errors.Is(err, ebpf.ErrKeyNotExist) {
+		grants = nil
+	} else if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := k.objects.Maps["usage"].LookupWithFlags(id, &u, ebpf.LookupLock); errors.Is(err, ebpf.ErrKeyNotExist) {
+		counters = nil
+	} else if err != nil {
+		return nil, nil, nil, err
+	}
+	return meta, grants, counters, nil
 }
-func (k *kernel) initialize(e epoch) error {
-	var existing usage
-	err := k.objects.Maps["usage"].LookupWithFlags(e.ID, &existing, ebpf.LookupLock)
-	if err == nil {
-		var bm bucketMeta
-		if err = k.objects.Maps["bucket_meta"].Lookup(e.ID, &bm); err != nil {
+
+func (k *kernel) deleteBucket(id uint64) error {
+	for _, name := range []string{"bucket_meta", "grants", "usage"} {
+		if err := k.objects.Maps[name].Delete(id); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return err
 		}
-		if bm.User != e.User || bm.DeadlineNS != e.Deadline {
-			return errors.New("bucket identity mismatch")
-		}
-		return nil
 	}
-	if !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return err
-	}
-	// Only a zero-authorized, unpublished bucket can safely get fresh counters.
-	if e.Granted != 0 || e.RX != 0 || e.TX != 0 {
-		return errors.New("active kernel counters missing; refusing restoration from DB usage")
-	}
-	var pointer uint64
-	if k.objects.Maps["user_bucket"].Lookup(e.User, &pointer) == nil && pointer == e.ID {
-		return errors.New("published bucket counters missing")
-	}
-	if err = k.objects.Maps["bucket_meta"].Update(e.ID, bucketMeta{e.User, e.Deadline}, ebpf.UpdateAny); err != nil {
-		return err
-	}
-	if err = k.objects.Maps["grants"].Update(e.ID, grant{e.Granted, e.Version}, ebpf.UpdateAny); err != nil {
-		return err
-	}
-	return k.objects.Maps["usage"].Update(e.ID, usage{}, ebpf.UpdateNoExist)
+	return nil
 }

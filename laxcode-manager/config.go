@@ -12,7 +12,7 @@ import (
 	_ "time/tzdata"
 )
 
-const abiVersion = 2
+const abiVersion = 3
 
 type controlPeer struct {
 	Address  string `json:"address"`
@@ -137,8 +137,8 @@ type usage struct {
 	Lock                           uint32
 	Pad                            uint32
 	RX, TX, DropBytes, DropPackets uint64
-	NotifiedVersion, LastEventNS   uint64
+	LastEventNS                    uint64
 }
-type grant struct{ Bytes, Version uint64 }
+type grant struct{ Bytes uint64 }
 type bucketMeta struct{ User, DeadlineNS uint64 }
-type quotaEvent struct{ Bucket, Version uint64 }
+type quotaEvent struct{ User uint64 }

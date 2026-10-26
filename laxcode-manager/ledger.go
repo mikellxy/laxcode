@@ -1,9 +1,9 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,9 +18,9 @@ type ledger struct {
 	limit, chunk uint64
 }
 type epoch struct {
-	ID, User                           uint64
-	UUID, Day, Status                  string
-	Granted, RX, TX, Version, Deadline uint64
+	ID, User                  uint64
+	UUID, Day, Status         string
+	Granted, RX, TX, Deadline uint64
 }
 type usageResponse struct {
 	UserID      string `json:"user_id"`
@@ -53,28 +53,14 @@ func openLedger(path string, limit, chunk uint64) (*ledger, error) {
 			db.Close()
 		}
 	}()
-	var version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return nil, err
-	}
-	if version < 0 || version > 2 {
-		return nil, fmt.Errorf("unsupported ledger schema %d", version)
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if version == 1 {
-		if _, err = tx.Exec(`ALTER TABLE metadata DROP COLUMN map_set;
-ALTER TABLE epochs DROP COLUMN map_set;`); err != nil {
-			return nil, err
-		}
-	}
 	_, err = tx.Exec(`
 CREATE TABLE IF NOT EXISTS metadata (
- id INTEGER PRIMARY KEY CHECK(id=1), db_id TEXT NOT NULL,
- boot_id TEXT NOT NULL DEFAULT '', last_day TEXT NOT NULL DEFAULT ''
+ id INTEGER PRIMARY KEY CHECK(id=1), db_id TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS user_days (
@@ -83,16 +69,16 @@ CREATE TABLE IF NOT EXISTS user_days (
 );
 CREATE TABLE IF NOT EXISTS epochs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, day TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status IN ('active','closed','unknown')),
+ status TEXT NOT NULL CHECK(status IN ('active','closed')),
  granted INTEGER NOT NULL DEFAULT 0 CHECK(granted>=0),
  rx INTEGER NOT NULL DEFAULT 0 CHECK(rx>=0), tx INTEGER NOT NULL DEFAULT 0 CHECK(tx>=0),
- version INTEGER NOT NULL DEFAULT 0 CHECK(version>=0), deadline INTEGER NOT NULL,
+ deadline INTEGER NOT NULL,
  updated_at TEXT NOT NULL,
  FOREIGN KEY(user_id,day) REFERENCES user_days(user_id,day),
  CHECK(rx+tx<=granted)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS active_epoch ON epochs(user_id,day) WHERE status='active';
-PRAGMA user_version=2;`)
+PRAGMA user_version=3;`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,41 +103,14 @@ PRAGMA user_version=2;`)
 	return l, nil
 }
 
-// Called only after kernel identity/ABI verification. Missing kernel state never
-// returns an old epoch's unobserved authorization to the daily balance.
-func (l *ledger) adopt(boot string) error {
-	if boot == "" {
-		return errors.New("empty current boot ID")
-	}
-	tx, err := l.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var oldBoot string
-	if err = tx.QueryRow("SELECT boot_id FROM metadata WHERE id=1").Scan(&oldBoot); err != nil {
-		return err
-	}
-	if oldBoot == boot {
-		return tx.Commit()
-	}
-	if _, err = tx.Exec("UPDATE epochs SET status='unknown' WHERE status='active'"); err != nil {
-		return err
-	}
-	if _, err = tx.Exec("UPDATE metadata SET boot_id=? WHERE id=1", boot); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-const epochColumns = "e.id,e.user_id,u.uuid,e.day,e.status,e.granted,e.rx,e.tx,e.version,e.deadline"
+const epochColumns = "e.id,e.user_id,u.uuid,e.day,e.status,e.granted,e.rx,e.tx,e.deadline"
 
 func scanEpoch(row interface{ Scan(...any) error }) (e epoch, err error) {
-	err = row.Scan(&e.ID, &e.User, &e.UUID, &e.Day, &e.Status, &e.Granted, &e.RX, &e.TX, &e.Version, &e.Deadline)
+	err = row.Scan(&e.ID, &e.User, &e.UUID, &e.Day, &e.Status, &e.Granted, &e.RX, &e.TX, &e.Deadline)
 	return
 }
-func (l *ledger) active() ([]epoch, error) {
-	rows, err := l.db.Query("SELECT " + epochColumns + " FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.status='active'")
+func (l *ledger) active(ctx context.Context) ([]epoch, error) {
+	rows, err := l.db.QueryContext(ctx, "SELECT "+epochColumns+" FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.status='active'")
 	if err != nil {
 		return nil, err
 	}
@@ -167,46 +126,35 @@ func (l *ledger) active() ([]epoch, error) {
 	return result, rows.Err()
 }
 
-func (l *ledger) ensure(id, day string, deadline uint64) (epoch, error) {
-	tx, err := l.db.Begin()
+func (l *ledger) userID(ctx context.Context, id string) (uint64, error) {
+	if _, err := l.db.ExecContext(ctx, "INSERT OR IGNORE INTO users(uuid) VALUES(?)", id); err != nil {
+		return 0, err
+	}
+	var user uint64
+	err := l.db.QueryRowContext(ctx, "SELECT id FROM users WHERE uuid=?", id).Scan(&user)
+	return user, err
+}
+
+func (l *ledger) latestActive(ctx context.Context, user uint64) (epoch, error) {
+	return scanEpoch(l.db.QueryRowContext(ctx, "SELECT "+epochColumns+" FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.user_id=? AND e.status='active' ORDER BY e.day DESC,e.id DESC LIMIT 1", user))
+}
+
+func (l *ledger) ensure(ctx context.Context, user uint64, day string, deadline uint64) (epoch, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return epoch{}, err
 	}
 	defer tx.Rollback()
-	var last string
-	if err = tx.QueryRow("SELECT last_day FROM metadata WHERE id=1").Scan(&last); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO user_days(user_id,day,limit_bytes) VALUES(?,?,?)", user, day, l.limit); err != nil {
 		return epoch{}, err
 	}
-	if day < last {
-		return epoch{}, errors.New("backwards accounting date")
-	}
-	if _, err = tx.Exec("UPDATE metadata SET last_day=? WHERE id=1", day); err != nil {
-		return epoch{}, err
-	}
-	if _, err = tx.Exec("INSERT OR IGNORE INTO users(uuid) VALUES(?)", id); err != nil {
-		return epoch{}, err
-	}
-	var user uint64
-	if err = tx.QueryRow("SELECT id FROM users WHERE uuid=?", id).Scan(&user); err != nil {
-		return epoch{}, err
-	}
-	if _, err = tx.Exec("INSERT OR IGNORE INTO user_days(user_id,day,limit_bytes) VALUES(?,?,?)", user, day, l.limit); err != nil {
-		return epoch{}, err
-	}
-	var closed int
-	if err = tx.QueryRow("SELECT count(*) FROM epochs WHERE user_id=? AND day=? AND status='closed'", user, day).Scan(&closed); err != nil {
-		return epoch{}, err
-	}
-	if closed != 0 {
-		return epoch{}, errors.New("accounting date is already closed")
-	}
-	_, err = tx.Exec(`INSERT INTO epochs(user_id,day,status,deadline,updated_at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO epochs(user_id,day,status,deadline,updated_at)
 SELECT ?,?,'active',?,? WHERE NOT EXISTS(SELECT 1 FROM epochs WHERE user_id=? AND day=? AND status='active')`,
 		user, day, deadline, time.Now().UTC().Format(time.RFC3339Nano), user, day)
 	if err != nil {
 		return epoch{}, err
 	}
-	e, err := scanEpoch(tx.QueryRow("SELECT "+epochColumns+" FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.user_id=? AND e.day=? AND e.status='active'", user, day))
+	e, err := scanEpoch(tx.QueryRowContext(ctx, "SELECT "+epochColumns+" FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.user_id=? AND e.day=? AND e.status='active'", user, day))
 	if err != nil {
 		return epoch{}, err
 	}
@@ -215,13 +163,13 @@ SELECT ?,?,'active',?,? WHERE NOT EXISTS(SELECT 1 FROM epochs WHERE user_id=? AN
 
 // Persist cumulative authorization before exposing it to the kernel. Usage is a
 // locked cumulative snapshot, never a delta that can be applied twice.
-func (l *ledger) checkpoint(id uint64, u usage, refill bool) (epoch, error) {
-	tx, err := l.db.Begin()
+func (l *ledger) checkpoint(ctx context.Context, id uint64, u usage, refill bool) (epoch, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return epoch{}, err
 	}
 	defer tx.Rollback()
-	e, err := scanEpoch(tx.QueryRow("SELECT "+epochColumns+" FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.id=?", id))
+	e, err := scanEpoch(tx.QueryRowContext(ctx, "SELECT "+epochColumns+" FROM epochs e JOIN users u ON u.id=e.user_id WHERE e.id=?", id))
 	if err != nil {
 		return epoch{}, err
 	}
@@ -230,10 +178,10 @@ func (l *ledger) checkpoint(id uint64, u usage, refill bool) (epoch, error) {
 		return epoch{}, errors.New("usage snapshot violates epoch invariants")
 	}
 	var held, limit uint64
-	if err = tx.QueryRow("SELECT COALESCE(SUM(granted),0) FROM epochs WHERE user_id=? AND day=?", e.User, e.Day).Scan(&held); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(granted),0) FROM epochs WHERE user_id=? AND day=?", e.User, e.Day).Scan(&held); err != nil {
 		return epoch{}, err
 	}
-	if err = tx.QueryRow("SELECT limit_bytes FROM user_days WHERE user_id=? AND day=?", e.User, e.Day).Scan(&limit); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT limit_bytes FROM user_days WHERE user_id=? AND day=?", e.User, e.Day).Scan(&limit); err != nil {
 		return epoch{}, err
 	}
 	if held > limit {
@@ -245,12 +193,11 @@ func (l *ledger) checkpoint(id uint64, u usage, refill bool) (epoch, error) {
 	}
 	if delta != 0 {
 		e.Granted += delta
-		e.Version++
 	}
 	if e.RX != u.RX || e.TX != u.TX || delta != 0 {
 		e.RX, e.TX = u.RX, u.TX
-		_, err = tx.Exec("UPDATE epochs SET granted=?,rx=?,tx=?,version=?,updated_at=? WHERE id=?",
-			e.Granted, e.RX, e.TX, e.Version, time.Now().UTC().Format(time.RFC3339Nano), e.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE epochs SET granted=?,rx=?,tx=?,updated_at=? WHERE id=?",
+			e.Granted, e.RX, e.TX, time.Now().UTC().Format(time.RFC3339Nano), e.ID)
 		if err != nil {
 			return epoch{}, err
 		}
@@ -258,9 +205,38 @@ func (l *ledger) checkpoint(id uint64, u usage, refill bool) (epoch, error) {
 	return e, tx.Commit()
 }
 
-func (l *ledger) closeEpoch(id uint64) error {
-	_, err := l.db.Exec("UPDATE epochs SET status='closed' WHERE id=? AND status='active'", id)
-	return err
+// The old bucket may still receive packets until user_bucket is switched.
+func (l *ledger) closeSnapshot(ctx context.Context, id, user uint64, g grant, u usage) error {
+	if u.RX > g.Bytes || u.TX > g.Bytes-u.RX {
+		return errors.New("usage exceeds kernel authorization")
+	}
+	result, err := l.db.ExecContext(ctx, `UPDATE epochs SET status='closed',granted=?,rx=?,tx=?,updated_at=?
+WHERE id=? AND user_id=? AND granted>=? AND rx<=? AND tx<=?`,
+		g.Bytes, u.RX, u.TX, time.Now().UTC().Format(time.RFC3339Nano), id, user, g.Bytes, u.RX, u.TX)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return errors.New("old bucket does not match durable ledger")
+	}
+	return nil
+}
+
+func (l *ledger) historicalEpochs(ctx context.Context, user uint64, day string, current uint64) ([]uint64, error) {
+	rows, err := l.db.QueryContext(ctx, "SELECT id FROM epochs WHERE user_id=? AND day<=? AND id!=?", user, day, current)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uint64
+	for rows.Next() {
+		var id uint64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (l *ledger) report(id, day string) (usageResponse, error) {
@@ -286,7 +262,7 @@ func (l *ledger) report(id, day string) (usageResponse, error) {
 		return r, err
 	}
 	err = l.db.QueryRow(`SELECT COALESCE(SUM(rx+tx),0),COALESCE(SUM(granted),0),
-COALESCE(SUM(CASE WHEN status='unknown' THEN granted-rx-tx ELSE 0 END),0),COALESCE(MAX(updated_at),'')
+COALESCE(SUM(CASE WHEN status='closed' THEN granted-rx-tx ELSE 0 END),0),COALESCE(MAX(updated_at),'')
 FROM epochs WHERE user_id=? AND day=?`, user, day).Scan(&r.Confirmed, &r.Held, &r.Uncertain, &r.UpdatedAt)
 	if err != nil {
 		return r, err

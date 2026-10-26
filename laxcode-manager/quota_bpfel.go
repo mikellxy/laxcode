@@ -20,9 +20,8 @@ type quotaBucketMeta struct {
 }
 
 type quotaGrant struct {
-	_       structs.HostLayout
-	Bytes   uint64
-	Version uint64
+	_     structs.HostLayout
+	Bytes uint64
 }
 
 type quotaMetadata struct {
@@ -55,13 +54,12 @@ type quotaUsage struct {
 		_   structs.HostLayout
 		Val uint32
 	}
-	Pad             uint32
-	Rx              uint64
-	Tx              uint64
-	DropBytes       uint64
-	DropPackets     uint64
-	NotifiedVersion uint64
-	LastEventNs     uint64
+	Pad         uint32
+	Rx          uint64
+	Tx          uint64
+	DropBytes   uint64
+	DropPackets uint64
+	LastEventNs uint64
 }
 
 // loadQuota returns the embedded CollectionSpec for quota.

@@ -23,9 +23,9 @@ class ResetQuotaTest(unittest.TestCase):
         self.addCleanup(db.close)
         self.db = db
         db.executescript("""
-PRAGMA user_version=2;
-CREATE TABLE metadata(id INTEGER PRIMARY KEY, db_id TEXT, boot_id TEXT);
-INSERT INTO metadata VALUES(1,'same-db','same-boot');
+PRAGMA user_version=3;
+CREATE TABLE metadata(id INTEGER PRIMARY KEY, db_id TEXT);
+INSERT INTO metadata VALUES(1,'same-db');
 CREATE TABLE epochs(status TEXT, granted INTEGER, rx INTEGER, tx INTEGER);
 INSERT INTO epochs VALUES('active',300,100,50);
 """)
@@ -40,14 +40,14 @@ INSERT INTO epochs VALUES('active',300,100,50);
             mock.start()
             self.addCleanup(mock.stop)
 
-    def marker(self):
-        return self.db.execute('SELECT boot_id FROM metadata').fetchone()[0]
+    def identity(self):
+        return self.db.execute('SELECT db_id FROM metadata').fetchone()[0]
 
     def test_reset_preserves_ledger_and_is_repeatable(self):
         module.reset_kernel(self.config)
         module.reset_kernel(self.config)
         self.assertEqual(list(self.pins.iterdir()), [])
-        self.assertEqual(self.db.execute('SELECT db_id,boot_id FROM metadata').fetchone(), ('same-db', ''))
+        self.assertEqual(self.db.execute('SELECT db_id FROM metadata').fetchone(), ('same-db',))
         self.assertEqual(self.db.execute('SELECT * FROM epochs').fetchone(), ('active', 300, 100, 50))
 
     def test_populated_parent_and_running_manager_are_rejected(self):
@@ -59,7 +59,7 @@ INSERT INTO epochs VALUES('active',300,100,50);
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaisesRegex(RuntimeError, 'Manager is still running'):
                 module.reset_kernel(self.config)
-        self.assertEqual(self.marker(), 'same-boot')
+        self.assertEqual(self.identity(), 'same-db')
         self.assertTrue((self.pins / 'ingress_link').exists())
 
     def test_unknown_files_and_wrong_filesystem_are_rejected(self):
@@ -71,14 +71,14 @@ INSERT INTO epochs VALUES('active',300,100,50);
         with patch.object(module, 'run', return_value='63677270'):
             with self.assertRaisesRegex(RuntimeError, 'bpffs'):
                 module.reset_kernel(self.config)
-        self.assertEqual(self.marker(), 'same-boot')
+        self.assertEqual(self.identity(), 'same-db')
 
-    def test_interruption_leaves_durable_recovery_marker_and_can_retry(self):
+    def test_interruption_preserves_ledger_and_can_retry(self):
         unlink = Path.unlink
 
         def fail_after_first_link(path, *args, **kwargs):
             if path.name == 'egress_link':
-                self.assertEqual(self.marker(), '')
+                self.assertEqual(self.identity(), 'same-db')
                 raise OSError('simulated interruption')
             return unlink(path, *args, **kwargs)
 
@@ -91,11 +91,10 @@ INSERT INTO epochs VALUES('active',300,100,50);
         self.assertEqual(list(self.pins.iterdir()), [])
 
     def test_database_failure_never_removes_pins(self):
-        self.db.executescript("""CREATE TRIGGER fail_reset BEFORE UPDATE ON metadata
-BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;""")
-        with self.assertRaises(sqlite3.IntegrityError):
+        self.db.execute('DELETE FROM metadata')
+        self.db.commit()
+        with self.assertRaisesRegex(RuntimeError, 'metadata missing'):
             module.reset_kernel(self.config)
-        self.assertEqual(self.marker(), 'same-boot')
         self.assertEqual(len(list(self.pins.iterdir())), len(module.LINKS + module.MAPS))
 
 

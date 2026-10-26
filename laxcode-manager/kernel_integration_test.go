@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/google/uuid"
 	"net/netip"
 )
@@ -227,11 +229,15 @@ func TestKernelGuard(t *testing.T) {
 		t.Fatalf("unknown cgroup allowed: %d", n)
 	}
 	now, _ := bootNS()
-	e := epoch{ID: 1, User: 1, Deadline: now + uint64(30*time.Second)}
-	if err = k.initialize(e); err != nil {
-		t.Fatal(err)
+	e := epoch{ID: 7, User: 1, Deadline: now + uint64(30*time.Second)}
+	for name, value := range map[string]any{
+		"bucket_meta": bucketMeta{e.User, e.Deadline}, "usage": usage{}, "grants": grant{},
+	} {
+		if err = k.objects.Maps[name].Update(e.ID, value, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err = k.objects.Maps["grants"].Update(e.ID, grant{128 << 10, 1}, ebpf.UpdateExist); err != nil {
+	if err = k.objects.Maps["grants"].Update(e.ID, grant{128 << 10}, ebpf.UpdateExist); err != nil {
 		t.Fatal(err)
 	}
 	if err = k.objects.Maps["user_bucket"].Update(e.User, e.ID, ebpf.UpdateAny); err != nil {
@@ -246,6 +252,11 @@ func TestKernelGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	events, err := ringbuf.NewReader(k.objects.Maps["events"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Close()
 	first := probe(groups[0], public)
 	second := probe(groups[1], public)
 	u, _, err := k.snapshot(e.ID)
@@ -255,6 +266,12 @@ func TestKernelGuard(t *testing.T) {
 	if first <= 0 || first+second > 128<<10 || u.RX == 0 || u.TX == 0 || u.RX+u.TX > 128<<10 || u.DropPackets == 0 {
 		t.Fatalf("quota first=%d second=%d usage=%+v", first, second, u)
 	}
+	events.SetDeadline(time.Now().Add(time.Second))
+	record, err := events.Read()
+	if err != nil || len(record.RawSample) != 8 || binary.LittleEndian.Uint64(record.RawSample) != e.User {
+		t.Fatal("ring event must identify the user, not its epoch", record, err)
+	}
+	events.Close()
 	k.close()
 	k, err = openKernel(c, db)
 	if err != nil {

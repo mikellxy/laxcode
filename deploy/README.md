@@ -98,7 +98,7 @@ python3 deploy.py
 
 以 root 执行；脚本会停止应用并删除应用沙箱，终止正在执行的任务。它持有部署锁和 manager 锁，确认父 cgroup 无进程，先清空账本的恢复标记，再删除该服务的 pinned links 和 Maps。DB、用户文件、累计授权保留；下次启动保守占用旧的未确认授权，不退回当天额度。失败可排除原因后重跑，不自动重启服务，也不会自动清空账本。
 
-本版本升级到 BPF ABI 2 / 账本 schema 2；已有 ABI 1 pins 的机器需要执行一次维护清理。schema 自动迁移后旧版 manager 不能直接回滚运行。路径配置注意事项见 [manager 运维说明](../laxcode-manager/README.md#维护时清理-ebpf-挂载)。
+本版本使用 BPF ABI 3 / 账本 schema 3；不兼容 pins 仍需维护清理。此次 epoch 重构按旧数据已清空的前提仅修改新建表结构，不提供旧账本自动迁移；部署前由操作者准备新表。路径配置注意事项见 [manager 运维说明](../laxcode-manager/README.md#维护时清理-ebpf-挂载)。
 
 ## 持久目录和启动行为
 

@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 )
 
@@ -51,26 +50,15 @@ func run() error {
 		return err
 	}
 	defer l.db.Close()
-	bootRaw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
-		return err
-	}
-	boot, err := uuid.Parse(strings.TrimSpace(string(bootRaw)))
-	if err != nil {
-		return err
-	}
 	k, err := openKernel(c, l.id)
 	if err != nil {
 		return err
 	}
 	defer k.close()
-	if err = l.adopt(boot.String()); err != nil {
-		k.disable()
-		return err
-	}
 	m := &manager{cfg: c, k: k, l: l, d: newDocker(c.DockerSocket), bindings: map[string]binding{}, wake: make(chan struct{}, 1)}
-	// Restore committed grants before publishing readiness; no DB counter restores.
-	if err = m.refresh(false); err != nil {
+	defer m.cleanupWG.Wait()
+	// Recover each user through the same path used by requests and refill events.
+	if err = m.refresh(context.Background()); err != nil {
 		k.disable()
 		return err
 	}
@@ -118,7 +106,7 @@ func run() error {
 	defer cancel()
 	done := make(chan struct{})
 	go func() { defer close(done); m.run(ctx) }()
-	server := &http.Server{Handler: m.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second}
+	server := &http.Server{BaseContext: func(net.Listener) context.Context { return ctx }, Handler: m.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second}
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
 	select {
@@ -140,11 +128,9 @@ func run() error {
 	defer stop()
 	_ = server.Shutdown(shutdown)
 	<-done
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	// Shutdown never removes pins or detaches guards.
-	if m.fatal == nil {
-		return m.refresh(false)
+	if m.failure() == nil {
+		return m.refresh(shutdown)
 	}
 	return nil
 }
