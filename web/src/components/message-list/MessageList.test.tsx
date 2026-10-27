@@ -24,10 +24,14 @@ describe("sandbox preparation status", () => {
     expect(html.match(/role="status"/g)).toHaveLength(1);
   });
   it("offers a single resume button without requiring an error, and hides it while running", () => {
-    expect(render(undefined, false, undefined, [], "resume")).toContain('class="resume-action"');
+    const html = render(undefined, false, undefined, [], "resume");
+    expect(html).toContain("上轮执行未完成");
+    expect(html.match(/继续执行/g)).toHaveLength(1);
     expect(render(undefined, false, "连接中断", [], "resume").match(/继续执行/g)).toHaveLength(1);
     expect(render("sandbox", true, undefined, [], "resume")).not.toContain("继续执行");
+    expect(render("sandbox", true, undefined, [], "resume")).not.toContain("上轮执行未完成");
     expect(render(undefined, false)).not.toContain("继续执行");
+    expect(render(undefined, false)).not.toContain("上轮执行未完成");
   });
   it.each([
     ["sandbox", "正在进入您的专属安全沙箱…"],

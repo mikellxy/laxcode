@@ -37,7 +37,7 @@ export function MessageList({ messages, sessionID, hasMore, loading, initialLoad
         ? <ToolMessageBlock key={block.messages[0].id} messages={block.messages} />
         : <Fragment key={block.message.id}><MessageItem message={block.message} sessionID={sessionID} />{block.message === lastUser && waitingStatus}</Fragment>)}
       {(!lastUser || initialLoading) && waitingStatus}
-      {!error && !retrying && !initialLoading && retryAction === "resume" && <div className="resume-action"><button onClick={onRetry}><RotateCcw size={15} />继续执行</button></div>}
+      {!error && !retrying && !initialLoading && retryAction === "resume" && <div className="retry-banner" role="status"><span className="retry-icon"><CircleAlert size={18} /></span><div><strong>上轮执行未完成</strong></div><button onClick={onRetry}><RotateCcw size={15} />继续执行</button></div>}
       {error && <div className="retry-banner" role="alert"><span className="retry-icon"><CircleAlert size={18} /></span><div><strong>本轮执行未完成</strong><p>{error}</p></div>{retryAction && <button onClick={onRetry} disabled={retrying}>{retrying ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{retryAction === "resume" ? "继续执行" : "重新发送"}</button>}</div>}
     </div>
   </main>;

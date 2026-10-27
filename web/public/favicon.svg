@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title">
+  <title id="title">LaxCode</title>
+  <defs>
+    <linearGradient id="tile" x1="8" y1="4" x2="56" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#123568"/>
+      <stop offset="1" stop-color="#06142E"/>
+    </linearGradient>
+    <linearGradient id="letter" x1="28" y1="11" x2="43" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67E8F9"/>
+      <stop offset=".45" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#tile)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="13.5" stroke="#60A5FA" stroke-opacity=".3"/>
+  <path d="M27 11H42L32 42H55L50 55H13L27 11Z" fill="url(#letter)"/>
+  <path d="M27 11H42L41 14H29L16 55H13L27 11Z" fill="#BAF5FF" fill-opacity=".45"/>
+  <path d="M32 42H55L54 45H31L32 42Z" fill="#67E8F9" fill-opacity=".65"/>
+</svg>
