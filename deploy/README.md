@@ -30,6 +30,10 @@ sh build.sh
 
 本机 macOS、Linux 和 CI 均固定交叉编译 **Linux amd64**，无需设置 TARGETOS/TARGETARCH。构建需要 Go 1.26.6、Node/pnpm、Python 3，以及依赖下载能力或已准备的缓存。
 
+引导页版本由 `deploy/guide-version.txt` 管理（1–64 个字母、数字、`.`、`_` 或 `-`）。需要让用户重新查看引导时，修改该版本并发布；`build.sh` 通过 `-ldflags "-X main.guideVersion=..."` 注入 proxy。普通发布保持版本不变。直接 `go run` / `go build` 的开发默认版本为 `dev`。
+
+已读版本通过 `/api/user-config` 保存在各用户现有 `sessions.db` 的 `user_config` 表中，首次打开数据库时自动建表，无需清库或重建沙箱。旧的 `laxcode_guide_seen` Cookie 不再参与判断，因此首次升级此功能时用户会再看到一次引导。
+
 唯一发布制品为仓库根目录的 **`release/laxcode.tar.gz`**，权限 0600。整个 `/release/` 和真实 `deploy/defaults/settings.json` 被 Git 忽略。仓库不再使用根目录 `bin/`；压缩包内的 `bin/` 只用于组织三个部署程序。tar 仅写文件条目，目录由解压时自动创建，避免 `--unlink-first` 尝试移除已有非空目录。
 
 ```text

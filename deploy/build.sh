@@ -11,6 +11,11 @@ if [ "${1:-}" = --prepare-images ]; then
   exit 0
 fi
 [ "$#" -eq 0 ] || { echo 'Usage: build.sh [--prepare-images]' >&2; exit 1; }
+guide_version="$(cat deploy/guide-version.txt)"
+case "$guide_version" in
+  ''|*[!a-zA-Z0-9._-]*) echo 'Invalid deploy/guide-version.txt' >&2; exit 1 ;;
+esac
+[ "${#guide_version}" -le 64 ] || { echo 'Guide version must be at most 64 characters' >&2; exit 1; }
 [ -f deploy/defaults/settings.json ] || { echo 'Create deploy/defaults/settings.json from settings.example.json with real credentials' >&2; exit 1; }
 # Validate without printing credentials or writing them into frontend build output.
 python3 - <<'PY'
@@ -29,7 +34,7 @@ build_dir="$(mktemp -d release/.build.XXXXXX)"
 trap 'rm -rf "$build_dir"' EXIT
 stage="$build_dir/laxcode"
 mkdir -p "$stage/bin"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=webdist -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-proxy" ./laxcode-proxy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=webdist -trimpath -ldflags="-s -w -X main.guideVersion=$guide_version" -o "$stage/bin/laxcode-proxy" ./laxcode-proxy
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-cloud" ./cmd/main
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-manager" ./laxcode-manager
 cp deploy/defaults/settings.json deploy/defaults/network.json deploy/configure.py deploy/deploy.py deploy/reset_quota.py deploy/Dockerfile "$stage/"

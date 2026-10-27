@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Menu, PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LoaderCircle, Menu, PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
 import { getOrCreateGuestID } from "../features/identity/guest";
 import { useWorkspace } from "../hooks/use-workspace";
 import { historyToMessage } from "../types/chat";
@@ -15,18 +15,33 @@ import { CreateProjectDialog } from "../components/project-onboarding/CreateProj
 import { EvaluationPanel } from "../components/evaluation-panel/EvaluationPanel";
 import { listModels } from "../api/models";
 import type { SessionDTO } from "../types/api";
-import { hasSeenUserGuide, markUserGuideSeen } from "../features/identity/user-guide";
+import { getUserConfig, updateUserConfig, type UserConfig } from "../api/user-config";
+import { ApiError } from "../api/client";
 import { UserGuide } from "../components/user-guide/UserGuide";
 import { CopyableID } from "../components/copyable-id/CopyableID";
 
 export function App() {
-  const [showGuide, setShowGuide] = useState(() => !hasSeenUserGuide());
-  const finishGuide = () => { markUserGuideSeen(); setShowGuide(false); };
-  return showGuide ? <UserGuide onFinish={finishGuide} /> : <WorkspaceApp />;
+  const userID = useMemo(getOrCreateGuestID, []);
+  const client = useQueryClient();
+  const [dismissed, setDismissed] = useState(false);
+  const config = useQuery({ queryKey: ["user-config", userID], queryFn: getUserConfig, staleTime: Infinity });
+  const saveConfig = useMutation({
+    mutationFn: updateUserConfig,
+    onSuccess: (_, update) => client.setQueryData<UserConfig>(["user-config", userID], (previous) => previous ? { ...previous, ...update } : previous),
+  });
+  if (config.isError) return <div className="fatal"><Sparkles /><h1>暂时无法连接 LaxCode</h1><p>无法读取用户配置，请重试。</p><button onClick={() => void config.refetch()}>重新连接</button></div>;
+  if (!config.data) return <div className="fatal" role="status"><LoaderCircle className="spin" /><p>正在加载…</p></div>;
+  const finishGuide = () => {
+    setDismissed(true);
+    saveConfig.mutate({ user_guide_seen_version: config.data.user_guide_version });
+  };
+  if (!dismissed && config.data.user_guide_seen_version !== config.data.user_guide_version) return <UserGuide onFinish={finishGuide} />;
+  const versionChanged = saveConfig.error instanceof ApiError && saveConfig.error.status === 409;
+  return <><WorkspaceApp userID={userID} />{saveConfig.isError && <div className="guide-save-notice" role="alert"><span>{versionChanged ? "引导页已更新，请刷新页面后查看。" : "引导阅读状态保存失败，下次打开可能再次显示。"}</span><button onClick={versionChanged ? () => location.reload() : () => { if (saveConfig.variables) saveConfig.mutate(saveConfig.variables); }}>{versionChanged ? "刷新页面" : "重试保存"}</button></div>}</>;
 }
 
-function WorkspaceApp() {
-  const userID = useMemo(getOrCreateGuestID, []); const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+function WorkspaceApp({ userID }: { userID: string }) {
+  const workspace = useWorkspace(userID); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<{ session: SessionDTO; label: string }>();
   const [deleteError, setDeleteError] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);

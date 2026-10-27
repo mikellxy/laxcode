@@ -336,6 +336,27 @@ GET /api/sessions/{session_id}/messages?limit=50&before_seq={上一页的next_be
 - `tool` 只返回 `tool_summary`，不会返回工具执行结果。
 - JSON 中带 `omitempty` 的空字段可能不存在，前端应使用空字符串作为默认值。
 
+## 用户配置与引导版本（proxy）
+
+`GET /api/user-config` 使用 `X-USERID` 确定用户，由 proxy 读取该用户的数据库，不启动沙箱。响应设置 `Cache-Control: no-store`：
+
+```json
+{
+  "user_guide_version": "20261027.1",
+  "user_guide_seen_version": null
+}
+```
+
+`user_guide_version` 是构建注入的只读版本，未记录已读版本时返回 `null`。前端首次加载等待配置，然后比较两个字段，不同则展示引导。旧的已读 Cookie 不再使用。
+
+`PUT /api/user-config` 只更新请求中出现的字段，成功返回 `204`，重复提交相同值无副作用：
+
+```json
+{"user_guide_seen_version": "20261027.1"}
+```
+
+当前仅允许写入 `user_guide_seen_version`，值必须是非空字符串且不超过 64 字符；未知/只读字段或非法类型返回 `400`。提交版本与当前版本不同时返回 `409` / `GUIDE_VERSION_CHANGED`，不写入。关闭、跳过、开始体验及 Escape 均提交实际展示的版本；保存失败显示重试提示，版本冲突提示刷新页面，不阻止进入主页面。
+
 ## 5.1 平台模型目录与用户选择
 
 `GET /api/models` 返回管理员预置的当前模型和可切换目录，不返回 API Key 或 Base URL。

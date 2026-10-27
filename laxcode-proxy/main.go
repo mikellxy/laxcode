@@ -34,6 +34,9 @@ import (
 	"github.com/mikellxy/laxcode/workspace"
 )
 
+// Release builds inject the guide version with -ldflags -X.
+var guideVersion = "dev"
+
 type userState struct {
 	gate     chan struct{}
 	endpoint *url.URL
@@ -687,6 +690,7 @@ func (p *proxyServer) prepareWorkspace(id string, u *userState) error {
 	if err != nil {
 		return err
 	}
+	api.GuideVersion = guideVersion
 	api.DeleteGuard = func(ctx context.Context, _ string) (func(), error) {
 		if err := p.checkInactive(ctx, id, u); err != nil {
 			return nil, err

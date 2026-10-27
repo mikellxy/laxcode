@@ -35,6 +35,7 @@ func LoadCatalog(dir string) (Catalog, error) {
 }
 
 type Options struct {
+	GuideVersion                                    string
 	UserID, UserRoot, HomeDir, TempDir, RuntimeRoot string
 	History                                         session.SessionHistoryRepository
 	Catalog                                         session.SessionCatalogRepository
@@ -134,6 +135,8 @@ func (s *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func (s *API) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/user-config", s.HandleGetUserConfig)
+	mux.HandleFunc("PUT /api/user-config", s.HandlePutUserConfig)
 	mux.HandleFunc("GET /skills", s.HandleListSkills)
 	mux.HandleFunc("GET /api/models", s.HandleListModels)
 	mux.HandleFunc("POST /api/model", s.HandleSwitchModel)

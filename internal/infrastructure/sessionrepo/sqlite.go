@@ -132,6 +132,10 @@ func NewSqliteSessionRepo(dbPath, historyRoot string) (*SqliteSessionRepo, error
 func (r *SqliteSessionRepo) migrate() error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		statements := []string{
+			`CREATE TABLE IF NOT EXISTS user_config (
+				key TEXT PRIMARY KEY NOT NULL,
+				value TEXT NOT NULL CHECK (json_valid(value))
+			)`,
 			`CREATE TABLE IF NOT EXISTS projects (
 				project_id VARCHAR(128) PRIMARY KEY NOT NULL,
 				user_id VARCHAR(128) NOT NULL,
