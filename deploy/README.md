@@ -23,7 +23,9 @@ OpenShell workload 初始化需要隔离网络内的回环自检。manager 会�
 ```sh
 # 首次准备配置；已有真实配置时不要覆盖
 cp deploy/defaults/settings.example.json deploy/defaults/settings.json
+cp deploy/admin.example.json deploy/admin.local.json
 # 编辑真实模型配置和 API Key，或由 CI 注入该文件
+# 编辑 admin.local.json，设置管理员账号和至少 12 字节的密码
 cd deploy
 sh build.sh
 ```
@@ -31,6 +33,24 @@ sh build.sh
 本机 macOS、Linux 和 CI 均固定交叉编译 **Linux amd64**，无需设置 TARGETOS/TARGETARCH。构建需要 Go 1.26.6、Node/pnpm、Python 3，以及依赖下载能力或已准备的缓存。
 
 引导页版本由 `deploy/guide-version.txt` 管理（1–64 个字母、数字、`.`、`_` 或 `-`）。需要让用户重新查看引导时，修改该版本并发布；`build.sh` 通过 `-ldflags "-X main.guideVersion=..."` 注入 proxy。普通发布保持版本不变。直接 `go run` / `go build` 的开发默认版本为 `dev`。
+
+### 只读管理后台
+
+`/` 保持前台页面，`/admin` 显示管理员登录页；已有有效登录则直接显示管理页。后台依次展示用户 UUID、项目、会话名称/创建时间和分页历史消息，附件仅显示文件名。本期不提供用户删除、聊天发送、文件预览或下载。
+
+`deploy/admin.local.json` 已加入 `.gitignore`，由构建脚本读取，不能使用示例密码。`build_admin.py` 使用随机盐和 PBKDF2-HMAC-SHA256（600000 次）生成密码校验值，通过 `-ldflags -X` 注入 proxy；明文账号密码文件不会复制到发布包或前端资源。修改凭据须重新编译部署。二进制包含密码校验值，仍应限制发布包访问权限。
+
+登录接口为 `POST /admin/api/login`，请求 JSON 为 `{"username":"…","password":"…"}`，返回 `token` 和 `expires_in`。其余后台接口必须携带 `Authorization: Bearer <token>`：
+
+- `GET /admin/api/me`：校验当前登录。
+- `GET /admin/api/users?limit=100&after_user_id=…`：用户目录列表，返回 `users`、`has_more`、`next_after_user_id`。
+- `GET /admin/api/users/{uid}/projects`：项目列表。
+- `GET /admin/api/users/{uid}/sessions?project_id=…&limit=50&before_session_id=…`：会话分页。
+- `GET /admin/api/users/{uid}/sessions/{sid}/messages?limit=50&before_seq=…`：历史消息分页。
+
+JWT 有效期 2 小时，签名密钥每次 proxy 启动时重新生成，因此重启后需重新登录。token 仅存于浏览器当前标签页的 `sessionStorage`，退出时清除；退出不撤销已签发 token 的服务端有效期。登录采用全局限速（突发 5 次，每 3 秒补充一次），不信任客户端转发 IP 请求头。所有后台 API 响应禁止缓存，现有前台接口与 `/internal/store` 的身份机制不变。使用 HTTPS 对外提供登录页面。
+
+Caddy 若已经统一 `reverse_proxy 127.0.0.1:5173`，无需新增规则。Vite 开发服务器已代理 `/admin/api`；直接 `go run` / `go build` 未注入凭据时后台接口返回 503，前台继续可用。需要本地后台调试时，先运行 `pnpm --dir web build`，再从仓库根运行 `python3 deploy/build_admin.py deploy/admin.local.json /tmp/laxcode-proxy dev`，按正常 proxy 参数启动该二进制。
 
 已读版本通过 `/api/user-config` 保存在各用户现有 `sessions.db` 的 `user_config` 表中，首次打开数据库时自动建表，无需清库或重建沙箱。旧的 `laxcode_guide_seen` Cookie 不再参与判断，因此首次升级此功能时用户会再看到一次引导。
 

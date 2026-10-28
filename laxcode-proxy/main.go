@@ -57,6 +57,7 @@ func (u *userState) lock(ctx context.Context) error {
 func (u *userState) unlock() { <-u.gate }
 
 type proxyServer struct {
+	admin     http.Handler
 	runtime   sandboxRuntime
 	root      string
 	assets    http.Handler
@@ -195,6 +196,15 @@ func jsonError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
 }
 func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/admin/api" || strings.HasPrefix(r.URL.Path, "/admin/api/") {
+		w.Header().Set("Cache-Control", "no-store")
+		if p.admin == nil {
+			jsonError(w, http.StatusServiceUnavailable, "admin is not configured")
+			return
+		}
+		p.admin.ServeHTTP(w, r)
+		return
+	}
 	if r.URL.Path == "/healthz" {
 		w.WriteHeader(200)
 		return
@@ -517,6 +527,10 @@ func run() error {
 		return err
 	}
 	p := newProxy(runtime, *root, assets, *idle, *maxChats)
+	p.admin, err = p.adminHandler(adminConfig)
+	if err != nil {
+		return err
+	}
 	if *managerSocket != "" {
 		p.quota = newQuotaClient(*managerSocket)
 	}

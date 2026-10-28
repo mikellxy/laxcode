@@ -11,11 +11,11 @@ import { ChatFiles } from "../chat-files/ChatFiles";
 // 经 ReactMarkdown 渲染（基于 AST 生成 React 元素，不使用 innerHTML）；
 // user 消息保持纯文本展示。memo 依赖消息对象的引用稳定：流式更新只重建
 // 正在输出的那条消息，历史消息无需随每个 chunk 重新解析 markdown。
-export const MessageItem = memo(function MessageItem({ message, sessionID }: { message: ChatMessage; sessionID?: string }) {
+export const MessageItem = memo(function MessageItem({ message, sessionID, userLabel = "你" }: { message: ChatMessage; sessionID?: string; userLabel?: string }) {
   return <article className={`message ${message.role}`}>
     <div className="avatar">{message.role === "user" ? <UserRound size={17} /> : <Bot size={18} />}</div>
     <div className="message-body">
-      <header><strong>{message.role === "user" ? "你" : "LaxCode"}</strong><time>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(message.createdAt))}</time></header>
+      <header><strong>{message.role === "user" ? userLabel : "LaxCode"}</strong><time>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(message.createdAt))}</time></header>
       {message.role === "user" && message.chatId && <div className="chat-id" title={message.chatId}>{message.chatId}</div>}
       <ReasoningPanel content={message.reasoningContent ?? ""} streaming={message.reasoningStreaming} />
       {message.content && (message.role === "assistant"

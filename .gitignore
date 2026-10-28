@@ -25,5 +25,6 @@ web/vite.config.d.ts
 # Retired knowledge pipeline local environments and data
 /knowledge-pipeline/
 /deploy/defaults/settings.json
+/deploy/admin.local.json
 
 /deploy/__pycache__/

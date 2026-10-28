@@ -17,15 +17,18 @@ case "$guide_version" in
 esac
 [ "${#guide_version}" -le 64 ] || { echo 'Guide version must be at most 64 characters' >&2; exit 1; }
 [ -f deploy/defaults/settings.json ] || { echo 'Create deploy/defaults/settings.json from settings.example.json with real credentials' >&2; exit 1; }
+[ -f deploy/admin.local.json ] || { echo 'Create deploy/admin.local.json from admin.example.json with administrator credentials' >&2; exit 1; }
 # Validate without printing credentials or writing them into frontend build output.
 python3 - <<'PY'
 import json, sys
 sys.path.insert(0, 'deploy')
 from configure import prepare
+from build_admin import compile_config
 try:
     prepare(json.load(open('deploy/defaults/settings.json')))
+    compile_config('deploy/admin.local.json')
 except Exception:
-    sys.exit('Invalid deployment settings')
+    sys.exit('Invalid deployment settings or admin credentials')
 PY
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
@@ -34,7 +37,7 @@ build_dir="$(mktemp -d release/.build.XXXXXX)"
 trap 'rm -rf "$build_dir"' EXIT
 stage="$build_dir/laxcode"
 mkdir -p "$stage/bin"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=webdist -trimpath -ldflags="-s -w -X main.guideVersion=$guide_version" -o "$stage/bin/laxcode-proxy" ./laxcode-proxy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 python3 deploy/build_admin.py deploy/admin.local.json "$stage/bin/laxcode-proxy" "$guide_version"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-cloud" ./cmd/main
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$stage/bin/laxcode-manager" ./laxcode-manager
 cp deploy/defaults/settings.json deploy/defaults/network.json deploy/configure.py deploy/deploy.py deploy/reset_quota.py deploy/Dockerfile "$stage/"

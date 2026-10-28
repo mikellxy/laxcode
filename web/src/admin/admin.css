@@ -1,0 +1,52 @@
+.admin-login, .admin-status { min-height: 100dvh; display: grid; place-content: center; padding: 24px; background: #f5f6f8; color: #20252d; }
+.admin-login form { display: grid; gap: 18px; width: min(380px, calc(100vw - 48px)); padding: 32px; background: white; border: 1px solid #dfe3ea; border-radius: 16px; box-shadow: 0 12px 45px #20252d08; }
+.admin-login h1 { font-size: 23px; margin: 0; }
+.admin-login p { margin: 0; color: #677180; }
+.admin-login label { display: grid; gap: 8px; font-size: 14px; }
+.admin-login input { min-width: 0; width: 100%; border: 1px solid #cbd2dd; border-radius: 7px; padding: 10px 12px; background: white; color: #20252d; }
+.admin-login button { border: 0; background: #26394d; color: white; border-radius: 7px; padding: 11px; }
+.admin-login a { text-align: center; color: #53677e; font-size: 13px; }
+.admin-shell { height: 100dvh; display: flex; flex-direction: column; background: var(--bg, #fff); color: var(--text, #20252d); }
+.admin-shell button { cursor: pointer; }
+.admin-shell button:disabled, .admin-login button:disabled { cursor: wait; opacity: .55; }
+.admin-header { min-height: 64px; display: flex; justify-content: space-between; gap: 20px; padding: 12px 24px; border-bottom: 1px solid #dfe3ea; }
+.admin-header > div { display: flex; align-items: center; gap: 16px; }
+.admin-header span, .admin-header a { font-size: 13px; color: #68778b; }
+.admin-header button, .admin-sidebar-heading button, .admin-history-header button, .admin-load, .admin-error button, .admin-status button { display: inline-flex; gap: 6px; align-items: center; justify-content: center; padding: 6px 10px; border: 1px solid #d9dfe7; border-radius: 6px; background: transparent; color: inherit; font-size: 13px; }
+.admin-body { display: flex; flex: 1; min-height: 0; }
+.admin-sidebar { flex: 0 0 340px; overflow: auto; padding: 16px 12px; border-right: 1px solid #dfe3ea; }
+.admin-sidebar-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 16px; }
+.admin-sidebar p { font-size: 13px; padding: 0 8px; color: #68778b; }
+.admin-user { margin-bottom: 6px; }
+.admin-tree-button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 6px; text-align: left; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 13px; }
+.admin-tree-button svg { flex-shrink: 0; }
+.admin-tree-button span { overflow-wrap: anywhere; }
+.admin-tree-button:hover, .admin-session:hover { background: #8999b014; }
+.admin-projects { margin-left: 13px; border-left: 1px solid #dfe3ea; padding-left: 8px; }
+.admin-sessions { margin-left: 20px; }
+.admin-session { display: grid; gap: 5px; padding: 10px; margin: 3px 0; width: 100%; border: 1px solid transparent; border-radius: 7px; text-align: left; color: inherit; background: transparent; }
+.admin-session strong { font-weight: 500; overflow-wrap: anywhere; }
+.admin-session time { font-size: 11px; color: #68778b; }
+.admin-session.selected { background: #6484bb18; border-color: #6484bb70; }
+.admin-content { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.admin-empty { margin: auto; padding: 24px; text-align: center; color: #68778b; }
+.admin-empty h2 { font-size: 20px; }
+.admin-empty p { font-size: 14px; }
+.admin-history-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; padding: 16px 24px; border-bottom: 1px solid #dfe3ea; }
+.admin-history-header > div { flex: 1; }
+.admin-history-header h2 { font-size: 17px; margin: 0 0 6px; overflow-wrap: anywhere; }
+.admin-history-header time, .admin-history-header small { font-size: 12px; color: #68778b; }
+.admin-history-header small { flex-basis: 100%; overflow-wrap: anywhere; }
+.admin-history { flex: 1; overflow: auto; min-height: 0; padding: 20px; }
+.admin-load { margin: 8px 0; }
+.admin-files { margin: -10px 0 24px 48px; color: #68778b; font-size: 12px; overflow-wrap: anywhere; }
+.admin-error, .admin-login .admin-error { color: #b73e3e; font-size: 13px; }
+.admin-shell :focus-visible, .admin-login :focus-visible { outline: 2px solid #6484bb; outline-offset: 3px; }
+@media (max-width: 760px) {
+  .admin-header { padding: 12px; gap: 12px; flex-wrap: wrap; }
+  .admin-header > div { gap: 10px; }
+  .admin-body { flex-direction: column; }
+  .admin-sidebar { flex: 0 0 35%; border-right: 0; border-bottom: 1px solid #dfe3ea; }
+  .admin-content { min-height: 0; }
+  .admin-history { padding: 12px; }
+}

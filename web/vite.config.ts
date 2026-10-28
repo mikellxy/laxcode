@@ -12,6 +12,7 @@ export default defineConfig(({ mode }) => {
       port: 5174,
       strictPort: true,
       proxy: {
+        "/admin/api": backend,
         "/api": backend,
         "/chat": backend,
         "/skills": backend,
