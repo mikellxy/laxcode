@@ -30,6 +30,9 @@ func TestRemotePreservesContextTransactionsAndConflicts(t *testing.T) {
 	if _, err := remote.CreateSession(ctx, "s1", "user", "p1", "", "/workplace/demo", "code"); err != nil {
 		t.Fatal(err)
 	}
+	if renamed, err := remote.RenameSession(ctx, "s1", "user", "My session"); err != nil || renamed.Title != "My session" {
+		t.Fatalf("remote rename: %+v %v", renamed, err)
+	}
 	snapshot, err := remote.GetRequestContext(ctx, "s1")
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +83,9 @@ func TestRemotePreservesContextTransactionsAndConflicts(t *testing.T) {
 	state, err = remote.GetRequestContext(ctx, "s1")
 	if err != nil || state.Revision != 3 || state.Messages[2].DisplayContent != "safe summary" {
 		t.Fatalf("persistence-only fields lost: %+v %v", state, err)
+	}
+	if stored, err := remote.GetSession(ctx, "s1"); err != nil || stored.Title != "My session" {
+		t.Fatalf("message writes overwrote title: %+v %v", stored, err)
 	}
 
 }

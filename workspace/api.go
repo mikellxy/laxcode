@@ -145,6 +145,7 @@ func (s *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/sessions", s.HandleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.HandleListSessions)
 	mux.HandleFunc("DELETE /api/sessions/{session_id}", s.HandleDeleteSession)
+	mux.HandleFunc("PATCH /api/sessions/{session_id}", s.HandleRenameSession)
 	mux.HandleFunc("GET /api/sessions/{session_id}/messages", s.HandleHistory)
 	mux.HandleFunc("GET /api/sessions/{session_id}/context", s.HandleSessionContext)
 	mux.HandleFunc("GET /api/sessions/{session_id}/performance", s.HandlePerformance)

@@ -20,6 +20,7 @@ type Repository interface {
 	session.TaskRepository
 	CreateSession(ctx context.Context, id, userID, projectID, title, workDir, mode string) (session.Summary, error)
 	GetSession(ctx context.Context, id string) (session.Summary, error)
+	RenameSession(ctx context.Context, id, userID, title string) (session.Summary, error)
 	DeleteSession(ctx context.Context, id, userID string) error
 	ListSessions(ctx context.Context, userID, projectID, beforeSessionID string, limit int) (session.SummaryPage, error)
 	CreateProject(ctx context.Context, id, userID, name, workDir string) (session.Project, error)
@@ -49,6 +50,8 @@ type CreateSessionRequest struct {
 type CreateSessionResponse struct{ V0 session.Summary }
 type GetSessionRequest struct{ Id string }
 type GetSessionResponse struct{ V0 session.Summary }
+type RenameSessionRequest struct{ Id, UserID, Title string }
+type RenameSessionResponse struct{ V0 session.Summary }
 type DeleteSessionRequest struct {
 	Id     string
 	UserID string
@@ -185,6 +188,17 @@ func RPCHandler(repo Repository, userID string) http.Handler {
 			if err = json.Unmarshal(body, &in); err == nil {
 				var out GetSessionResponse
 				out.V0, err = repo.GetSession(r.Context(), in.Id)
+				result = out
+			}
+		case "RenameSession":
+			var in RenameSessionRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				if in.UserID != userID {
+					http.Error(w, "invalid identity", 403)
+					return
+				}
+				var out RenameSessionResponse
+				out.V0, err = repo.RenameSession(r.Context(), in.Id, in.UserID, in.Title)
 				result = out
 			}
 		case "DeleteSession":
@@ -468,6 +482,11 @@ func (r *Remote) GetSession(ctx context.Context, id string) (session.Summary, er
 }
 func (r *Remote) DeleteSession(ctx context.Context, id, userID string) error {
 	return r.call(ctx, "DeleteSession", DeleteSessionRequest{Id: id, UserID: userID}, nil)
+}
+func (r *Remote) RenameSession(ctx context.Context, id, userID, title string) (session.Summary, error) {
+	var out RenameSessionResponse
+	err := r.call(ctx, "RenameSession", RenameSessionRequest{Id: id, UserID: userID, Title: title}, &out)
+	return out.V0, err
 }
 func (r *Remote) ListSessions(ctx context.Context, userID, projectID, beforeSessionID string, limit int) (session.SummaryPage, error) {
 	var out ListSessionsResponse

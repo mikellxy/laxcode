@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createSession, deleteSession, listAllSessions } from "../api/sessions";
-import { createProject, listProjects } from "../api/projects";
+import { createSession, deleteSession, renameSession, listAllSessions } from "../api/sessions";
+import { createProject, listProjects, listProjectsWithDefault } from "../api/projects";
 import { listHistory } from "../api/history";
 import { resumeChat, streamChat, subscribeTask, cancelTask } from "../api/chat-stream";
 import { getSessionContext } from "../api/context";
@@ -23,8 +23,9 @@ export function useWorkspace(userID: string) {
   const controllers = useRef(new Map<string, AbortController>());
   const sending = useRef(new Set<string>());
   const stopRequests = useRef(new Set<string>());
+  const creatingSession = useRef(false);
 
-  const projects = useQuery({ queryKey: ["projects", userID], queryFn: () => listProjects(userID) });
+  const projects = useQuery({ queryKey: ["projects", userID], queryFn: () => listProjectsWithDefault(userID), retry: false });
   const projectIDs = useMemo(() => projects.data?.projects.map((project) => project.project_id) ?? [], [projects.data]);
   const sessions = useQuery({
     queryKey: ["project-sessions", userID, projectIDs],
@@ -83,6 +84,18 @@ export function useWorkspace(userID: string) {
     },
   });
 
+  const renameSessionMutation = useMutation({
+    mutationFn: ({ session, title }: { session: SessionDTO; title: string }) => renameSession(userID, session.session_id, title),
+    onSuccess: async (updated) => {
+      await client.cancelQueries({ queryKey: ["project-sessions", userID] });
+      client.setQueriesData<Record<string, SessionDTO[]>>(
+        { queryKey: ["project-sessions", userID] },
+        (old) => old ? { ...old, [updated.project_id]: (old[updated.project_id] ?? []).map(item => item.session_id === updated.session_id ? updated : item) } : old,
+      );
+      await client.invalidateQueries({ queryKey: ["project-sessions", userID] });
+    },
+  });
+
   useEffect(() => {
     if (selection) {
       if (selection.sessionID) { try { localStorage.setItem(`laxcode:selected:${userID}`, selection.sessionID); } catch { /* Browser storage is optional. */ } }
@@ -135,9 +148,14 @@ export function useWorkspace(userID: string) {
     setStreams((current) => ({ ...current, [sessionID]: streamReducer(current[sessionID] ?? emptyStream(), action) }));
   }, []);
 
-  const startSession = (projectID: string) => {
-    updateStream(`draft:${projectID}`, { type: "clear" });
-    setSelection({ projectID });
+  const startSession = async (projectID: string) => {
+    if (creatingSession.current) return;
+    creatingSession.current = true;
+    try {
+      const created = await createSessionMutation.mutateAsync(projectID);
+      updateStream(`draft:${projectID}`, { type: "clear" });
+      setSelection({ projectID, sessionID: created.session_id });
+    } finally { creatingSession.current = false; }
   };
 
   const follow = useCallback(async (sessionID: string) => {
@@ -222,13 +240,16 @@ export function useWorkspace(userID: string) {
   }, [client, userID, updateStream, follow]);
 
   const send = useCallback(async (task: string) => {
-    if (!selection || !streamKey || !task.trim() || streams[streamKey]?.running || sending.current.has(streamKey)) return;
+    if (!selection || !streamKey || !task.trim() || streams[streamKey]?.running || sending.current.has(streamKey) || creatingSession.current) return;
     let sendingKey = streamKey;
     sending.current.add(sendingKey);
     try {
       let sessionID = selectedID;
       if (!sessionID) {
-        const created = await createSessionMutation.mutateAsync(selection.projectID);
+        creatingSession.current = true;
+        let created: SessionDTO;
+        try { created = await createSessionMutation.mutateAsync(selection.projectID); }
+        finally { creatingSession.current = false; }
         sessionID = created.session_id;
         // A running session must not keep the project's next draft reserved.
         sending.current.delete(sendingKey);
@@ -264,7 +285,7 @@ export function useWorkspace(userID: string) {
 
   return {
     projects, sessions, sessionsByProject, allSessions,
-    createProject: createProjectMutation, createSession: createSessionMutation, deleteSession: deleteSessionMutation,
+    createProject: createProjectMutation, createSession: createSessionMutation, deleteSession: deleteSessionMutation, renameSession: renameSessionMutation,
     selectedID, selectedProjectID, selectedProject, select, selectProject, startSession, history, historyMessages, contextUsage,
     stream, retryAction, canResend,
     runningSessionIDs: Object.keys(streams).filter((id) => streams[id].running),

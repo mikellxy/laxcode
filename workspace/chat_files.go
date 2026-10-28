@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/session"
@@ -96,6 +98,12 @@ func (s *API) HandleDownloadChatFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer project.Close()
+	selected, err := s.Catalog.GetSession(r.Context(), r.PathValue("session_id"))
+	if err != nil {
+		writeJSONError(w, 404, "session not found")
+		return
+	}
+	downloadName := chatZIPFilename(selected.Title, time.Now())
 	if len(files) > maxChatDownloadFiles {
 		writeJSONError(w, 413, "下载文件数量超过 200 个")
 		return
@@ -164,7 +172,26 @@ func (s *API) HandleDownloadChatFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="chat-files.zip"`)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": downloadName}))
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeContent(w, r, "chat-files.zip", time.Time{}, archive)
+	http.ServeContent(w, r, downloadName, time.Time{}, archive)
+}
+
+func chatZIPFilename(title string, now time.Time) string {
+	title = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
+		}
+		return r
+	}, title)
+	// Keep the complete filename within common filesystem byte limits.
+	for len(title) > 180 {
+		runes := []rune(title)
+		title = string(runes[:len(runes)-1])
+	}
+	title = strings.Trim(title, " .")
+	if title == "" {
+		title = "未命名会话"
+	}
+	return title + "_" + now.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("20060102_1504") + ".zip"
 }

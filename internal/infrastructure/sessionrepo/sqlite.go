@@ -308,6 +308,29 @@ func (r *SqliteSessionRepo) GetSession(ctx context.Context, id string) (session.
 	return summaryFromModel(row), nil
 }
 
+func (r *SqliteSessionRepo) RenameSession(ctx context.Context, id, userID, title string) (session.Summary, error) {
+	if err := validSessionID(id); err != nil {
+		return session.Summary{}, err
+	}
+	title = strings.TrimSpace(title)
+	if strings.TrimSpace(userID) == "" || title == "" || len([]rune(title)) > 120 {
+		return session.Summary{}, errors.New("user ID and a title of 1–120 characters are required")
+	}
+	var row requestContextModel
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&requestContextModel{}).Where("session_id = ? AND user_id = ?", id, userID).
+			Updates(map[string]any{"title": title, "updated_at": time.Now().UTC()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrSessionNotFound
+		}
+		return tx.Where("session_id = ? AND user_id = ?", id, userID).Take(&row).Error
+	})
+	return summaryFromModel(row), err
+}
+
 func (r *SqliteSessionRepo) DeleteSession(ctx context.Context, id, userID string) error {
 	if err := validSessionID(id); err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -86,6 +87,48 @@ func (s *API) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(sessionToDTO(created))
+}
+
+func (s *API) HandleRenameSession(w http.ResponseWriter, r *http.Request) {
+	if s.Catalog == nil {
+		writeJSONError(w, 500, "session repository is unavailable")
+		return
+	}
+	userID, err := s.requestUserID(r.URL.Query().Get("user_id"))
+	if err != nil {
+		writeJSONError(w, 400, "user_id must be a UUID")
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("session_id"))
+	if err != nil || id == uuid.Nil {
+		writeJSONError(w, 400, "session_id must be a nonzero UUID")
+		return
+	}
+	var req struct {
+		Title string `json:"title"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || decoder.Decode(new(any)) != io.EOF {
+		writeJSONError(w, 400, "invalid request body")
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" || len([]rune(title)) > 120 {
+		writeJSONError(w, 400, "会话名称长度应为 1–120 个字符")
+		return
+	}
+	updated, err := s.Catalog.RenameSession(r.Context(), id.String(), userID, title)
+	if errors.Is(err, sessionrepo.ErrSessionNotFound) {
+		writeJSONError(w, 404, "session not found")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, 500, "rename session failed: "+s.publicError(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(sessionToDTO(updated))
 }
 
 func (s *API) HandleDeleteSession(w http.ResponseWriter, r *http.Request) {

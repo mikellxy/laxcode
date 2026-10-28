@@ -6,7 +6,7 @@ import { listHistory } from "../api/history";
 import { useWorkspace } from "./use-workspace";
 import { readPending, writePending } from "../features/chat/pending-input";
 import type { StreamState } from "../features/chat/reducer";
-import type { HistoryPageDTO } from "../types/api";
+import type { HistoryPageDTO, SessionDTO } from "../types/api";
 
 const state = vi.hoisted(() => ({
   page: { messages: [], has_more: false, can_resume: false } as HistoryPageDTO,
@@ -32,7 +32,7 @@ vi.mock("@tanstack/react-query", () => ({
   useInfiniteQuery: () => ({ isSuccess: true, data: { pages: [state.page] } }),
   useMutation: () => ({ mutateAsync: createSession }),
 }));
-vi.mock("../api/sessions", () => ({ createSession: vi.fn(), deleteSession: vi.fn(), listAllSessions: vi.fn() }));
+vi.mock("../api/sessions", () => ({ createSession: vi.fn(), deleteSession: vi.fn(), renameSession: vi.fn(), listAllSessions: vi.fn() }));
 vi.mock("../api/chat-stream", () => ({ streamChat: vi.fn(), resumeChat: vi.fn(), subscribeTask: vi.fn(), cancelTask: vi.fn() }));
 vi.mock("../api/history", () => ({ listHistory: vi.fn() }));
 
@@ -42,11 +42,12 @@ function fixture(draft = false) {
   const controllers = { current: new Map<string, AbortController>() };
   const sending = { current: new Set<string>() };
   const stopRequests = { current: new Set<string>() };
+  const creatingSession = { current: false };
   return () => {
     state.effects = [];
-    vi.mocked(useState).mockReturnValueOnce([selection, (action: unknown) => { selection = action as typeof selection; }])
+    vi.mocked(useState).mockReturnValueOnce([selection, (action: unknown) => { selection = typeof action === "function" ? action(selection) : action as typeof selection; }])
       .mockReturnValueOnce([streams, (action: unknown) => { streams = (action as (current: typeof streams) => typeof streams)(streams); }]);
-    vi.mocked(useRef).mockReturnValueOnce(controllers).mockReturnValueOnce(sending).mockReturnValueOnce(stopRequests);
+    vi.mocked(useRef).mockReturnValueOnce(controllers).mockReturnValueOnce(sending).mockReturnValueOnce(stopRequests).mockReturnValueOnce(creatingSession);
     return useWorkspace("user");
   };
 }
@@ -63,6 +64,41 @@ beforeEach(() => {
 });
 
 describe("asynchronous chat recovery", () => {
+  const emptySession = (id: string): SessionDTO => ({ session_id: id, project_id: "project", user_id: "user", title: "", mode: "code", work_dir: "/workplace/demo", created_at: "", updated_at: "" });
+  it("creates and selects a fresh empty session on each explicit click", async () => {
+    const render = fixture(true);
+    vi.mocked(createSession).mockResolvedValueOnce(emptySession("first")).mockResolvedValueOnce(emptySession("second"));
+    await render().startSession("project");
+    expect(render().selectedID).toBe("first");
+    await render().startSession("project");
+    expect(render().selectedID).toBe("second");
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+  it("blocks repeated clicks while creation is in flight and permits retry after failure", async () => {
+    const render = fixture(true);
+    let fail!: (error: Error) => void;
+    vi.mocked(createSession).mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+    const first = render().startSession("project");
+    await render().startSession("project");
+    expect(createSession).toHaveBeenCalledTimes(1);
+    fail(new Error("offline"));
+    await expect(first).rejects.toThrow("offline");
+    expect(render().selectedID).toBeUndefined();
+    vi.mocked(createSession).mockResolvedValueOnce(emptySession("retried"));
+    await render().startSession("project");
+    expect(render().selectedID).toBe("retried");
+  });
+  it("creates a real session on the first draft message and uses it for later messages", async () => {
+    const render = fixture(true);
+    vi.mocked(createSession).mockResolvedValueOnce(emptySession("first"));
+    await render().send("hello");
+    expect(render().selectedID).toBe("first");
+    await render().send("again");
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(streamChat).toHaveBeenNthCalledWith(1, "first", "hello");
+    expect(streamChat).toHaveBeenNthCalledWith(2, "first", "again");
+  });
   it("keeps the draft and retry action when session creation fails", async () => {
     const render = fixture(true);
     vi.mocked(createSession).mockRejectedValue(new Error("network error"));

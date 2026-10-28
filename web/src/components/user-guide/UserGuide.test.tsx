@@ -45,6 +45,7 @@ describe("new user guide", () => {
     vi.stubGlobal("document", { cookie: "laxcode_guest_id=existing-guest" });
     const client = new QueryClient();
     client.setQueryData(["user-config", "existing-guest"], { user_guide_version: "same", user_guide_seen_version: "same" });
+    client.setQueryData(["projects", "existing-guest"], { projects: [{ project_id: "p1", name: "default" }] });
     const html = renderToStaticMarkup(<QueryClientProvider client={client}><App /></QueryClientProvider>);
     expect(html).not.toContain('aria-label="新用户引导"');
     expect(html).toContain('class="app-shell');

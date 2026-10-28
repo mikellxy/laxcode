@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"io"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,16 @@ func (s *API) HandlePreviewChatFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer input.Close()
+	if r.URL.Query().Get("download") == "1" {
+		if info.Size() > maxChatDownloadBytes {
+			writeJSONError(w, 413, "文件超过 100 MiB")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
+		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), io.NewSectionReader(input, 0, info.Size()))
+		return
+	}
 	imageType := previewImageType(path)
 	limit := int64(maxChatTextPreviewBytes)
 	if imageType != "" {

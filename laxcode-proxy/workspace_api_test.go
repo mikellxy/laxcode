@@ -121,6 +121,7 @@ func TestPersistedAPIsWorkWithoutWakingSandbox(t *testing.T) {
 	urls := []string{"/skills", "/api/models", "/api/projects", "/api/sessions?project_id=" + projectID,
 		"/api/sessions/" + sessionID + "/messages", "/api/sessions/" + sessionID + "/context", "/api/sessions/" + sessionID + "/performance",
 		"/api/sessions/" + sessionID + "/chats/" + chatID + "/files.zip", "/api/sessions/" + sessionID + "/chats/" + chatID + "/file?path=demo/result.txt",
+		"/api/sessions/" + sessionID + "/chats/" + chatID + "/file?path=demo/result.txt&download=1",
 		"/api/evaluations?session_id=" + sessionID, "/api/sessions/" + sessionID + "/evaluations/" + jobID + "/report"}
 	for _, url := range urls {
 		w := metadataRequest(t, p, "GET", url, nil)
@@ -174,6 +175,68 @@ func TestDeleteSessionChecksBackgroundWorkWithoutStartingSandbox(t *testing.T) {
 	}
 	if runtime.creates != 0 || runtime.starts != 0 {
 		t.Fatal("deletion woke sandbox")
+	}
+}
+
+func TestRenameSessionIsUserScopedAndDoesNotWakeSandbox(t *testing.T) {
+	var calls atomic.Int32
+	p, runtime := fixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	project := responseID(t, metadataRequest(t, p, "POST", "/api/projects", map[string]string{"name": "default"}), "project_id")
+	id := responseID(t, metadataRequest(t, p, "POST", "/api/sessions", map[string]string{"project_id": project}), "session_id")
+	second := responseID(t, metadataRequest(t, p, "POST", "/api/sessions", map[string]string{"project_id": project}), "session_id")
+	if id == second {
+		t.Fatal("explicit creation reused an empty session")
+	}
+	path := "/api/sessions/" + id
+	for _, title := range []string{"", "  ", strings.Repeat("字", 121)} {
+		if w := metadataRequest(t, p, "PATCH", path, map[string]string{"title": title}); w.Code != 400 {
+			t.Fatalf("invalid title: %d %s", w.Code, w.Body.String())
+		}
+	}
+	title := strings.Repeat("长标题", 40)
+	w := metadataRequest(t, p, "PATCH", path, map[string]string{"title": " " + title + " "})
+	if w.Code != 200 {
+		t.Fatalf("rename: %d %s", w.Code, w.Body.String())
+	}
+	var renamed struct{ Title, SessionID string }
+	var result map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	renamed.Title, _ = result["title"].(string)
+	renamed.SessionID, _ = result["session_id"].(string)
+	if renamed.Title != title || renamed.SessionID != id {
+		t.Fatal(result)
+	}
+	if w := metadataRequest(t, p, "PATCH", path+"?user_id="+uuid.NewString(), map[string]string{"title": "foreign"}); w.Code != 400 {
+		t.Fatalf("conflicting identity: %d", w.Code)
+	}
+	other := httptest.NewRequest("PATCH", path, strings.NewReader(`{"title":"foreign"}`))
+	other.Header.Set("X-USERID", uuid.NewString())
+	w = httptest.NewRecorder()
+	p.ServeHTTP(w, other)
+	if w.Code != 404 {
+		t.Fatalf("foreign session: %d %s", w.Code, w.Body.String())
+	}
+	if w := metadataRequest(t, p, "PATCH", "/api/sessions/"+uuid.NewString(), map[string]string{"title": "missing"}); w.Code != 404 {
+		t.Fatalf("missing session: %d", w.Code)
+	}
+	// Reopen the persisted store instead of relying on the PATCH response or UI cache.
+	home := filepath.Join(p.root, testID, "agenthome")
+	repo, err := sessionrepo.NewSqliteSessionRepo(layout.SessionDB(home), layout.SessionRoot(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	stored, err := repo.GetSession(context.Background(), id)
+	if err != nil || stored.Title != title || stored.ProjectID != project {
+		t.Fatalf("persisted rename: %+v %v", stored, err)
+	}
+	if _, err := repo.RenameSession(context.Background(), id, uuid.NewString(), "foreign"); err != sessionrepo.ErrSessionNotFound {
+		t.Fatalf("repository accepted foreign owner: %v", err)
+	}
+	if calls.Load() != 0 || runtime.creates != 0 || runtime.starts != 0 {
+		t.Fatal("session metadata woke sandbox")
 	}
 }
 func TestStorageRPCRequiresUserScopedCredential(t *testing.T) {

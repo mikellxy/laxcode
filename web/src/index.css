@@ -80,20 +80,34 @@ button { color: inherit; }
 .topbar .evaluation-download:focus-visible { outline: 2px solid #71917c; outline-offset: 2px; }
 .evaluation-job .evaluation-error { color: #b5482f; }
 
-.chat-files { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: #f7f7f2; }
-.message-body .chat-files header { justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.chat-files header span { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; }
-.chat-files small { color: var(--muted); font-size: 11px; }
-.chat-files ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.chat-files li { display: flex; align-items: baseline; gap: 12px; }
-.chat-files code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* File results stay compact; details and previews are viewport-positioned portals. */
+.chat-files { margin-top: 18px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #f7f7f2; }
+.chat-files button, .chat-file-popover button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; background: #fff; color: var(--ink); font-size: 11px; cursor: pointer; }
+.chat-files button:hover, .chat-file-popover button:hover { border-color: var(--accent); }
+.chat-files button:disabled, .chat-file-popover button:disabled { opacity: .6; cursor: default; }
+.chat-files button:focus-visible, .chat-file-popover button:focus-visible { outline: 2px solid #6d98ca; outline-offset: 2px; }
+.chat-files-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.chat-files .chat-files-count { border-color: transparent; background: transparent; color: #536476; }
+.chat-files-count strong { color: #315b8f; }
+.chat-files .chat-files-count[aria-expanded="true"] { background: #edf3fc; color: #315b8f; }
+.chat-files-error { margin: 10px 0 0; color: #b5482f; font-size: 12px; }
+.chat-image-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto; overscroll-behavior: contain; margin-bottom: 12px; padding: 2px; }
+.chat-image-tile { min-width: 0; overflow: hidden; border: 1px solid #e0e5e8; border-radius: 9px; background: #fff; }
+.chat-files .chat-image-thumbnail { display: flex; width: 100%; height: 112px; padding: 0; border: 0; border-radius: 0; background: #eef1f3; color: #8996a3; overflow: hidden; }
+.chat-image-thumbnail img { width: 100%; height: 100%; object-fit: contain; }
+.chat-image-thumbnail > span { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11px; }
+.chat-image-caption { display: flex; align-items: center; gap: 5px; padding: 5px 6px 5px 9px; }
+.chat-image-caption > span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #536476; font-size: 11px; }
+.chat-files .file-download, .chat-file-popover .file-download { flex-shrink: 0; padding: 5px; border-color: transparent; background: transparent; color: #657e93; }
+.chat-file-popover { position: fixed; z-index: 49; display: flex; flex-direction: column; border: 1px solid #dce2e8; border-radius: 12px; background: #fff; box-shadow: 0 12px 40px rgba(29,44,58,.16); overflow: hidden; }
+.chat-file-popover > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #e9edf1; }
+.chat-file-popover header strong { display: block; color: #344353; font-size: 12px; }
+.chat-file-popover header small { display: block; margin-top: 4px; color: #8a96a4; font-size: 10px; }
+.chat-file-popover header button { padding: 4px; border-color: transparent; }
+.chat-file-popover ul { overflow-y: auto; overscroll-behavior: contain; list-style: none; margin: 0; padding: 8px; }
+.chat-file-popover li { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
 .file-change { flex-shrink: 0; padding: 2px 6px; border-radius: 4px; font-size: 10px; color: #8b6234; background: #f1e9db; }
 .file-change.created { color: #477756; background: #e7eee5; }
-.chat-files footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.chat-files button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; background: #fff; color: var(--ink); font-size: 11px; cursor: pointer; }
-.chat-files button:hover { border-color: var(--accent); }
-.chat-files button:disabled { opacity: .6; cursor: default; }
-.chat-files-error { margin: 10px 0 0; color: #b5482f; font-size: 12px; }
 
 .composer { position: relative; }
 .skill-menu { position: absolute; z-index: 40; bottom: calc(100% + 10px); left: 0; right: 0; max-height: min(340px, 45vh); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 6px; list-style: none; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 12px 40px rgba(36,42,39,.15); }
@@ -110,10 +124,10 @@ button { color: inherit; }
 .skill-chip button:hover { background: #dce8fa; }
 .skill-chip button:disabled { opacity: .4; cursor: default; }
 
-.chat-files .file-preview-trigger { flex: 1; min-width: 0; justify-content: space-between; gap: 10px; margin: -4px 0; padding: 5px 7px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; }
-.chat-files .file-preview-trigger code { text-align: left; }
+.chat-file-popover .file-preview-trigger { flex: 1; min-width: 0; justify-content: space-between; gap: 10px; margin: -4px 0; padding: 5px 7px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; }
+.chat-file-popover .file-preview-trigger code { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .file-preview-trigger > svg { flex-shrink: 0; color: #8c9692; }
-.chat-files .file-preview-trigger:hover, .chat-files .file-preview-trigger[aria-expanded="true"] { border-color: #d9e0e6; background: #fff; color: #315b8f; }
+.chat-file-popover .file-preview-trigger:hover, .chat-file-popover .file-preview-trigger[aria-expanded="true"] { border-color: #d9e0e6; background: #fff; color: #315b8f; }
 .file-preview-trigger:focus-visible { outline: 2px solid #6d98ca; outline-offset: 2px; }
 .file-preview { position: fixed; z-index: 50; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #dce2e8; border-radius: 18px; background: #fff; box-shadow: 0 20px 70px rgba(29,44,58,.19), 0 3px 12px rgba(29,44,58,.06); animation: appear .15s ease; }
 .file-preview-header { flex-shrink: 0; display: flex; align-items: center; gap: 11px; padding: 16px 18px; border-bottom: 1px solid #e9edf1; background: linear-gradient(120deg, #f5f8fc, #fff); }
@@ -139,3 +153,12 @@ button { color: inherit; }
 @media (max-width: 560px) { .sandbox-wait { margin-left: 39px; } }
 
 .pending-retry { margin: -16px 0 28px 47px; }.pending-retry button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid #dcae9d; border-radius: 8px; background: #fff; cursor: pointer; font-size: 12px; }
+
+.session-actions { display: flex; flex-direction: column; flex: 0 0 auto; gap: 1px; padding: 3px 5px 3px 0; }
+.session-actions .session-delete, .session-rename { width: 25px; height: 23px; margin: 0; }
+.session-rename { border: 0; border-radius: 6px; background: transparent; color: #89918d; display: grid; place-items: center; cursor: pointer; }
+.session-rename:hover:not(:disabled) { background: #3d4943; color: #c7e2cd; }
+.session-rename:disabled { opacity: .4; cursor: default; }
+.session-rename:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.session-create-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 24px 0; padding: 10px 14px; border-radius: 10px; color: #923b29; background: #fbebe5; font-size: 13px; }
+.session-create-error button { flex-shrink: 0; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; padding: 5px 9px; cursor: pointer; }

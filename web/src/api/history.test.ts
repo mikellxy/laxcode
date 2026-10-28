@@ -6,8 +6,9 @@ afterEach(() => vi.unstubAllGlobals());
 it("downloads the chat ZIP without submitting client file paths", async () => {
   const fetch = vi.fn().mockResolvedValue(new Response("zip-content", { headers: { "Content-Type": "application/zip" } }));
   vi.stubGlobal("fetch", fetch);
-  const blob = await downloadChatFiles("session/one", "chat/one");
+  const { blob, filename } = await downloadChatFiles("session/one", "chat/one");
   expect(await blob.text()).toBe("zip-content");
+  expect(filename).toBe("chat-files.zip");
   expect(fetch).toHaveBeenCalledWith("/api/sessions/session%2Fone/chats/chat%2Fone/files.zip", expect.objectContaining({headers: { "X-USERID": "11111111-1111-4111-8111-111111111111" }}));
 });
 
@@ -47,3 +48,26 @@ it("reports server-side preview limits and file errors", async () => {
 });
 
 vi.mock("../features/identity/guest", () => ({ getOrCreateGuestID: () => "11111111-1111-4111-8111-111111111111" }));
+
+it("uses the server's Unicode ZIP name", async () => {
+  const filename = "登录页优化_20261028_1430.zip";
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("zip", { headers: { "Content-Disposition": `attachment; filename*=utf-8''${encodeURIComponent(filename)}` } })));
+  expect((await downloadChatFiles("s", "c")).filename).toBe(filename);
+});
+
+it("downloads a single file with an encoded path without applying preview limits", async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array([0, 255, 1]), { headers: { "Content-Disposition": 'attachment; filename="output.pdf"' } }));
+  vi.stubGlobal("fetch", fetch);
+  const result = await downloadChatFiles("s", "c", "demo/你好 #?.pdf");
+  const url = new URL(fetch.mock.calls[0][0], "http://local");
+  expect(url.pathname).toBe("/api/sessions/s/chats/c/file");
+  expect(url.searchParams.get("path")).toBe("demo/你好 #?.pdf");
+  expect(url.searchParams.get("download")).toBe("1");
+  expect(result.filename).toBe("output.pdf");
+  expect(new Uint8Array(await result.blob.arrayBuffer())).toEqual(new Uint8Array([0, 255, 1]));
+});
+
+it("preserves escaped quotes in a downloaded filename", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("text", { headers: { "Content-Disposition": 'attachment; filename="a\\"b.txt"' } })));
+  expect((await downloadChatFiles("s", "c", 'demo/a"b.txt')).filename).toBe('a"b.txt');
+});

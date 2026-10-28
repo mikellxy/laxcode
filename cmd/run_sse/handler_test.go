@@ -92,6 +92,16 @@ func (f *fakeSessionCatalog) ListSessions(_ context.Context, userID, projectID, 
 	return f.page, nil
 }
 
+func (f *fakeSessionCatalog) RenameSession(_ context.Context, id, userID, title string) (session.Summary, error) {
+	for i, item := range f.page.Sessions {
+		if item.ID == id && item.UserID == userID {
+			f.page.Sessions[i].Title = title
+			return f.page.Sessions[i], nil
+		}
+	}
+	return session.Summary{}, sessionrepo.ErrSessionNotFound
+}
+
 func (f *fakeSessionCatalog) DeleteSession(_ context.Context, id, userID string) error {
 	for i, item := range f.page.Sessions {
 		if item.ID == id && item.UserID == userID {

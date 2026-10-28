@@ -71,6 +71,7 @@ type ProjectRepository interface {
 type SessionCatalogRepository interface {
 	CreateSession(ctx context.Context, sessionID, userID, projectID, title, workDir, mode string) (Summary, error)
 	GetSession(ctx context.Context, sessionID string) (Summary, error)
+	RenameSession(ctx context.Context, sessionID, userID, title string) (Summary, error)
 	// DeleteSession 删除指定用户的会话、消息及会话文件；调用方须与会话写入互斥。
 	DeleteSession(ctx context.Context, sessionID, userID string) error
 	// ListSessions 返回指定用户及项目在 beforeSessionID 之前的一页会话，按更新时间倒序。

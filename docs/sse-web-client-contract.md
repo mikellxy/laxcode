@@ -178,6 +178,9 @@ GET /api/projects?user_id={UUID}
 
 响应为 `{"projects": [...]}`，项目按更新时间倒序排列。
 
+首页在查询成功且列表为空时，自动调用创建接口创建 `default`，然后选中该项目。
+查询失败时不会创建；创建返回 409 时重新查询并复用已存在的 `default`。
+
 ### 新建 Session
 
 ### 请求
@@ -213,7 +216,23 @@ Content-Type: application/json
 }
 ```
 
-`title` 当前固定为空字符串，前端不要依赖自动生成标题。
+新建时 `title` 为空字符串，之后可通过重命名接口修改，前端不要依赖自动生成标题。
+项目没有会话时，前端展示临时“新对话”，首条消息发送时才创建真实会话。
+点击“新会话”则立即调用创建接口并选中返回的会话，允许创建多个空会话。
+
+### 重命名 Session
+
+```http
+PATCH /api/sessions/{session_id}?user_id={UUID}
+Content-Type: application/json
+
+{"title":"排查登录问题"}
+```
+
+`user_id` 可省略；提供时必须与 `X-USERID` 一致。名称去除首尾空白后须为 1–120 个字符。
+成功返回 200 和更新后的 Session DTO；非法参数返回 400，不存在或不属于当前用户返回 404。
+proxy 在宿主侧更新标题和更新时间，不启动沙箱、不修改会话消息或上下文。
+前端列表对长名称使用省略号，悬停显示完整名称。
 
 ## 4. 查询 Session 列表
 
@@ -523,3 +542,18 @@ data: {"task_id":"...","task_status":"fail","error_code":"TASK_FAILED","error_me
 cloud 任务使用服务 context，与提交请求解耦；waiting/running 和收尾过程计入 /internal/activity，防止关闭页面后被空闲回收。cloud 重启在接受请求前把其遗留活跃任务标为 fail（SERVICE_RESTARTED）；proxy 单独重启不改变任务状态。
 
 实现编排、MQ 存储、恢复边界和本轮限制见 [异步聊天任务设计](async-chat-task-design.md)。
+
+### 本轮变更文件预览与下载
+
+历史消息的 `upsert_files` 列出该轮新增 / 修改的文件。前端将 PNG、JPEG、GIF、WebP、BMP
+展示为缩略图，进入可见区域才请求原图；悬停或点击可放大。文件总数支持悬停展开和点击固定列表，
+列表包含图片，悬停或点击文件名时请求预览，每个文件均可单独下载。
+
+- `GET /api/sessions/{session_id}/chats/{chat_id}/file?path=...`：预览当前文件；文本最多 256 KiB，图片最多 10 MiB。
+- 同一接口增加 `download=1`：完整下载该文件（最多 100 MiB），不受文本预览截断或预览格式限制。
+- `GET /api/sessions/{session_id}/chats/{chat_id}/files.zip`：批量下载，仍限制 200 个文件、总计 100 MiB。
+
+所有读取都限定于该用户、该轮文件清单和项目目录。下载均返回 `Content-Disposition: attachment`；
+ZIP 名为 `会话名_yyyyMMdd_HHmm.zip`，时间采用下载时的上海时间，空标题使用“未命名会话”，
+名称中的非法字符会替换，过长名称会截短。前端使用响应头提供的文件名。
+预览和下载均读取文件当前版本，不是历史快照；这些接口不会唤醒沙箱。

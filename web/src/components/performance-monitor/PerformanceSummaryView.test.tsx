@@ -61,7 +61,7 @@ describe("performance rendering", () => {
   it("places the trigger below Context and disables it without a session", () => {
     const renderSidebar = (selectedID?: string) => renderToStaticMarkup(<SessionTabs
       selectedID={selectedID} projects={[]} sessionsByProject={{}} creatingProject={false} runningSessionIDs={[]}
-      onSelect={() => {}} onSelectProject={() => {}} onDeleteSession={() => {}} onCreateProject={() => {}} onCreateSession={() => {}}
+      onSelect={() => {}} onSelectProject={() => {}} onDeleteSession={() => {}} onRenameSession={() => {}} onCreateProject={() => {}} onCreateSession={() => {}}
     />);
     const cloud = renderSidebar("session");
     expect(cloud.indexOf("Context")).toBeLessThan(cloud.indexOf("性能监控"));
