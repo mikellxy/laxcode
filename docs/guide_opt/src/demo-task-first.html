@@ -1,0 +1,70 @@
+<style>
+#lax-preview .lx{--lx-bg:light-dark(#f7f9fc,#111a22);--lx-panel:light-dark(#ffffff,#1a2631);--lx-text:light-dark(#182734,#e5eff5);--lx-muted:light-dark(#5f7180,#a4b7c6);--lx-line:light-dark(#e1e8ee,#344554);--lx-soft:light-dark(#edf4f8,#233846);--lx-brand:#087f8c;--lx-on:#ffffff;background:var(--lx-bg);color:var(--lx-text);font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;min-height:600px;border-radius:18px;overflow:hidden}
+#lax-preview .lx *{box-sizing:border-box}
+#lax-preview [hidden]{display:none!important}
+#lax-preview .lx header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:23px 30px;border-bottom:1px solid var(--lx-line)}
+#lax-preview .lx .logo{font-size:23px;font-weight:700;letter-spacing:-1px;color:var(--lx-brand)}
+#lax-preview .lx .quiet{color:var(--lx-muted)}
+#lax-preview .lx .pill{display:inline-block;padding:4px 10px;background:var(--lx-soft);border-radius:20px;font-size:12px;color:var(--lx-muted)}
+#lax-preview .lx button{font:inherit;border:1px solid var(--lx-line);border-radius:10px;padding:10px 16px;background:var(--lx-panel);color:var(--lx-text)}
+#lax-preview .lx button.main{background:var(--lx-brand);border-color:var(--lx-brand);color:var(--lx-on);font-weight:600}
+#lax-preview .lx button.link{border:0;background:transparent;color:var(--lx-muted);padding:5px}
+#lax-preview .lx button[aria-pressed=true]{border-color:var(--lx-brand);background:var(--lx-soft)}
+#lax-preview .lx .hero{display:grid;grid-template-columns:1fr 1fr;gap:30px;padding:42px 32px 28px;align-items:center}
+#lax-preview .lx h1{font-size:35px;line-height:1.25;letter-spacing:-1px;margin:16px 0;font-weight:650}
+#lax-preview .lx h2{font-size:19px;margin:0 0 15px;font-weight:600}
+#lax-preview .lx p{margin:10px 0 18px}
+#lax-preview .lx .choices{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 12px}
+#lax-preview .lx .choices button{padding:8px 10px}
+#lax-preview .lx .composer{background:var(--lx-panel);border:1px solid var(--lx-line);border-radius:16px;padding:15px}
+#lax-preview .lx textarea{width:100%;resize:vertical;min-height:85px;border:0;background:transparent;color:var(--lx-text);font:inherit;outline-offset:3px}
+#lax-preview .lx .row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+#lax-preview .lx .demo{background:var(--lx-panel);border:1px solid var(--lx-line);border-radius:17px;box-shadow:0 15px 35px light-dark(#203b4910,#00000025);padding:22px}
+#lax-preview .lx .prompt{background:var(--lx-soft);padding:12px 15px;border-radius:12px;margin:15px 0}
+#lax-preview .lx .status{color:var(--lx-brand);font-size:13px;margin:16px 0}
+#lax-preview .lx .file{border:1px solid var(--lx-line);border-radius:12px;padding:16px;margin-top:12px}
+#lax-preview .lx .bars{display:grid;gap:10px;margin:20px 0}
+#lax-preview .lx .bar{display:grid;grid-template-columns:38px 1fr 35px;gap:8px;align-items:center;font-size:12px}
+#lax-preview .lx .track{height:10px;background:var(--lx-soft);border-radius:3px;overflow:hidden}
+#lax-preview .lx .track span{height:100%;display:block;background:var(--lx-brand);border-radius:3px}
+#lax-preview .lx .steps{display:flex;justify-content:center;gap:22px;flex-wrap:wrap;padding:20px 24px;border-top:1px solid var(--lx-line);color:var(--lx-muted);font-size:13px}
+#lax-preview .lx .center{max-width:720px;margin:auto;padding:35px 28px}
+#lax-preview .lx .taskgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:24px 0}
+#lax-preview .lx .taskgrid button{text-align:left;padding:18px;min-height:115px}
+#lax-preview .lx .taskgrid strong{display:block;margin:10px 0 5px;font-weight:600}
+#lax-preview .lx .small{font-size:12px}
+#lax-preview .lx .notice{margin-top:12px;min-height:22px;color:var(--lx-brand);font-size:13px}
+#lax-preview .lx .intro{text-align:center}
+@media(max-width:640px){#lax-preview .lx{min-height:850px}#lax-preview .lx header{padding:18px}#lax-preview .lx .hero{grid-template-columns:1fr;padding:24px 18px;gap:22px}#lax-preview .lx h1{font-size:29px}#lax-preview .lx .taskgrid{grid-template-columns:1fr;gap:8px}#lax-preview .lx .taskgrid button{min-height:auto;padding:12px}#lax-preview .lx .taskgrid strong{margin:0 0 3px}#lax-preview .lx .center{padding:24px 18px}}
+
+#lax-preview{max-width:1160px;margin:0 auto}
+#lax-preview .lx button{cursor:pointer}
+#lax-preview .lx button:focus-visible{outline:3px solid var(--lx-brand);outline-offset:3px}
+#lax-preview .lx textarea{font-size:16px}
+</style>
+<div id="lax-preview">
+<div class="lx" id="lx-task" aria-label="直接开始任务的引导页">
+<header><span class="logo">LaxCode</span><span class="quiet small">引导页改版概念 · 示例交互</span></header>
+<div class="hero">
+<div><span class="pill">你的独立云端工作区</span><h1>说出想法，<br>拿到能用的成果。</h1><p class="quiet">写代码、分析数据、绘制流程图。<br>LaxCode 在云端执行，你随时预览和下载。</p>
+<div class="choices" aria-label="示例任务"><button type="button" data-choice="report" aria-pressed="true">分析数据</button><button type="button" data-choice="code" aria-pressed="false">写个小工具</button><button type="button" data-choice="diagram" aria-pressed="false">绘制流程图</button></div>
+<div class="composer"><textarea aria-label="你的第一个任务">按产品汇总这组销售数据，生成可下载的 CSV 和可视化报告。</textarea><div class="row"><span class="quiet small">无需安装开发环境</span><button type="button" class="main" data-action="start">试运行这个示例 →</button></div></div>
+<div class="notice" aria-live="polite"></div></div>
+<div class="demo"><div class="row"><strong>从一句话到一份成果</strong><span class="pill">示例</span></div><div class="prompt" data-output="prompt">汇总销售数据，生成一份报告。</div><div class="status">✓ 已计算　✓ 已验证　✓ 文件已准备好</div><div class="file"><div class="row"><strong data-output="title">销售汇总报告</strong><span class="quiet small" data-output="format">HTML · CSV</span></div><div class="bars"><div class="bar"><span>咖啡</span><div class="track"><span style="width:100%"></span></div><span>360</span></div><div class="bar"><span>茶</span><div class="track"><span style="width:83.33%"></span></div><span>300</span></div><div class="bar"><span>蛋糕</span><div class="track"><span style="width:41.67%"></span></div><span>150</span></div></div><p class="quiet" data-output="detail" hidden></p><div class="row"><button type="button" data-action="preview">预览成果</button><button type="button" class="main" data-action="download">下载文件 ↓</button></div></div><div class="notice" data-output="feedback" aria-live="polite"></div></div>
+</div><div class="steps"><span>01 描述任务</span><span>02 云端执行与验证</span><span>03 预览并下载</span></div>
+</div>
+</div>
+<script>
+(()=>{
+const root=document.getElementById('lax-preview');
+const a=root.querySelector('#lx-task');
+const data={report:['按产品汇总这组销售数据，生成可下载的 CSV 和可视化报告。','汇总销售数据，生成一份报告。','销售汇总报告','HTML · CSV','咖啡 360 元、茶 300 元、蛋糕 150 元，合计 810 元。'],code:['生成一个无需安装、可以离线打开的番茄钟小工具，附使用说明。','做一个可以离线使用的番茄钟。','番茄钟小工具','HTML · 使用说明','25 分钟专注与 5 分钟休息；暂停、重置和离线运行。'],diagram:['画一张「用户输入 → 云端执行 → 验证 → 下载」的中文流程图。','画一张四步任务流程图。','云端任务流程图','PNG · SVG · Excalidraw','用户输入 → 云端执行 → 验证 → 下载']};
+let state={choice:'report',step:0,pick:'分析销售数据'};
+function renderA(){const d=data[state.choice]||data.report;a.querySelector('textarea').value=d[0];['prompt','title','format','detail'].forEach((k,i)=>a.querySelector('[data-output="'+k+'"]').textContent=d[i+1]);a.querySelector('.bars').hidden=state.choice!=='report';a.querySelector('[data-output="detail"]').hidden=state.choice==='report';a.querySelectorAll('[data-choice]').forEach(e=>e.setAttribute('aria-pressed',String(e.dataset.choice===state.choice)));}
+a.querySelectorAll('[data-choice]').forEach(e=>e.addEventListener('click',()=>{state.choice=e.dataset.choice;renderA();}));
+a.querySelector('[data-action="start"]').addEventListener('click',()=>{a.querySelector('.notice').textContent=a.querySelector('textarea').value.trim() ? '示意：将当前任务带入工作区，等待用户确认发送。' : '请先输入任务内容。';});
+a.querySelector('[data-action="preview"]').addEventListener('click',()=>{a.querySelector('[data-output="feedback"]').textContent=data[state.choice][4];});
+a.querySelector('[data-action="download"]').addEventListener('click',()=>{a.querySelector('[data-output="feedback"]').textContent='示意：在这里直接下载任务成果。';});
+renderA();
+})();
+</script>
