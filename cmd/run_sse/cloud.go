@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mikellxy/laxcode/internal/infrastructure/taskevents"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/mikellxy/laxcode/internal/domain/telemetry"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
@@ -68,13 +71,50 @@ func newCloudServiceWithRepository(home, id string, conf config.Conf, tracer tel
 		repo.Close()
 		return nil, err
 	}
+	events, err := taskevents.Open(filepath.Join(layout.Root(home), "task-events"))
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tasks, err := repo.ListTasks(ctx)
+	if err != nil {
+		events.Close()
+		return nil, err
+	}
+	latest := make(map[string]bool)
+	for _, task := range tasks {
+		if task.Active() {
+			finalID, err := events.Last(ctx, task.ID)
+			if err != nil {
+				events.Close()
+				return nil, err
+			}
+			if err := repo.FinishTask(ctx, task.ID, "fail", "SERVICE_RESTARTED", "服务重启，执行已中断", finalID); err != nil {
+				events.Close()
+				return nil, err
+			}
+		}
+		if latest[task.SessionID] {
+			if err := events.Purge(ctx, task.ID); err != nil {
+				slog.Warn("purge old task events", "error", err)
+			}
+		}
+		latest[task.SessionID] = true
+	}
 	s := newServer(home, conf.Plan, models)
+	s.tasks, s.events = repo, events
 	s.userID = id
 	s.userRoot, s.tempDir, s.tracer = root, filepath.Join(root, "tmp"), tracer
 	s.history, s.catalog, s.projects, s.contextRepo, s.evaluations = repo, repo, repo, repo, repo
 	return &cloudService{server: s, repo: repo, handler: s.routes(), userID: id}, nil
 }
-func (c *cloudService) Close() { c.server.stopEvaluations(); _ = c.repo.Close() }
+func (c *cloudService) Close() {
+	c.server.stopTasks()
+	c.server.stopEvaluations()
+	c.server.events.Close()
+	_ = c.repo.Close()
+}
 func (c *cloudService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && r.URL.Path == "/healthz" {
 		w.WriteHeader(200)
@@ -82,7 +122,7 @@ func (c *cloudService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && r.URL.Path == "/internal/activity" {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]int32{"active": c.active.Load() + c.server.activeEvaluations.Load()})
+		_ = json.NewEncoder(w).Encode(map[string]int32{"active": c.active.Load() + c.server.activeEvaluations.Load() + c.server.activeTasks.Load()})
 		return
 	}
 	id, err := parseUserID(r.Header.Get("X-USERID"))

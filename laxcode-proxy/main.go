@@ -262,7 +262,7 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		u.api.ServeHTTP(w, r)
 		return
 	}
-	if p.quota != nil {
+	if p.quota != nil && !taskControlRequest(r) {
 		usage, err := p.quota.usage(r.Context(), id, "")
 		if err != nil || usage.Stale {
 			writeQuotaError(w, &quotaError{})
@@ -273,55 +273,27 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	streaming := r.Method == "POST" && (r.URL.Path == "/chat" || strings.HasSuffix(r.URL.Path, "/resume"))
-	var stream *preparedStream
-	retryAction := "resend"
-	if strings.HasSuffix(r.URL.Path, "/resume") {
-		retryAction = "resume"
-	}
-	if streaming {
+	submitting := r.Method == "POST" && (r.URL.Path == "/chat" || strings.HasSuffix(r.URL.Path, "/resume"))
+	if submitting {
 		select {
 		case p.chats <- struct{}{}:
 			defer func() { <-p.chats }()
 		default:
 			w.Header().Set("Retry-After", "5")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(429)
-			_ = json.NewEncoder(w).Encode(map[string]string{"message": "服务繁忙，请稍后重试", "code": "SERVER_BUSY", "retry_action": retryAction})
+			jsonError(w, 429, "服务繁忙，请稍后重试")
 			return
 		}
-		if _, ok := w.(http.Flusher); !ok {
-			jsonError(w, 500, "streaming unsupported")
-			return
-		}
-		// HTTP/1 may consume unread request data when prepare is flushed.
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 		if err != nil {
 			jsonError(w, 400, "read request body failed")
 			return
 		}
 		_ = r.Body.Close()
-		r.Body = http.NoBody
-		if len(body) != 0 {
-			r.Body = io.NopCloser(bytes.NewReader(body))
-		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
-		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Accel-Buffering", "no")
-		stream = &preparedStream{ResponseWriter: w, header: make(http.Header)}
-		if err := stream.send("prepare", struct{}{}); err != nil {
-			return
-		}
-		w = stream
 	}
-	writeProxyError := func(status int, message, retry string) {
-		if stream != nil {
-			_ = stream.send("error", streamError{Code: "SANDBOX_UNAVAILABLE", Message: message, RetryAction: retry})
-			return
-		}
-		jsonError(w, status, message)
-	}
+	writeProxyError := func(status int, message, retry string) { jsonError(w, status, message) }
+	retryAction := ""
 	u := p.user(id)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
@@ -334,21 +306,17 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(500, "workspace unavailable", retryAction)
 		return
 	}
-	endpoint, err := p.ensure(ctx, id, u)
+	endpoint := u.endpoint
+	// Reading output or stopping an existing task must remain possible after quota exhaustion.
+	if endpoint == nil || !taskControlRequest(r) {
+		endpoint, err = p.ensure(ctx, id, u)
+	}
 	if err != nil {
 		u.unlock()
 		log.Printf("sandbox %s: %v", id, err)
 		var quota *quotaError
 		if errors.As(err, &quota) {
-			if stream != nil {
-				code, message := "NETWORK_QUOTA_UNAVAILABLE", "网络配额服务暂不可用，请稍后重试"
-				if quota.Exhausted {
-					code, message = "NETWORK_QUOTA_EXHAUSTED", "当日公网流量额度已用尽，下次重置："+quota.ResetAt
-				}
-				_ = stream.send("error", streamError{Code: code, Message: message, RetryAction: retryAction})
-			} else {
-				writeQuotaError(w, err)
-			}
+			writeQuotaError(w, err)
 			return
 		}
 		writeProxyError(503, "sandbox unavailable; inspect deployment logs", retryAction)
@@ -372,9 +340,6 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_ = u.lock(context.Background())
 				u.endpoint = nil
 				u.unlock()
-			}
-			if stream != nil {
-				return stream.adaptResponse(response)
 			}
 			return nil
 		},
@@ -506,7 +471,7 @@ func run() error {
 	skills := flag.String("skills", "", "default skills seed directory (required)")
 	providers := flag.String("providers-file", "/run/laxcode/providers.json", "registered provider names")
 	idle := flag.Duration("idle-timeout", 30*time.Minute, "stop inactive sandboxes after this duration")
-	maxChats := flag.Int("max-chats", 2, "global concurrent chat limit")
+	maxChats := flag.Int("max-chats", 2, "global concurrent chat submission limit")
 	managerSocket := flag.String("manager-socket", defaultManagerSocket(), "host quota manager Unix socket (required on Linux)")
 	flag.Parse()
 	if defaultManagerSocket() != "" && *managerSocket == "" {
@@ -608,7 +573,11 @@ func run() error {
 
 // All other public APIs operate on persisted state and never wake a sandbox.
 func executionRequest(r *http.Request) bool {
-	return r.Method == http.MethodPost && (r.URL.Path == "/chat" || r.URL.Path == "/api/evaluations" || strings.HasPrefix(r.URL.Path, "/api/sessions/") && strings.HasSuffix(r.URL.Path, "/resume"))
+	return taskControlRequest(r) || r.Method == http.MethodPost && (r.URL.Path == "/chat" || r.URL.Path == "/api/evaluations" || strings.HasPrefix(r.URL.Path, "/api/sessions/") && strings.HasSuffix(r.URL.Path, "/resume"))
+}
+
+func taskControlRequest(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, "/api/tasks/") && (r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/events") || r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"))
 }
 
 // Called with the user's lifecycle lock held through the deletion transaction.

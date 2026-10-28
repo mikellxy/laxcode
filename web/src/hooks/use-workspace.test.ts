@@ -1,221 +1,162 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
 import { createSession } from "../api/sessions";
-import { resumeChat, streamChat } from "../api/chat-stream";
-import { ApiError } from "../api/client";
+import { cancelTask, resumeChat, streamChat, subscribeTask } from "../api/chat-stream";
+import { listHistory } from "../api/history";
 import { useWorkspace } from "./use-workspace";
+import { readPending, writePending } from "../features/chat/pending-input";
 import type { StreamState } from "../features/chat/reducer";
+import type { HistoryPageDTO } from "../types/api";
 
-const queryState = vi.hoisted(() => ({ history: {} as {
-  isSuccess?: boolean; isFetching?: boolean; isRefetchError?: boolean;
-  data?: { pages: { can_resume: boolean; messages: [] }[] };
-} }));
-
+const state = vi.hoisted(() => ({
+  page: { messages: [], has_more: false, can_resume: false } as HistoryPageDTO,
+  effects: [] as (() => unknown)[],
+  invalidate: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
-  useState: vi.fn(),
-  useRef: vi.fn(),
-  useEffect: vi.fn(),
+  useState: vi.fn(), useRef: vi.fn(),
+  useEffect: (effect: () => unknown) => state.effects.push(effect),
   useMemo: <T,>(factory: () => T) => factory(),
   useCallback: <T,>(callback: T) => callback,
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQueryClient: () => ({ invalidateQueries: vi.fn().mockResolvedValue(undefined), setQueryData: vi.fn() }),
+  useQueryClient: () => ({
+    invalidateQueries: state.invalidate,
+    getQueryData: () => ({ pages: [state.page] }),
+    setQueryData: (key: string[], value: { pages: HistoryPageDTO[] }) => { if (key[0] === "history") state.page = value.pages[0]; },
+  }),
   useQuery: ({ queryKey }: { queryKey: string[] }) => queryKey[0] === "projects"
     ? { isSuccess: true, data: { projects: [{ project_id: "project", name: "demo" }] } }
     : { isSuccess: true, data: {} },
-  useInfiniteQuery: () => queryState.history,
+  useInfiniteQuery: () => ({ isSuccess: true, data: { pages: [state.page] } }),
   useMutation: () => ({ mutateAsync: createSession }),
 }));
 vi.mock("../api/sessions", () => ({ createSession: vi.fn(), deleteSession: vi.fn(), listAllSessions: vi.fn() }));
-vi.mock("../api/chat-stream", () => ({ streamChat: vi.fn(), resumeChat: vi.fn(), answerApproval: vi.fn() }));
+vi.mock("../api/chat-stream", () => ({ streamChat: vi.fn(), resumeChat: vi.fn(), subscribeTask: vi.fn(), cancelTask: vi.fn() }));
+vi.mock("../api/history", () => ({ listHistory: vi.fn() }));
 
-type Selection = { projectID: string; sessionID?: string };
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
-}
-
-// Keep hook state/refs across explicit renders; only API/request coordination is exercised.
-function workspaceFixture(initial: Selection = { projectID: "project" }) {
-  let selection: Selection = initial;
+function fixture(draft = false) {
+  let selection = { projectID: "project", sessionID: draft ? undefined : "s1" };
   let streams: Record<string, StreamState> = {};
   const controllers = { current: new Map<string, AbortController>() };
   const sending = { current: new Set<string>() };
+  const stopRequests = { current: new Set<string>() };
   return () => {
-    vi.mocked(useState).mockReturnValueOnce([selection, (action: unknown) => {
-      selection = typeof action === "function" ? (action as (current: Selection) => Selection)(selection) : action as Selection;
-    }]).mockReturnValueOnce([streams, (action: unknown) => {
-      streams = (action as (current: typeof streams) => typeof streams)(streams);
-    }]);
-    vi.mocked(useRef).mockReturnValueOnce(controllers).mockReturnValueOnce(sending);
+    state.effects = [];
+    vi.mocked(useState).mockReturnValueOnce([selection, (action: unknown) => { selection = action as typeof selection; }])
+      .mockReturnValueOnce([streams, (action: unknown) => { streams = (action as (current: typeof streams) => typeof streams)(streams); }]);
+    vi.mocked(useRef).mockReturnValueOnce(controllers).mockReturnValueOnce(sending).mockReturnValueOnce(stopRequests);
     return useWorkspace("user");
   };
 }
-
-beforeEach(() => { vi.resetAllMocks(); queryState.history = {}; });
-
-describe("conversation recovery", () => {
-  const selected = { projectID: "project", sessionID: "first" };
-  const done = { type: "done", data: { session_id: "first", result: "done", token_used: { token_input: 1, token_output: 1 }, window_token: { token_input: 1, token_output: 1 }, context_window: 100 } } as const;
-
-  it("restores resume from persisted history with no in-memory stream and prevents double clicks", async () => {
-    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
-    const response = deferred();
-    vi.mocked(resumeChat).mockReturnValue(response.promise);
-    const render = workspaceFixture(selected);
-    const page = render();
-    expect(page.retryAction).toBe("resume");
-    const pending = page.retry();
-    await page.retry();
-    expect(resumeChat).toHaveBeenCalledTimes(1);
-    expect(streamChat).not.toHaveBeenCalled();
-    expect(render().retryAction).toBeUndefined();
-    response.resolve();
-    await pending;
-  });
-
-  it("offers resume after output is interrupted even if history cannot be refreshed", async () => {
-    vi.mocked(streamChat).mockImplementation(async (_id, _task, _signal, onEvent) => {
-      onEvent({ type: "message", data: { delta: "working" } });
-      throw new TypeError("network error");
-    });
-    const render = workspaceFixture(selected);
-    await render().send("hello");
-    expect(render().stream.errorCode).toBe("CONNECTION_INTERRUPTED");
-    expect(render().retryAction).toBe("resume");
-    // A fresh snapshot can reveal that the final reply was saved despite a lost done frame.
-    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: false, messages: [] }] } };
-    expect(render().retryAction).toBeUndefined();
-  });
-
-  it("does not guess that a request without output was committed", async () => {
-    vi.mocked(streamChat).mockRejectedValue(new TypeError("network error"));
-    const render = workspaceFixture(selected);
-    await render().send("hello");
-    expect(render().retryAction).toBeUndefined();
-    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
-    expect(render().retryAction).toBe("resume");
-    queryState.history.isFetching = true;
-    expect(render().retryAction).toBeUndefined();
-  });
-
-  it("preserves a received done event when the connection fails during closing", async () => {
-    vi.mocked(streamChat).mockImplementation(async (_id, _task, _signal, onEvent) => {
-      onEvent(done);
-      throw new TypeError("network error");
-    });
-    const render = workspaceFixture(selected);
-    await render().send("hello");
-    expect(render().stream.error).toBeUndefined();
-    expect(render().retryAction).toBeUndefined();
-  });
-
-  it("preserves a server error with no retry even when history is resumable", async () => {
-    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
-    vi.mocked(streamChat).mockImplementation(async (_id, _task, _signal, onEvent) => {
-      onEvent({ type: "error", data: { code: "INTERNAL", message: "Inspect files first" } });
-      throw new TypeError("network error");
-    });
-    const render = workspaceFixture(selected);
-    await render().send("hello");
-    expect(render().stream.error).toBe("Inspect files first");
-    expect(render().retryAction).toBeUndefined();
-  });
-
-  it("does not add resume to a non-retryable API rejection of resume", async () => {
-    queryState.history = { isSuccess: true, data: { pages: [{ can_resume: true, messages: [] }] } };
-    vi.mocked(resumeChat).mockRejectedValue(new ApiError("nothing to resume", 409, "NOTHING_TO_RESUME"));
-    const render = workspaceFixture(selected);
-    await render().retry();
-    expect(render().retryAction).toBeUndefined();
-  });
+const finished: HistoryPageDTO = { task_id: "new", task_status: "success", messages: [], has_more: false, can_resume: false };
+const active: HistoryPageDTO = { ...finished, task_status: "running" };
+beforeEach(() => {
+  vi.clearAllMocks(); state.page = { messages: [], has_more: false, can_resume: false };
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => store.set(key, value), removeItem: (key: string) => store.delete(key) });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  vi.mocked(listHistory).mockResolvedValue(finished);
+  vi.mocked(streamChat).mockResolvedValue({ task_id: "new", task_status: "waiting" });
+  vi.mocked(resumeChat).mockResolvedValue({ task_id: "new", task_status: "waiting" });
 });
 
-describe("workspace send coordination", () => {
-  it("keeps sandbox and first-output waiting in per-session memory", async () => {
-    const response = deferred();
-    vi.mocked(createSession).mockResolvedValue({ session_id: "first", project_id: "project" } as Awaited<ReturnType<typeof createSession>>);
-    vi.mocked(streamChat).mockReturnValue(response.promise);
-    const render = workspaceFixture();
-    const sending = render().send("hello");
-    await vi.waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1));
-    const onEvent = vi.mocked(streamChat).mock.calls[0][3];
-    onEvent({ type: "prepare", data: {} });
-    expect(render().stream.waitingFor).toBe("sandbox");
-    onEvent({ type: "start", data: { session_id: "first" } });
-    expect(render().stream.waitingFor).toBe("reply");
-    onEvent({ type: "message", data: { delta: "" } });
-    expect(render().stream.waitingFor).toBe("reply");
-    onEvent({ type: "message", data: { delta: "hello" } });
-    expect(render().stream.waitingFor).toBeUndefined();
-    onEvent({ type: "done", data: { session_id: "first", result: "hello", token_used: { token_input: 1, token_output: 1 }, window_token: { token_input: 1, token_output: 1 }, context_window: 100 } });
-    response.resolve();
-    await sending;
-    expect(render().stream).toMatchObject({ messages: [], running: false });
-    expect(render().stream.waitingFor).toBeUndefined();
+describe("asynchronous chat recovery", () => {
+  it("keeps the draft and retry action when session creation fails", async () => {
+    const render = fixture(true);
+    vi.mocked(createSession).mockRejectedValue(new Error("network error"));
+    await render().send("keep this draft");
+    expect(render().stream.messages[0].content).toBe("keep this draft");
+    expect(render().retryAction).toBe("resend");
+    await render().retry();
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(streamChat).not.toHaveBeenCalled();
   });
-
-  it("clears preparation immediately when the request is canceled", async () => {
-    vi.mocked(createSession).mockResolvedValue({ session_id: "first", project_id: "project" } as Awaited<ReturnType<typeof createSession>>);
-    vi.mocked(streamChat).mockImplementation((_id, _task, signal, onEvent) => {
-      onEvent({ type: "prepare", data: {} });
-      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("canceled", "AbortError")), { once: true }));
+  it("submits once, refreshes history before subscribing and reconciles a terminal task", async () => {
+    const render = fixture();
+    vi.mocked(listHistory).mockResolvedValueOnce(state.page).mockResolvedValueOnce(active).mockResolvedValueOnce(finished);
+    vi.mocked(subscribeTask).mockImplementation(async (_id, _signal, onEvent) => {
+      expect(listHistory).toHaveBeenCalledTimes(2);
+      onEvent({ type: "task_state", data: { task_id: "new", task_status: "success" } });
     });
-    const render = workspaceFixture();
-    const sending = render().send("hello");
-    await vi.waitFor(() => expect(render().stream.waitingFor).toBe("sandbox"));
-    render().cancel();
-    await sending;
-    expect(render().stream.waitingFor).toBeUndefined();
-    expect(render().stream).toMatchObject({ running: false, error: "已取消本轮对话" });
-  });
-
-  it("lets another draft send while a previously created session is still streaming", async () => {
-    const first = deferred();
-    vi.mocked(createSession)
-      .mockResolvedValueOnce({ session_id: "first", project_id: "project" } as Awaited<ReturnType<typeof createSession>>)
-      .mockResolvedValueOnce({ session_id: "second", project_id: "project" } as Awaited<ReturnType<typeof createSession>>);
-    vi.mocked(streamChat).mockImplementationOnce(() => first.promise).mockResolvedValueOnce(undefined);
-    const render = workspaceFixture();
-    const firstSend = render().send("first task");
-    await vi.waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1));
-    expect(render().stream.running).toBe(true);
-    render().startSession("project");
+    await render().send("hello");
+    expect(streamChat).toHaveBeenCalledWith("s1", "hello");
+    expect(subscribeTask).toHaveBeenCalledTimes(1);
     expect(render().stream.running).toBe(false);
-    await render().send("second task");
-    expect(createSession).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(streamChat).mock.calls.map(([id, task]) => [id, task])).toEqual([["first", "first task"], ["second", "second task"]]);
-    // The first session is still live and can be selected/canceled independently.
-    expect(render().runningSessionIDs).toContain("first");
-    first.resolve();
-    await firstSend;
   });
-
-  it("keeps a newer draft creation reserved when the old session finishes", async () => {
-    const first = deferred(), creation = deferred();
-    vi.mocked(createSession)
-      .mockResolvedValueOnce({ session_id: "first", project_id: "project" } as Awaited<ReturnType<typeof createSession>>)
-      .mockImplementationOnce(async () => {
-        await creation.promise;
-        return { session_id: "second", project_id: "project" } as Awaited<ReturnType<typeof createSession>>;
-      });
-    vi.mocked(streamChat).mockImplementationOnce(() => first.promise).mockResolvedValueOnce(undefined);
-    const render = workspaceFixture();
-    const firstSend = render().send("first task");
+  it("uses the displayed failed task ID for resume, not a newer task seen during submission", async () => {
+    state.page = { ...finished, task_id: "old", task_status: "fail", can_resume: true };
+    vi.mocked(listHistory).mockResolvedValue(finished);
+    const render = fixture();
+    await render().retry();
+    expect(resumeChat).toHaveBeenCalledWith("s1", "old");
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+  it("retains an uncommitted input with the last tool sequence and retries via chat", async () => {
+    state.page = { ...finished, task_status: "fail", messages: [{ seq: 11, role: "tool", created_at: "" }] };
+    writePending("user", "s1", { text: "retry me", created_at: "2026-10-27T12:00:00Z", base_message_seq: 11 });
+    const render = fixture();
+    expect(render().canResend).toBe(true);
+    expect(new Date(render().stream.messages[0].createdAt).toISOString()).toBe("2026-10-27T12:00:00.000Z");
+    await render().retry();
+    expect(streamChat).toHaveBeenCalledWith("s1", "retry me");
+    expect(resumeChat).not.toHaveBeenCalled();
+  });
+  it("clears pending input only after finding its persisted user message", async () => {
+    const render = fixture();
+    vi.mocked(listHistory).mockResolvedValueOnce(state.page).mockResolvedValueOnce({ ...finished, messages: [{ seq: 2, role: "user", content: "hello", created_at: "" }] });
+    await render().send("hello");
+    expect(readPending("user", "s1")).toBeUndefined();
+  });
+  it("restores a running task after refresh without resubmitting chat", async () => {
+    state.page = active;
+    vi.mocked(listHistory).mockResolvedValueOnce(active).mockResolvedValueOnce(finished);
+    vi.mocked(subscribeTask).mockImplementation(async (_id, _signal, onEvent) => { onEvent({ type: "task_state", data: finished as { task_id: string; task_status: "success" } }); });
+    const render = fixture(); render();
+    state.effects[1]();
+    await vi.waitFor(() => expect(state.page.task_status).toBe("success"));
+    expect(subscribeTask).toHaveBeenCalledTimes(1);
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+  it("reconnects the SSE subscription after network failure without submitting again", async () => {
+    vi.useFakeTimers();
+    try {
+      const render = fixture();
+      vi.mocked(listHistory).mockResolvedValueOnce(state.page).mockResolvedValueOnce(active).mockResolvedValueOnce(active).mockResolvedValueOnce(finished);
+      vi.mocked(subscribeTask).mockRejectedValueOnce(new Error("network error")).mockImplementationOnce(async (_id, _signal, onEvent) => { onEvent({ type: "task_state", data: { task_id: "new", task_status: "success" } }); });
+      const sending = render().send("hello");
+      await vi.waitFor(() => expect(subscribeTask).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(2000);
+      await sending;
+      expect(subscribeTask).toHaveBeenCalledTimes(2);
+      expect(streamChat).toHaveBeenCalledTimes(1);
+      expect(resumeChat).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it("stops the backend task using its task ID", async () => {
+    state.page = active;
+    const render = fixture();
+    await render().cancel();
+    expect(cancelTask).toHaveBeenCalledWith("new");
+  });
+  it("remembers stop clicked before acceptance and cancels the newly accepted task", async () => {
+    state.page = { ...finished, task_id: "old", task_status: "fail" };
+    let accept!: (task: { task_id: string; task_status: "waiting" }) => void;
+    vi.mocked(streamChat).mockReturnValue(new Promise((resolve) => { accept = resolve; }));
+    const render = fixture();
+    const sent = render().send("hello");
     await vi.waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1));
-    render().startSession("project");
-    const draft = render();
-    const secondSend = draft.send("second task");
-    expect(createSession).toHaveBeenCalledTimes(2);
-    first.resolve();
-    await firstSend;
-    await draft.send("duplicate task");
-    expect(createSession).toHaveBeenCalledTimes(2);
-    creation.resolve();
-    await secondSend;
-    expect(streamChat).toHaveBeenCalledTimes(2);
+    await render().cancel();
+    expect(cancelTask).not.toHaveBeenCalled();
+    accept({ task_id: "new", task_status: "waiting" });
+    await sent;
+    expect(cancelTask).toHaveBeenCalledWith("new");
+  });
+  it("does not offer resume for a failed but closed loop", () => {
+    state.page = { ...finished, task_status: "fail", task_error_message: "file accounting failed" };
+    const workspace = fixture()();
+    expect(workspace.retryAction).toBeUndefined();
+    expect(workspace.stream.error).toBe("file accounting failed");
   });
 });

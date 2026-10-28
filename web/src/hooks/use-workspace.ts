@@ -3,11 +3,13 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { createSession, deleteSession, listAllSessions } from "../api/sessions";
 import { createProject, listProjects } from "../api/projects";
 import { listHistory } from "../api/history";
-import { resumeChat, streamChat } from "../api/chat-stream";
+import { resumeChat, streamChat, subscribeTask, cancelTask } from "../api/chat-stream";
 import { getSessionContext } from "../api/context";
 import { ApiError } from "../api/client";
 import { streamReducer, type StreamState } from "../features/chat/reducer";
-import type { ContextData, SessionDTO, StreamEvent } from "../types/api";
+import type { ContextData, SessionDTO, HistoryPageDTO } from "../types/api";
+
+import { readPending, writePending, pendingCommitted, canRetryPending } from "../features/chat/pending-input";
 
 const emptyStream = (): StreamState => ({ messages: [], running: false });
 
@@ -20,6 +22,7 @@ export function useWorkspace(userID: string) {
   const [streams, setStreams] = useState<Record<string, StreamState>>({});
   const controllers = useRef(new Map<string, AbortController>());
   const sending = useRef(new Set<string>());
+  const stopRequests = useRef(new Set<string>());
 
   const projects = useQuery({ queryKey: ["projects", userID], queryFn: () => listProjects(userID) });
   const projectIDs = useMemo(() => projects.data?.projects.map((project) => project.project_id) ?? [], [projects.data]);
@@ -81,15 +84,24 @@ export function useWorkspace(userID: string) {
   });
 
   useEffect(() => {
-    if (!sessions.isSuccess || selection) return;
-    const first = allSessions[0];
+    if (selection) {
+      if (selection.sessionID) { try { localStorage.setItem(`laxcode:selected:${userID}`, selection.sessionID); } catch { /* Browser storage is optional. */ } }
+      return;
+    }
+    if (!sessions.isSuccess) return;
+    let saved: string | null = null;
+    try { saved = localStorage.getItem(`laxcode:selected:${userID}`); } catch { /* Browser storage is optional. */ }
+    const first = allSessions.find((item) => item.session_id === saved) ?? allSessions[0];
     const projectID = first?.project_id ?? projectIDs[0];
     if (projectID) setSelection({ projectID, sessionID: first?.session_id });
-  }, [sessions.isSuccess, selection, allSessions, projectIDs]);
+  }, [sessions.isSuccess, selection, allSessions, projectIDs, userID]);
 
   const select = (sessionID: string) => {
     const session = allSessions.find((item) => item.session_id === sessionID);
-    if (session) setSelection({ projectID: session.project_id, sessionID });
+    if (session) {
+      setSelection({ projectID: session.project_id, sessionID });
+      try { localStorage.setItem(`laxcode:selected:${userID}`, sessionID); } catch { /* Browser storage is optional. */ }
+    }
   };
   const selectProject = (projectID: string) => {
     if (projectID === selectedProjectID) return;
@@ -102,13 +114,19 @@ export function useWorkspace(userID: string) {
     getNextPageParam: (page) => page.has_more ? page.next_before_seq : undefined,
   });
   const historyMessages = history.data?.pages.slice().reverse().flatMap((page) => page.messages) ?? [];
-  const stream = streamKey ? streams[streamKey] ?? emptyStream() : emptyStream();
+  const page = history.data?.pages[0];
+  const storedInput = selectedID ? readPending(userID, selectedID) : undefined;
+  const pending = storedInput && page && !pendingCommitted(storedInput, page) ? storedInput : undefined;
+  const local = streamKey ? streams[streamKey] ?? emptyStream() : emptyStream();
+  const active = page?.task_status === "waiting" || page?.task_status === "running";
+  const stream: StreamState = { ...local, running: local.running || active, error: local.error ?? (page?.task_status === "fail" ? page.task_error_message : undefined), messages: [
+    ...(pending && (historyMessages.at(-1)?.seq ?? 0) <= pending.base_message_seq ? [{ id: "pending-input", role: "user" as const, content: pending.text, reasoningStreaming: false, createdAt: pending.created_at, status: "completed" as const }] : []),
+    ...local.messages.filter((message) => (message.role !== "user" || !selectedID) && (!message.seq || message.seq > (historyMessages.at(-1)?.seq ?? 0))),
+  ] };
   const historyReady = history.isSuccess && !history.isFetching && !history.isRefetchError;
-  const canResume = historyReady && history.data?.pages[0]?.can_resume === true;
-  // A refreshed persisted state settles uncertain network failures, including lost done frames.
-  const retryAction = stream.running || history.isFetching ? undefined
-    : stream.errorCode === "CONNECTION_INTERRUPTED" && historyReady ? (canResume ? "resume" : undefined)
-    : stream.retryAction ?? (!stream.error && canResume ? "resume" : undefined);
+  const canResume = historyReady && page?.can_resume === true;
+  const canResend = historyReady && !stream.running && canRetryPending(pending, page);
+  const retryAction = !stream.running ? (!selectedID ? local.retryAction : !canResend && canResume ? "resume" as const : undefined) : undefined;
   const contextUsage = useQuery({
     queryKey: ["context", selectedID], enabled: Boolean(selectedID), queryFn: () => getSessionContext(selectedID!),
   });
@@ -122,57 +140,86 @@ export function useWorkspace(userID: string) {
     setSelection({ projectID });
   };
 
-  const reconcile = useCallback(async (sessionID: string, preserveError: boolean) => {
-    await client.invalidateQueries({ queryKey: ["history", sessionID] });
-    if (preserveError) await client.invalidateQueries({ queryKey: ["context", sessionID] });
-    updateStream(sessionID, { type: "reconciled", preserveError });
-    await client.invalidateQueries({ queryKey: ["project-sessions", userID] });
-  }, [client, updateStream, userID]);
-
-  const execute = useCallback(async (sessionID: string, mode: "send" | "resume", task?: string) => {
-    const controller = new AbortController(); controllers.current.set(sessionID, controller);
-    updateStream(sessionID, mode === "send" ? { type: "send", content: task! } : { type: "retry" });
-    let failed = false;
-    let terminal = false;
-    let receivedOutput = false;
+  const follow = useCallback(async (sessionID: string) => {
+    if (controllers.current.get(sessionID) && !controllers.current.get(sessionID)!.signal.aborted) return;
+    const controller = new AbortController();
+    controllers.current.set(sessionID, controller);
+    const pause = () => new Promise<void>((resolve) => {
+      const done = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", done); resolve(); };
+      const timer = setTimeout(done, 2000);
+      controller.signal.addEventListener("abort", done, { once: true });
+    });
     try {
-      const onEvent = (event: StreamEvent) => {
-        if (event.type === "reasoning" || event.type === "message" || event.type === "tool_call") receivedOutput = true;
-        updateStream(sessionID, { type: "event", event });
-        if (event.type === "done") client.setQueryData<ContextData>(["context", sessionID], {
-          window_token: event.data.window_token, context_window: event.data.context_window,
-        });
-        // tool_call 事件在每轮模型提交后发出，携带最新窗口占用；流式中途直写
-        // context 缓存，让侧边栏不必等 done 才刷新。
-        if (event.type === "tool_call" && event.data.window_token && event.data.context_window)
-          client.setQueryData<ContextData>(["context", sessionID], {
-            window_token: event.data.window_token, context_window: event.data.context_window,
+      while (!controller.signal.aborted) {
+        try {
+          const latest = await listHistory(sessionID);
+          if (controller.signal.aborted) return;
+          const input = readPending(userID, sessionID);
+          if (input && pendingCommitted(input, latest)) writePending(userID, sessionID);
+          updateStream(sessionID, { type: "restore", page: latest });
+          client.setQueryData(["history", sessionID], { pages: [latest], pageParams: [undefined] });
+          if (!latest.task_id || (latest.task_status !== "waiting" && latest.task_status !== "running")) {
+            void client.invalidateQueries({ queryKey: ["context", sessionID] });
+            void client.invalidateQueries({ queryKey: ["project-sessions", userID] });
+            return;
+          }
+          let terminal = false;
+          let refreshRequired = false;
+          await subscribeTask(latest.task_id, controller.signal, (event) => {
+            if (controller.signal.aborted) return;
+            if (event.type === "task_state" || event.type === "refresh_required") { terminal = true; refreshRequired = event.type === "refresh_required"; return; }
+            updateStream(sessionID, { type: "event", event });
+            if (event.type === "tool_call" && event.data.window_token && event.data.context_window) {
+              client.setQueryData<ContextData>(["context", sessionID], { window_token: event.data.window_token, context_window: event.data.context_window });
+            }
           });
-        if (event.type === "done" || event.type === "error") terminal = true;
-        if (event.type === "error") failed = true;
-      };
-      if (mode === "send") await streamChat(sessionID, task!, controller.signal, onEvent);
-      else await resumeChat(sessionID, controller.signal, onEvent);
-      if (!terminal) {
-        failed = true;
-        updateStream(sessionID, { type: "failed", message: "连接意外中断", code: "CONNECTION_INTERRUPTED", retryAction: receivedOutput || mode === "resume" ? "resume" : undefined });
-      }
-    } catch (error) {
-      if (!terminal) {
-        failed = true;
-        if (controller.signal.aborted) {
-          updateStream(sessionID, { type: "failed", message: "已取消本轮对话" });
-        } else if (error instanceof ApiError) {
-          updateStream(sessionID, { type: "failed", message: error.message, code: error.code, retryAction: error.retryAction });
-        } else {
-          updateStream(sessionID, { type: "failed", message: "连接中断，请检查网络后重试", code: "CONNECTION_INTERRUPTED", retryAction: receivedOutput || mode === "resume" ? "resume" : undefined });
+          if ((!terminal || refreshRequired) && !controller.signal.aborted) { updateStream(sessionID, { type: "reconnecting" }); await pause(); }
+        } catch {
+          if (controller.signal.aborted) return;
+          updateStream(sessionID, { type: "reconnecting" });
+          await pause();
         }
       }
     } finally {
-      controllers.current.delete(sessionID);
-      await reconcile(sessionID, failed);
+      if (controllers.current.get(sessionID) === controller) controllers.current.delete(sessionID);
     }
-  }, [updateStream, reconcile, client]);
+  }, [client, updateStream, userID]);
+
+  useEffect(() => {
+    if (selectedID && historyReady && active) void follow(selectedID);
+  }, [selectedID, historyReady, active, follow]);
+  useEffect(() => {
+    const changed = () => setStreams((current) => ({ ...current }));
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+
+  const execute = useCallback(async (sessionID: string, mode: "send" | "resume", task?: string) => {
+    if (controllers.current.has(sessionID)) return;
+    const previous = client.getQueryData<{ pages: HistoryPageDTO[] }>(["history", sessionID])?.pages[0];
+    const createdAt = new Date().toISOString();
+    if (mode === "send") {
+      writePending(userID, sessionID, { text: task!, created_at: createdAt, base_message_seq: previous?.messages.at(-1)?.seq ?? 0 });
+      updateStream(sessionID, { type: "send", content: task! });
+      updateStream(sessionID, { type: "event", event: { type: "prepare", data: {} } });
+    } else updateStream(sessionID, { type: "retry" });
+    try {
+      const latest = await listHistory(sessionID);
+      if (mode === "send") writePending(userID, sessionID, { text: task!, created_at: createdAt, base_message_seq: latest.messages.at(-1)?.seq ?? 0 });
+      const accepted = mode === "send" ? await streamChat(sessionID, task!) : await resumeChat(sessionID, previous?.task_id);
+      if (mode === "send") {
+        const input = readPending(userID, sessionID);
+        if (input) writePending(userID, sessionID, { ...input, task_id: accepted.task_id });
+      }
+      updateStream(sessionID, { type: "accepted", taskID: accepted.task_id });
+      if (stopRequests.current.delete(sessionID)) await cancelTask(accepted.task_id);
+      await follow(sessionID);
+    } catch (error) {
+      updateStream(sessionID, { type: "failed", message: error instanceof Error ? error.message : "提交失败，请重试" });
+      if (error instanceof ApiError && error.refreshAfterMs) await new Promise((resolve) => setTimeout(resolve, error.refreshAfterMs));
+      await client.invalidateQueries({ queryKey: ["history", sessionID] });
+    } finally { stopRequests.current.delete(sessionID); }
+  }, [client, userID, updateStream, follow]);
 
   const send = useCallback(async (task: string) => {
     if (!selection || !streamKey || !task.trim() || streams[streamKey]?.running || sending.current.has(streamKey)) return;
@@ -200,21 +247,26 @@ export function useWorkspace(userID: string) {
   }, [selection, streamKey, selectedID, streams, execute, createSessionMutation, updateStream]);
 
   const retry = useCallback(async () => {
-    if (!streamKey) return;
-    const state = streams[streamKey];
-    if (!retryAction || state?.running || controllers.current.has(streamKey)) return;
-    if (retryAction === "resume" && selectedID) await execute(selectedID, "resume");
-    else if (state?.task) await send(state.task);
-  }, [selectedID, streamKey, streams, retryAction, execute, send]);
+    if (!streamKey || stream.running) return;
+    if (canResend && pending) await send(pending.text);
+    else if (retryAction === "resend" && stream.task) await send(stream.task);
+    else if (retryAction === "resume" && selectedID) await execute(selectedID, "resume");
+  }, [streamKey, stream.running, stream.task, canResend, pending, send, retryAction, selectedID, execute]);
 
-  const cancel = useCallback(() => { if (selectedID) controllers.current.get(selectedID)?.abort(); }, [selectedID]);
+  const cancel = useCallback(async () => {
+    if (selectedID && sending.current.has(selectedID) && !local.taskID) { stopRequests.current.add(selectedID); return; }
+    const taskID = local.taskID ?? page?.task_id;
+    if (!selectedID || !taskID) return;
+    try { await cancelTask(taskID); }
+    catch (error) { updateStream(selectedID, { type: "reconnecting" }); if (error instanceof ApiError) void client.invalidateQueries({ queryKey: ["history", selectedID] }); }
+  }, [selectedID, local.taskID, page?.task_id, client, updateStream]);
   useEffect(() => () => { controllers.current.forEach((controller) => controller.abort()); }, []);
 
   return {
     projects, sessions, sessionsByProject, allSessions,
     createProject: createProjectMutation, createSession: createSessionMutation, deleteSession: deleteSessionMutation,
     selectedID, selectedProjectID, selectedProject, select, selectProject, startSession, history, historyMessages, contextUsage,
-    stream, retryAction,
+    stream, retryAction, canResend,
     runningSessionIDs: Object.keys(streams).filter((id) => streams[id].running),
     send, retry, cancel,
   };

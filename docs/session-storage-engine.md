@@ -41,7 +41,7 @@ token 账目和 ReAct 轮次；`messages` 保存原始消息与工作集消息�
 每次提交都校验三类状态：
 
 - `revision` 必须与数据库 head 一致，用于检测并发写入。
-- `last_seq` 必须符合严格的单调递增规则，避免消息重复或跳号。
+- `last_seq` 必须符合严格的单调递增规则；异步任务允许越过失败留下的预留空洞，但目标必须匹配持久化预留号，不能任意跳号。
 - `memory_generation` 必须保持不变，或在压缩提交时恰好增加一代。
 
 head 更新还会在 SQL 条件中再次匹配 revision。即使两个请求基于同一个旧快照同时提交，
@@ -52,7 +52,7 @@ SQLite 使用 WAL、`synchronous=FULL`、立即事务和单连接配置。这个
 
 ## 崩溃恢复
 
-LaxCode 不额外保存“当前 Agent 正执行到哪一步”的易失状态，而是从已提交工作集尾部推导：
+任务表保存执行生命周期；对话是否可以继续仍从已提交工作集尾部推导：
 
 - 尾部是无工具调用且正常结束的 assistant 消息，表示本轮已经收束。
 - 尾部是 user、带工具调用的 assistant，或缺少对应结果的工具调用，表示本轮需要恢复。
@@ -107,3 +107,7 @@ JSONL 不能作为强一致的数据源；恢复和续聊始终以 SQLite 为准
 - `internal/application/reactservice/reactservice.go:ReActService.recoverBeforeChat`
 - `internal/application/reactservice/reactservice.go:needsRecovery`
 - `internal/application/reactservice/context_compaction.go:ReActService.compactContext`
+
+## 异步任务与提前预留序号
+
+`chat_tasks` 保存每次执行，项目级部分唯一索引限制 waiting/running 任务；历史查询在同一读取事务中附带最后任务。`message_sequences` 保存独立的预留高水位，LLM/工具输出前分配，失败后不重用。预留不推进工作集 revision 或 last_seq；最终消息提交继续检查 revision/generation/原始消息身份。任务重试和事件重放见 [异步聊天任务设计](async-chat-task-design.md)。

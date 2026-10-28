@@ -124,13 +124,9 @@ func newFileTrackingServer(t *testing.T) (*server, *sessionrepo.SqliteSessionRep
 	home := filepath.Join(root, "agenthome")
 	s := newTestServer(t, home, false)
 	s.userRoot = root
-	repo, err := sessionrepo.NewSqliteSessionRepo(filepath.Join(home, "sessions.db"), filepath.Join(home, "history"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { repo.Close(); s.stopEvaluations() })
+	repo := s.tasks.(*sessionrepo.SqliteSessionRepo)
 	s.contextRepo, s.history = repo, repo
-	s.catalog = catalogWithSession("files-session", work)
+	seedTaskSession(t, s, "files-session", work)
 	return s, repo, work
 }
 
@@ -141,7 +137,7 @@ type fileTrackingResponse struct {
 }
 
 func (w fileTrackingResponse) Write(data []byte) (int, error) {
-	if strings.HasPrefix(string(data), "event: done\n") || strings.HasPrefix(string(data), "event: error\n") {
+	if strings.HasPrefix(string(data), "event: task_state\n") {
 		w.terminal()
 	}
 	return w.ResponseRecorder.Write(data)
@@ -214,7 +210,6 @@ func TestCloudSnapshotChatFailureResumeAndNextChat(t *testing.T) {
 			writeTrackedTestFile(t, work, "docs/finished.txt", strings.Repeat("x", cleanups))
 		}}, nil
 	}
-	mux := s.routes()
 	var firstChatID string
 	for i, path := range []string{"/chat", "/api/sessions/files-session/resume", "/chat"} {
 		response := fileTrackingResponse{ResponseRecorder: httptest.NewRecorder(), terminal: func() {
@@ -237,10 +232,11 @@ func TestCloudSnapshotChatFailureResumeAndNextChat(t *testing.T) {
 				t.Fatalf("request %d files=%+v want=%+v err=%v", i, files, want, err)
 			}
 		}}
-		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"session_id":"files-session","task":"draw"}`)))
-		wantEvent := "event: done"
+		task := submitTask(t, s, path, `{"session_id":"files-session","task":"draw"}`)
+		replayTask(t, s, task, response)
+		wantEvent := `"task_status":"success"`
 		if i == 0 {
-			wantEvent = `"code":"CHAT_FAILED"`
+			wantEvent = `"task_status":"fail"`
 		}
 		if !strings.Contains(response.Body.String(), wantEvent) || cleanups != i+1 {
 			t.Fatalf("request %d cleanup=%d response=%s", i, cleanups, response.Body.String())
@@ -273,7 +269,13 @@ func TestCloudSnapshotAfterCancellation(t *testing.T) {
 		return &agentasm.Assembled{Service: svc, Session: sess, Cleanup: func() {}}, nil
 	}
 	request := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"files-session","task":"draw"}`)).WithContext(ctx)
-	s.handleChat(httptest.NewRecorder(), request)
+	accepted := httptest.NewRecorder()
+	s.handleChat(accepted, request)
+	var task struct {
+		ID string `json:"task_id"`
+	}
+	_ = json.Unmarshal(accepted.Body.Bytes(), &task)
+	waitTask(t, s, task.ID)
 	state, err := repo.GetRequestContext(context.Background(), "files-session")
 	if err != nil {
 		t.Fatal(err)
@@ -290,10 +292,10 @@ func TestCloudProjectLockAndSnapshotFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("cannot lock project")
 	}
-	for _, path := range []string{"/chat", "/api/sessions/files-session/resume"} {
+	for _, path := range []string{"/chat"} {
 		response := httptest.NewRecorder()
 		s.routes().ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"session_id":"files-session","task":"draw"}`)))
-		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "project is busy") {
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "PROJECT_BUSY") {
 			t.Fatalf("locked project: %d %s", response.Code, response.Body.String())
 		}
 	}
@@ -336,15 +338,17 @@ func TestCloudSnapshotPersistenceFailureIsVisible(t *testing.T) {
 		if err := svc.InitSysPrompt(ctx, "system"); err != nil {
 			return nil, err
 		}
-		return &agentasm.Assembled{Service: svc, Session: sess, Cleanup: func() { repo.Close() }}, nil
+		return &agentasm.Assembled{Service: svc, Session: sess, Cleanup: func() {}}, nil
 	}
+	s.contextRepo = failingFileRepo{Repository: repo}
+	task := submitTask(t, s, "/chat", `{"session_id":"files-session","task":"draw"}`)
 	response := httptest.NewRecorder()
-	s.handleChat(response, httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"files-session","task":"draw"}`)))
+	replayTask(t, s, task, response)
 	body := response.Body.String()
-	if !strings.Contains(body, `"code":"INTERNAL_ERROR"`) || !strings.Contains(body, "文件产物统计失败") ||
-		strings.Contains(body, "event: done") || strings.Contains(body, "retry_action") || strings.Contains(body, s.userRoot) {
-		t.Fatalf("tracking failure should be visible without exposing paths or retrying the task: %s", body)
+	if task.Status != "fail" || !strings.Contains(body, "文件产物统计失败") || strings.Contains(body, s.userRoot) {
+		t.Fatalf("%+v %s", task, body)
 	}
+
 }
 
 func TestCloudSnapshotSkipsUncommittedChat(t *testing.T) {
@@ -359,4 +363,10 @@ func TestCloudSnapshotSkipsUncommittedChat(t *testing.T) {
 	if !errors.Is(err, runErr) || errors.Is(err, errChatFileTracking) || cleanups != 1 {
 		t.Fatalf("uncommitted chat: err=%v cleanup=%d", err, cleanups)
 	}
+}
+
+type failingFileRepo struct{ sessionrepo.Repository }
+
+func (f failingFileRepo) UpsertChatFiles(context.Context, string, string, []session.ChatFile) error {
+	return errors.New("persist files failed")
 }

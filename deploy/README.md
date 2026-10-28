@@ -178,3 +178,7 @@ LAXCODE_DOCKER_SQLITE_TEST=1 go test ./workspace -run TestStorageAcrossDockerMou
 ```
 
 该测试使用临时目录和一次性容器，需要预装 `laxcode-tools:go1.26.6-v2`。
+
+### 聊天事件持久化
+
+cloud 内嵌 NATS JetStream，通过进程内连接使用，不新增监听端口或独立服务。事件保存在每用户持久工作目录 `agenthome/.laxcode/task-events`，随现有 `/workplace` bind mount 保留；升级仍需先结束旧 cloud，不能让两个进程同时打开同一目录。新任务启动和 cloud 重启时清理较老任务事件；本轮没有定时过期策略。任务元数据继续写入 proxy 管理的每用户 `sessions.db`。`-max-chats` 现在限制并发提交请求；后台执行通过项目级活跃任务唯一索引限制同项目并发。

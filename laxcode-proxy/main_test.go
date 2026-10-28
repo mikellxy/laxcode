@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -133,10 +132,6 @@ func TestStreamingFlushAndCancellation(t *testing.T) {
 		if r.Header.Get("X-USERID") != testID || r.Header.Get("Authorization") != "" {
 			t.Error("incorrect forwarded identity")
 		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil || string(body) != `{"session_id":"s","task":"hello"}` {
-			t.Errorf("forwarded body=%q error=%v", body, err)
-		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: first\n\n")
 		w.(http.Flusher).Flush()
@@ -145,13 +140,9 @@ func TestStreamingFlushAndCancellation(t *testing.T) {
 	}))
 	server := httptest.NewServer(p)
 	defer server.Close()
-	u := p.user(testID)
-	_ = u.lock(context.Background())
-	releaseGate := sync.OnceFunc(u.unlock)
-	defer releaseGate()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/chat", strings.NewReader(`{"session_id":"s","task":"hello"}`))
+	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/api/tasks/task/events", nil)
 	req.Header.Set("X-USERID", testID)
 	req.Header.Set("Authorization", "must-not-forward")
 	response, err := server.Client().Do(req)
@@ -159,13 +150,6 @@ func TestStreamingFlushAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := bufio.NewReader(response.Body)
-	if frame := readProxyFrame(t, reader); frame != "event: prepare\ndata: {}\n\n" {
-		t.Fatalf("first frame=%q", frame)
-	}
-	if runtime := p.runtime.(*fakeRuntime); runtime.creates != 0 {
-		t.Fatal("prepare did not arrive before sandbox startup")
-	}
-	releaseGate()
 	if frame := readProxyFrame(t, reader); frame != "data: first\n\n" {
 		t.Fatalf("upstream frame=%q", frame)
 	}
@@ -261,7 +245,7 @@ func TestStoppedGatewayResponseInvalidatesCachedEndpoint(t *testing.T) {
 	req.Header.Set("X-USERID", testID)
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "event: error\n") || !strings.Contains(rec.Body.String(), "HTTP 412") || p.user(testID).endpoint != nil {
+	if rec.Code != http.StatusPreconditionFailed || p.user(testID).endpoint != nil {
 		t.Fatal("stopped endpoint remained cached")
 	}
 	runtime.state.Phase = "Stopped"

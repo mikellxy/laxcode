@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +69,11 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				stubActiveModel(t)
-				home, work := t.TempDir(), t.TempDir()
+				root := t.TempDir()
+				home, work := filepath.Join(root, "agenthome"), filepath.Join(root, "demo")
+				if err := os.MkdirAll(work, 0700); err != nil {
+					t.Fatal(err)
+				}
 				s := newTestServer(t, home, false)
 				s.catalog = catalogWithSession("trace-session", work)
 				logPath := layout.TracingLog(home, "trace-session")
@@ -90,7 +92,8 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer contextRepo.Close()
-				s.contextRepo = contextRepo
+				s.contextRepo, s.tasks = contextRepo, contextRepo
+				seedTaskSession(t, s, "trace-session", work)
 				var assemblyChatIDs []string
 				s.assemble = func(ctx context.Context, in agentasm.Input) (*agentasm.Assembled, error) {
 					assemblyChatIDs = append(assemblyChatIDs, telemetry.ChatIDFromContext(ctx))
@@ -110,18 +113,14 @@ func TestChatAndResumeTraceHierarchy(t *testing.T) {
 					}
 					return &agentasm.Assembled{Session: sess, Service: svc, Cleanup: func() { repo.Close() }}, nil
 				}
-				mux := http.NewServeMux()
-				mux.HandleFunc("POST /chat", s.handleChat)
-				mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
 				for i, path := range []string{"/chat", "/api/sessions/trace-session/resume", "/chat"} {
-					response := httptest.NewRecorder()
-					mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"session_id":"trace-session","task":"question"}`)))
-					want := "event: done"
+					task := submitTask(t, s, path, `{"session_id":"trace-session","task":"question"}`)
+					want := "success"
 					if i == 0 {
-						want = "event: error"
+						want = "fail"
 					}
-					if !strings.Contains(response.Body.String(), want) {
-						t.Fatalf("request %d: %s", i, response.Body.String())
+					if task.Status != want {
+						t.Fatalf("%+v", task)
 					}
 				}
 				data, err := os.ReadFile(logPath)

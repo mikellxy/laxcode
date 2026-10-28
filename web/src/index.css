@@ -137,3 +137,5 @@ button { color: inherit; }
 .topbar .evaluation-trigger:disabled { opacity: .5; cursor: default; }
 
 @media (max-width: 560px) { .sandbox-wait { margin-left: 39px; } }
+
+.pending-retry { margin: -16px 0 28px 47px; }.pending-retry button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid #dcae9d; border-radius: 8px; background: #fff; cursor: pointer; font-size: 12px; }

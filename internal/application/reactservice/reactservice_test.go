@@ -43,7 +43,7 @@ func TestRunReturnsImmediateAnswer(t *testing.T) {
 	rec := &eventRecorder{}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), rec.record, nil)
 
-	msg, err := svc.think(context.Background())
+	msg, err := svc.think(context.Background(), "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRunEmitsReasoningEvent(t *testing.T) {
 	rec := &eventRecorder{}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), rec.record, nil)
 
-	if _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background(), ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	assertChunks(t, rec.events, []sharedkernel.StreamChunk{
@@ -104,9 +104,19 @@ func TestRunToolCallLoop(t *testing.T) {
 	reg := tools.NewDefaultRegistry(nil)
 	reg.Register(echoTool{})
 	rec := &eventRecorder{}
-	svc := NewReActService(sess, repo, llm, nil, reg, rec.record, nil)
+	var reserved uint64
+	svc := NewReActService(sess, repo, llm, nil, reg, func(e *ReactEvent) {
+		if reserved == 0 || e.MessageSeq != reserved || e.TaskID != "task-loop" {
+			t.Fatalf("event must carry its preallocated sequence and task: %+v, reserved=%d", e, reserved)
+		}
+		rec.record(e)
+	}, nil)
+	svc.ReserveMessageSequence = func(context.Context, string) (uint64, error) {
+		reserved = sess.Snapshot().LastSeq + 1
+		return reserved, nil
+	}
 
-	msg, err := svc.think(context.Background())
+	msg, err := svc.think(context.Background(), "task-loop")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -121,6 +131,9 @@ func TestRunToolCallLoop(t *testing.T) {
 		t.Fatalf("会话应 4 条消息，实际 %d：%+v", len(sess.Messages), sess.Messages)
 	}
 	toolMsg := sess.Messages[2]
+	if rec.events[0].MessageSeq != sess.Messages[1].Seq || rec.events[1].MessageSeq != toolMsg.Seq || rec.events[len(rec.events)-1].MessageSeq != msg.Seq {
+		t.Fatal("replayed events and persisted messages must share the same sequence")
+	}
 	if toolMsg.Role != sharedkernel.RoleTool || toolMsg.ToolCallID != "tc-1" || toolMsg.Content != "echo:hi" ||
 		toolMsg.DisplayContent != `echo_tool({"msg":"hi"})` {
 		t.Errorf("工具结果消息不符：%+v", toolMsg)
@@ -330,7 +343,7 @@ func TestRunForwardsChunksBeforeStreamReturns(t *testing.T) {
 				return assistantMsg("hello"), nil
 			})
 			svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), rec.record, nil)
-			msg, err := svc.think(context.Background())
+			msg, err := svc.think(context.Background(), "")
 			if !errors.Is(err, streamErr) {
 				t.Fatalf("错误未透传：%v", err)
 			}
@@ -354,7 +367,7 @@ func TestRunPropagatesGenerateError(t *testing.T) {
 	}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil)
 
-	_, err := svc.think(context.Background())
+	_, err := svc.think(context.Background(), "")
 	if err == nil || !strings.Contains(err.Error(), "llm down") {
 		t.Fatalf("应透传 LLM 错误，实际 %v", err)
 	}
@@ -375,7 +388,7 @@ func TestRunUnknownToolDoesNotHang(t *testing.T) {
 	reg.Register(echoTool{}) // 不含 ghost_tool
 	svc := NewReActService(sess, repo, llm, nil, reg, func(*ReactEvent) {}, nil)
 
-	msg, err := svc.think(context.Background())
+	msg, err := svc.think(context.Background(), "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -405,7 +418,7 @@ func TestRunRegistersTokenUsageToSession(t *testing.T) {
 		}},
 	}}
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
-	if _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background(), ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if sess.TokenUsed.TokenInput != 100 || sess.TokenUsed.TokenOutput != 20 {
@@ -802,7 +815,7 @@ func TestRunPersistsMetaAfterAssistantMessage(t *testing.T) {
 	sess := newTestSession("s-meta", repo)
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
 
-	if _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background(), ""); err != nil {
 		t.Fatalf("think: %v", err)
 	}
 	stored := repo.contexts["s-meta"]
@@ -848,7 +861,7 @@ func TestRunPropagatesContextPersistError(t *testing.T) {
 	repo.failSaveContext = true
 	svc := NewReActService(sess, repo, llm, nil, tools.NewDefaultRegistry(nil), func(*ReactEvent) {}, nil, repo)
 
-	_, err := svc.think(context.Background())
+	_, err := svc.think(context.Background(), "")
 	if !errors.Is(err, errRepo) {
 		t.Fatalf("meta 落盘失败应透传，实际 %v", err)
 	}
@@ -907,7 +920,7 @@ func TestRunCompactsHistoryBeforeGenerate(t *testing.T) {
 		},
 	}
 	svc.LLMClient = llm
-	if _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background(), ""); err != nil {
 		t.Fatalf("think: %v", err)
 	}
 
@@ -995,7 +1008,7 @@ func TestRunDoesNotGenerateWhenCompactionCannotReachExactTarget(t *testing.T) {
 		},
 	}
 	svc.LLMClient = llm
-	_, err = svc.think(context.Background())
+	_, err = svc.think(context.Background(), "")
 	if !errors.Is(err, ErrContextTargetNotReach) {
 		t.Fatalf("expected target-not-reached error, got %v", err)
 	}

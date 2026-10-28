@@ -569,7 +569,7 @@ func TestSchemaContainsSessionEvaluationAndChatFileTables(t *testing.T) {
 	if err := repo.db.Raw(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).Scan(&names).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(names, []string{"chat_upsert_files", "evaluation_jobs", "messages", "projects", "request_contexts", "user_config"}) {
+	if !reflect.DeepEqual(names, []string{"chat_tasks", "chat_upsert_files", "evaluation_jobs", "message_sequences", "messages", "projects", "request_contexts", "user_config"}) {
 		t.Fatalf("tables=%v", names)
 	}
 }

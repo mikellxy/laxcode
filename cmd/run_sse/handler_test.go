@@ -3,7 +3,6 @@ package run_sse
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mikellxy/laxcode/cmd/agentasm"
 	"github.com/mikellxy/laxcode/internal/domain/session"
 	"github.com/mikellxy/laxcode/internal/domain/sharedkernel"
 	"github.com/mikellxy/laxcode/internal/infrastructure/ai_models"
 	"github.com/mikellxy/laxcode/internal/infrastructure/config"
 	"github.com/mikellxy/laxcode/internal/infrastructure/sessionrepo"
+	"github.com/mikellxy/laxcode/internal/infrastructure/taskevents"
 )
 
 type contextReaderStub struct {
@@ -484,25 +483,6 @@ func TestHandleChatEmptyTask(t *testing.T) {
 	}
 }
 
-// TestHandleChatSessionBusy 验证同一 session_id 已被占用时返回 409（不排队等待），
-// 避免同会话并发导致 history/meta 分叉，也避免客户端无感挂起。
-func TestHandleChatSessionBusy(t *testing.T) {
-	s := newTestServer(t, t.TempDir(), false)
-	unlock, ok := s.locks.TryLock("sess-1") // 预占，模拟同会话并发
-	if !ok {
-		t.Fatal("预占 session 锁失败")
-	}
-	defer unlock()
-
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"sess-1","task":"hi"}`))
-	rec := httptest.NewRecorder()
-	s.handleChat(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("同 session 并发应 409，实际 %d", rec.Code)
-	}
-}
-
 // nonFlusherWriter 是不实现 http.Flusher 的 ResponseWriter，用于验证无法流式时的降级。
 type nonFlusherWriter struct {
 	header http.Header
@@ -528,75 +508,6 @@ func stubActiveModel(t *testing.T) {
 	setTestProviders(t, []config.Provider{{ProviderName: "test", OpenaiApiKey: "test-key", OpenaiBaseUrl: "https://test.example/v1", ModelList: []config.Model{{ModelName: "model"}}}})
 }
 
-// TestHandleChatNoFlusher 验证 ResponseWriter 不支持 Flusher 时返回 500（仍在进入流之前）。
-func TestHandleChatNoFlusher(t *testing.T) {
-	stubActiveModel(t)
-	workDir := t.TempDir()
-	s := newTestServer(t, t.TempDir(), false)
-	s.catalog = catalogWithSession("s1", workDir)
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`))
-	w := newNonFlusherWriter()
-	s.handleChat(w, req)
-
-	if w.code != http.StatusInternalServerError {
-		t.Fatalf("不支持流式应 500，实际 %d", w.code)
-	}
-}
-
-// TestHandleChatAssembleError 验证装配失败时已进入 SSE 流（状态码固定 200、
-// Content-Type 为 event-stream），错误经 event: error 帧回传，且此前不发 start 帧。
-func TestHandleChatAssembleError(t *testing.T) {
-	stubActiveModel(t)
-	workDir := t.TempDir()
-	s := newTestServer(t, t.TempDir(), false)
-	s.catalog = catalogWithSession("s1", workDir)
-	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
-		return nil, errors.New("boom")
-	}
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`))
-	rec := httptest.NewRecorder()
-	s.handleChat(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("进入 SSE 流后状态码应为 200，实际 %d", rec.Code)
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
-		t.Fatalf("应为 SSE Content-Type，实际 %q", ct)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "event: error") || !strings.Contains(body, "boom") {
-		t.Fatalf("装配失败应发含原因的 error 帧，实际 %q", body)
-	}
-	if !strings.Contains(body, `"code":"AGENT_ASSEMBLY_FAILED"`) || !strings.Contains(body, `"retry_action":"resend"`) {
-		t.Fatalf("装配失败应要求重发原 query，实际 %q", body)
-	}
-	if strings.Contains(body, "event: start") {
-		t.Fatalf("装配失败不应发 start 帧：%q", body)
-	}
-}
-
-func TestHandleResumeAssembleErrorKeepsResumeAction(t *testing.T) {
-	stubActiveModel(t)
-	workDir := t.TempDir()
-	s := newTestServer(t, t.TempDir(), false)
-	s.catalog = catalogWithSession("s1", workDir)
-	s.assemble = func(context.Context, agentasm.Input) (*agentasm.Assembled, error) {
-		return nil, errors.New("boom")
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("进入 resume SSE 后状态码应为 200，实际 %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"code":"AGENT_ASSEMBLY_FAILED"`) || !strings.Contains(body, `"retry_action":"resume"`) {
-		t.Fatalf("resume 装配失败应保持 resume 动作，实际 %q", body)
-	}
-}
-
 // TestHandleChatWithoutModel 验证延迟配置场景：未激活模型时 /chat 与 resume
 // 在进入 SSE 流之前返回 409 MODEL_REQUIRED，而不是在 LLM 调用处才失败。
 func TestHandleChatWithoutModel(t *testing.T) {
@@ -607,7 +518,7 @@ func TestHandleChatWithoutModel(t *testing.T) {
 
 	workDir := t.TempDir()
 	s := newTestServer(t, t.TempDir(), false)
-	s.catalog = catalogWithSession("s1", workDir)
+	seedTaskSession(t, s, "s1", workDir)
 
 	chat := httptest.NewRecorder()
 	s.handleChat(chat, httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"s1","task":"hi"}`)))
@@ -619,7 +530,7 @@ func TestHandleChatWithoutModel(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
 	mux.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/api/sessions/s1/resume", nil))
-	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "MODEL_REQUIRED") {
+	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "NOTHING_TO_RESUME") {
 		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
 	}
 }
@@ -633,7 +544,7 @@ func TestChatAndResumeRejectDifferentSessionMode(t *testing.T) {
 
 	chat := httptest.NewRecorder()
 	s.handleChat(chat, httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"session_id":"rag-session","task":"hi"}`)))
-	if chat.Code != http.StatusConflict || !strings.Contains(chat.Body.String(), "does not match server mode") {
+	if chat.Code != http.StatusConflict || !strings.Contains(chat.Body.String(), "unsupported session mode") {
 		t.Fatalf("chat status=%d body=%s", chat.Code, chat.Body.String())
 	}
 
@@ -641,7 +552,7 @@ func TestChatAndResumeRejectDifferentSessionMode(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
 	mux.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/api/sessions/rag-session/resume", nil))
-	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "does not match server mode") {
+	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "unsupported session mode") {
 		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
 	}
 }
@@ -685,8 +596,12 @@ func newTestServer(t *testing.T, home string, plan bool) *server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.contextRepo = repo
-	t.Cleanup(func() { s.stopEvaluations(); _ = repo.Close() })
+	s.contextRepo, s.catalog, s.tasks, s.history = repo, repo, repo, repo
+	s.events, err = taskevents.Open(filepath.Join(home, "test-events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.stopTasks(); s.events.Close(); s.stopEvaluations(); _ = repo.Close() })
 	return s
 }
 

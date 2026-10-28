@@ -81,3 +81,19 @@ describe("streamReducer", () => {
     expect(state.messages[0].id).toBe("00000000-0000-4000-8000-000000000000");
   });
 });
+
+describe("task replay deduplication", () => {
+  it("skips complete history, merges new chunks once, and separates assistant messages by seq", () => {
+    let state = streamReducer({ messages: [], running: false }, { type: "restore", page: { task_id: "t", task_status: "running", can_resume: true, has_more: false, messages: [{ seq: 10, role: "assistant", content: "saved", created_at: "" }] } });
+    const emit = (seq: number, eventID: number, delta: string, taskID = "t") => {
+      state = streamReducer(state, { type: "event", event: { type: "message", data: { task_id: taskID, message_seq: seq, event_id: eventID, delta } } });
+    };
+    emit(9, 1, "old"); emit(10, 2, "saved");
+    expect(state.messages).toHaveLength(0);
+    emit(11, 3, "hel"); emit(11, 3, "hel"); emit(11, 4, "lo");
+    expect(state.messages[0].content).toBe("hello");
+    emit(10, 5, "old"); emit(12, 6, "other task", "other");
+    emit(12, 7, "next");
+    expect(state.messages.map((message) => [message.seq, message.content])).toEqual([[11, "hello"], [12, "next"]]);
+  });
+});

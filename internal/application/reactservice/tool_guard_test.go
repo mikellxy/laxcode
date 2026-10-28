@@ -91,7 +91,7 @@ func TestThreeIdenticalToolCallsInterruptBeforeExecution(t *testing.T) {
 		{msg: assistantMsgWithTool(call("three", `{"msg":"same"}`), call("four", `{"msg":"other"}`))},
 	}}
 	svc := NewReActService(sess, repo, llm, nil, reg, nil, nil)
-	_, err := svc.think(context.Background())
+	_, err := svc.think(context.Background(), "")
 	if !errors.Is(err, ErrRepeatedToolCall) {
 		t.Fatalf("think error = %v, want ErrRepeatedToolCall", err)
 	}
@@ -127,7 +127,7 @@ func TestFiveConsecutiveToolCallsInjectReminder(t *testing.T) {
 	}
 	llm.responses = append(llm.responses, scriptedResp{msg: assistantMsg("done")})
 	svc := NewReActService(sess, repo, llm, nil, reg, nil, nil)
-	if _, err := svc.think(context.Background()); err != nil {
+	if _, err := svc.think(context.Background(), ""); err != nil {
 		t.Fatalf("think: %v", err)
 	}
 	var toolResults []sharedkernel.Message

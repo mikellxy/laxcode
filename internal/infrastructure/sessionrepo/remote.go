@@ -17,6 +17,7 @@ import (
 
 // Repository is the shared persistence contract; only the host opens SQLite.
 type Repository interface {
+	session.TaskRepository
 	CreateSession(ctx context.Context, id, userID, projectID, title, workDir, mode string) (session.Summary, error)
 	GetSession(ctx context.Context, id string) (session.Summary, error)
 	DeleteSession(ctx context.Context, id, userID string) error
@@ -121,7 +122,33 @@ type ListEvaluationJobsRequest struct{ SourceSessionID string }
 type ListEvaluationJobsResponse struct{ V0 []evaluation.Job }
 type FailActiveEvaluationJobsRequest struct{ ErrorMessage string }
 
-var rpcErrors = []error{ErrContextConflict, ErrStaleSequence, ErrStaleGeneration, ErrSessionNotFound, ErrSessionBusy, ErrProjectNotFound, ErrChatNotFound, ErrEvaluationJobNotFound}
+type CreateTaskRequest struct {
+	Id        string
+	SessionID string
+}
+type CreateTaskResponse struct{ V0 session.Task }
+type GetTaskRequest struct{ Id string }
+type GetTaskResponse struct{ V0 session.Task }
+type GetLatestTaskRequest struct{ Id string }
+type GetLatestTaskResponse struct{ V0 *session.Task }
+type GetActiveProjectTaskRequest struct{ Id string }
+type GetActiveProjectTaskResponse struct{ V0 *session.Task }
+type ListTasksRequest struct{}
+type ListTasksResponse struct{ V0 []session.Task }
+type StartTaskRequest struct{ Id string }
+type StartTaskResponse struct{}
+type FinishTaskRequest struct {
+	Id      string
+	Status  string
+	Code    string
+	Message string
+	FinalID uint64
+}
+type FinishTaskResponse struct{}
+type ReserveMessageSequenceRequest struct{ Id string }
+type ReserveMessageSequenceResponse struct{ V0 uint64 }
+
+var rpcErrors = []error{ErrContextConflict, ErrStaleSequence, ErrStaleGeneration, ErrSessionNotFound, ErrSessionBusy, ErrProjectNotFound, ErrChatNotFound, ErrEvaluationJobNotFound, ErrTaskNotFound, ErrTaskConflict}
 
 type rpcResponse struct {
 	Result json.RawMessage
@@ -289,6 +316,63 @@ func RPCHandler(repo Repository, userID string) http.Handler {
 				err = repo.FailActiveEvaluationJobs(r.Context(), in.ErrorMessage)
 				result = out
 			}
+		case "CreateTask":
+			var in CreateTaskRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out CreateTaskResponse
+				out.V0, err = repo.CreateTask(r.Context(), in.Id, in.SessionID)
+				result = out
+			}
+		case "GetTask":
+			var in GetTaskRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out GetTaskResponse
+				out.V0, err = repo.GetTask(r.Context(), in.Id)
+				result = out
+			}
+		case "GetLatestTask":
+			var in GetLatestTaskRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out GetLatestTaskResponse
+				out.V0, err = repo.GetLatestTask(r.Context(), in.Id)
+				result = out
+			}
+		case "GetActiveProjectTask":
+			var in GetActiveProjectTaskRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out GetActiveProjectTaskResponse
+				out.V0, err = repo.GetActiveProjectTask(r.Context(), in.Id)
+				result = out
+			}
+		case "ListTasks":
+			var in ListTasksRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out ListTasksResponse
+				out.V0, err = repo.ListTasks(r.Context())
+				result = out
+			}
+		case "StartTask":
+			var in StartTaskRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out StartTaskResponse
+				err = repo.StartTask(r.Context(), in.Id)
+				result = out
+			}
+		case "FinishTask":
+			var in FinishTaskRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out FinishTaskResponse
+				err = repo.FinishTask(r.Context(), in.Id, in.Status, in.Code, in.Message, in.FinalID)
+				result = out
+			}
+		case "ReserveMessageSequence":
+			var in ReserveMessageSequenceRequest
+			if err = json.Unmarshal(body, &in); err == nil {
+				var out ReserveMessageSequenceResponse
+				out.V0, err = repo.ReserveMessageSequence(r.Context(), in.Id)
+				result = out
+			}
+
 		default:
 			http.NotFound(w, r)
 			return
@@ -489,4 +573,44 @@ func (s contextWire) context() session.RequestContext {
 		}
 	}
 	return s.State
+}
+func (r *Remote) CreateTask(ctx context.Context, id string, sessionid string) (session.Task, error) {
+	var out CreateTaskResponse
+	err := r.call(ctx, "CreateTask", CreateTaskRequest{Id: id, SessionID: sessionid}, &out)
+	return out.V0, err
+}
+func (r *Remote) GetTask(ctx context.Context, id string) (session.Task, error) {
+	var out GetTaskResponse
+	err := r.call(ctx, "GetTask", GetTaskRequest{Id: id}, &out)
+	return out.V0, err
+}
+func (r *Remote) GetLatestTask(ctx context.Context, id string) (*session.Task, error) {
+	var out GetLatestTaskResponse
+	err := r.call(ctx, "GetLatestTask", GetLatestTaskRequest{Id: id}, &out)
+	return out.V0, err
+}
+func (r *Remote) GetActiveProjectTask(ctx context.Context, id string) (*session.Task, error) {
+	var out GetActiveProjectTaskResponse
+	err := r.call(ctx, "GetActiveProjectTask", GetActiveProjectTaskRequest{Id: id}, &out)
+	return out.V0, err
+}
+func (r *Remote) ListTasks(ctx context.Context) ([]session.Task, error) {
+	var out ListTasksResponse
+	err := r.call(ctx, "ListTasks", ListTasksRequest{}, &out)
+	return out.V0, err
+}
+func (r *Remote) StartTask(ctx context.Context, id string) error {
+	var out StartTaskResponse
+	err := r.call(ctx, "StartTask", StartTaskRequest{Id: id}, &out)
+	return err
+}
+func (r *Remote) FinishTask(ctx context.Context, id string, status string, code string, message string, finalid uint64) error {
+	var out FinishTaskResponse
+	err := r.call(ctx, "FinishTask", FinishTaskRequest{Id: id, Status: status, Code: code, Message: message, FinalID: finalid}, &out)
+	return err
+}
+func (r *Remote) ReserveMessageSequence(ctx context.Context, id string) (uint64, error) {
+	var out ReserveMessageSequenceResponse
+	err := r.call(ctx, "ReserveMessageSequence", ReserveMessageSequenceRequest{Id: id}, &out)
+	return out.V0, err
 }

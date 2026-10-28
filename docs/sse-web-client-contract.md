@@ -435,250 +435,91 @@ Cloud 用户身份必须通过 `X-USERID` 请求头提供。浏览器从访客 C
 非法 ID 返回 `400`；目录越界或文件不允许读取时返回 `403`。前端显示下载中及
 失败提示，出错时不会把 JSON 错误正文保存成 Markdown。
 
-## 6. 发起对话和接收 SSE
+## 6. 提交聊天任务
 
-### 请求
+`POST /chat` 请求体沿用 `{ "session_id": "...", "task": "..." }`，成功返回 HTTP 200 JSON：
 
-```http
-POST /chat
-Content-Type: application/json
-Accept: text/event-stream
+```json
+{"task_id":"执行任务 UUID","task_status":"waiting"}
 ```
+
+`POST /api/sessions/{session_id}/resume` 请求体为 `{ "task_id": "上一次失败任务 UUID" }`，创建新任务后返回同样结构；旧任务保持 fail。旧任务必须仍是该 session 最后任务，且当前工作集 can_resume=true。
+
+无任务记录的旧会话可以省略 task_id；一旦有任务记录就必须携带匹配 ID。不同用户分别使用自己的 sessions.db；同项目最多一个 waiting/running 任务。
+
+提交接口不再返回 SSE，不再由 proxy 注入 prepare 帧。前端在提交期间自行显示沙箱准备状态。提交返回的 waiting 是创建时快照，不代表任务在浏览器收到响应时仍在等待。
+
+状态冲突返回 HTTP 409，例如：
+
+```json
+{"code":"PROJECT_BUSY","message":"项目正在执行任务，请稍后刷新会话","refresh_after_ms":2000}
+```
+
+SESSION_BUSY、TASK_CHANGED、NOTHING_TO_RESUME 也要求前端重新获取会话状态，不自动重发输入。
+
+## 7. 历史与 SSE 订阅
+
+历史接口在原有消息、分页、can_resume 上增加：
 
 ```json
 {
-  "session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
-  "task": "运行项目测试"
+  "task_id":"最后任务 UUID",
+  "task_status":"running",
+  "task_error_code":"",
+  "task_error_message":""
 }
 ```
 
-Web 前端先创建项目并展示空聊天页，延迟到用户首次发送消息时调用
-`POST /api/sessions`，再使用返回的 `session_id` 发起对话。`/chat` 要求
-`session_id` 必填；空聊天页不显示 session_id，也不请求会话历史或上下文。
-模型切换接口不依赖 Session，空聊天页仍可切换服务当前使用的模型。
+没有任务时 task_id/task_status 为 null；空错误字段可以省略。最新历史页和任务信息在同一 DB 事务中读取，旧分页不能覆盖当前任务状态。
 
-这是 POST SSE，不能直接使用浏览器原生 `EventSource`。使用 `fetch` 读取 `Response.body`，或使用支持 POST 的 SSE 客户端库。SSE 帧可能跨多个网络 chunk，不能把每个 `ReadableStream` chunk 当作一条完整事件。
+`GET /api/tasks/{task_id}/events` 返回 SSE，允许订阅 session 最后一个任务的 waiting/running/success/fail 状态。每个连接独立从任务起点重放，不与其他页面抢消息。
 
-### 流开始前的 HTTP 错误
-
-- proxy 身份校验失败、请求体读取失败或超过 1 MiB 时返回 `400`。
-- proxy 全局对话并发达到上限时返回 `429`，保留 `SERVER_BUSY` 和 `retry_action`。
-- `500`：服务端不支持流式响应等启动错误。
-
-收到响应后应先检查 HTTP 状态和 `Content-Type`。进入 `text/event-stream` 后，后续业务错误通过 `event: error` 表达，HTTP 状态仍然是 `200`。
-proxy 发送 `prepare` 后，启动失败和沙箱返回的 HTTP 错误（包括 `400/409`）均转换为
-SSE `error`，保留上游 `code`、`message` 和 `retry_action`。proxy 启动失败使用
-`SANDBOX_UNAVAILABLE`，对 `/chat` 提示 `resend`，对 `/resume` 提示 `resume`；
-未知上游响应使用 `UPSTREAM_ERROR`。直连沙箱时，流开始前仍可能收到原始 HTTP 错误。
-
-### SSE 事件
-
-#### prepare
-
-```text
-event: prepare
-data: {}
-```
-
-proxy 在用户身份校验、全局并发限流和有界读取请求体后立即发送并 Flush，
-早于等待用户生命周期锁、启动沙箱和转发请求。前端显示“正在进入您的专属安全沙箱…”，
-使用循环三点动效；不创建聊天消息，不写入历史、SQLite 或浏览器持久化存储。
-
-#### start
-
-```text
-event: start
-data: {"session_id":"97e310f4-b757-427a-92f4-d2d88956d54a"}
-```
-
-装配完成后发送。显式创建 Session 时应与请求中的 ID 一致。
-前端只把等待提示改为“已进入您的专属安全沙箱，正在准备回复…”，保持同一个动效。
-收到首个包含非空白内容的 `reasoning` / `message`，或收到 `tool_call` 时收起提示；
-`error`、取消、断流和 `done` 也会收起提示并停止动效。该状态只保留在当前页面的会话内存中。
-
-#### reasoning
+内容帧示例：
 
 ```text
 event: reasoning
-data: {"delta":"先检查测试入口"}
-```
+data: {"task_id":"...","event_id":2,"message_seq":4,"delta":"正在分析…"}
 
-将 `delta` 追加到当前 assistant 消息的 `reasoningContent`。UI 可默认折叠，但流式更新期间仍需持续保存内容。
-
-#### message
-
-```text
 event: message
-data: {"delta":"测试已经通过。"}
-```
+data: {"task_id":"...","event_id":3,"message_seq":4,"delta":"回复内容"}
 
-将 `delta` 追加到当前 assistant 消息的 `content`。
-
-#### tool_call
-
-```text
 event: tool_call
-data: {"info":"bash(go test ./...)"}
+data: {"task_id":"...","event_id":4,"message_seq":5,"info":"执行工具…"}
+
 ```
 
-新增一条临时 tool 消息，将 `info` 映射到 `toolSummary`。后端执行完成后，同一摘要会持久化并由历史接口返回。
+start 帧携带 session_id、task_id、event_id；没有对应内容消息时 message_seq 为 0。tool_call 保留可选的 window_token/context_window 快照。
 
-#### done
+message_seq 在 session 内递增，在 LLM/工具执行前持久预留；未提交的预留号允许留下空洞。event_id 在 task 内递增，重连重复事件须去重。
+
+结束统一使用 DB 驱动的控制事件：
 
 ```text
-event: done
-data: {
-  "session_id": "97e310f4-b757-427a-92f4-d2d88956d54a",
-  "result": "测试已经通过。",
-  "token_used": {
-    "token_input": 100,
-    "token_output": 20
-  },
-  "window_token": {
-    "token_input": 80,
-    "token_output": 20
-  }
-}
+event: task_state
+data: {"task_id":"...","task_status":"fail","error_code":"TASK_FAILED","error_message":"执行失败原因","action":"refresh_session"}
+
 ```
 
-`result` 是本轮最终 assistant 结果。前端已通过 `message` 增量构建正文时，不要再次追加 `result`；可以用它校验或覆盖最终正文。
+后端每 2 秒检查 DB 终态。补齐 final_event_id 之前的输出后发送 task_state；不依赖 MQ 中存在 done/error 帧。状态变化、事件缺口或订阅故障发送 refresh_required 后关闭连接。
 
-#### error
+## 8. 前端恢复与去重
 
-```text
-event: error
-data: {
-  "code":"CHAT_FAILED",
-  "message":"error description",
-  "retry_action":"resume"
-}
-```
+打开页面、刷新和断线重连时：先拉取最新历史，清空临时 SSE 内容和游标，再根据状态订阅。waiting/running 自动订阅；success 展示历史；fail 显示失败原因和可用按钮。无任务记录的旧会话保留 can_resume 判断。
 
-标记当前流失败并停止等待。失败后仍应刷新历史，因为 user 消息或部分执行消息可能已经持久化。
+- event.message_seq 小于当前最后消息序号：丢弃。
+- 相等且最后消息来自完整历史：丢弃所有该消息增量。
+- 相等且最后消息来自 SSE：按任务内 event_id 去重，重复事件也丢弃。
+- 更大：创建新的流式消息，并推进游标。
+- start/task_state/refresh_required 不按消息序号过滤。
 
-- `code` 是稳定的业务错误码，前端不得解析 `message` 判断行为。
-- `retry_action=resume` 表示本轮 user 消息已经持久化，应调用恢复接口。
-- `retry_action=resend` 表示本轮 user 消息尚未持久化，应使用原 task 重新调用 `/chat`。
-- `retry_action` 缺失表示错误不可自动重试，只展示错误信息。
+收到终态后刷新历史、上下文统计和会话列表。收到状态冲突后重新拉取数据，不强制浏览器整页刷新，不自动调用 resume。网络中断只重连订阅，不取消执行。
 
-当前业务错误码包括 `INVALID_REQUEST`、`SESSION_BUSY`、
-`AGENT_ASSEMBLY_FAILED`、`CHAT_FAILED`、`RESUME_FAILED`、
-`NOTHING_TO_RESUME` 和 `INTERNAL_ERROR`。
+未提交输入保存在按 user_id/session_id 隔离的 localStorage 中，包含 text、发送前最后已保存消息的 base_message_seq，以及接收成功后补充的 task_id。只有确认对应 user 消息已保存才清理。没有活跃任务、历史仍未越过基线时，在本地用户消息旁提供“重试发送”；can_resume 对应的是继续已保存的用户轮次。
 
-## 6.1 恢复未完成对话
+## 9. 主动停止与服务生命周期
 
-当错误帧返回 `retry_action=resume` 时调用：
+`POST /api/tasks/{task_id}/cancel` 请求停止后台任务。任务真正退出前仍占用项目；退出后状态为 fail，error_code=USER_STOPPED。断开 SSE 不调用该接口。
 
-```http
-POST /api/sessions/{session_id}/resume
-Accept: text/event-stream
-```
+cloud 任务使用服务 context，与提交请求解耦；waiting/running 和收尾过程计入 /internal/activity，防止关闭页面后被空闲回收。cloud 重启在接受请求前把其遗留活跃任务标为 fail（SERVICE_RESTARTED）；proxy 单独重启不改变任务状态。
 
-请求不携带 task。后端从已持久化工作集执行 `recoverBeforeChat`，随后继续 ReAct
-推理，不会追加新的 user 消息。响应复用 `/chat` 的 `start`、`reasoning`、
-`message`、`tool_call`、`done` 和 `error` 事件。
-
-如果会话没有待恢复的对话，返回 SSE 错误：
-
-```text
-event: error
-data: {"code":"NOTHING_TO_RESUME","message":"reactservice: no interrupted chat to resume"}
-```
-
-前端收到该错误后不应继续自动重试，避免已经收束的会话重复生成。
-
-## 7. 实时消息归并规则
-
-一次用户请求可能产生以下持久化序列：
-
-```text
-user
-assistant(reasoning/content + tool calls)
-tool
-assistant(reasoning/content + tool calls)
-tool
-assistant(final)
-```
-
-推荐 reducer 行为：
-
-1. 发送请求前，立即插入一条 `status=completed` 的本地 user 消息。
-2. 收到首个 `reasoning` 或 `message` 时，创建 `status=streaming` 的 assistant 消息。
-3. 收到 `tool_call` 时，将当前 assistant 消息标记为 `completed`（reasoning 已结束），保留该消息并在其后插入 tool 消息；SSE 整体仍保持运行。
-4. tool 之后再次收到 `reasoning` 或 `message` 时，创建下一条 assistant 消息，不要继续追加到工具调用前的 assistant 消息。
-5. 收到 `done` 时，将最后一条 streaming assistant 标记为 completed。
-6. 收到 `error` 时，将 streaming assistant 标记为 error。
-
-SSE 没有服务端 `seq` 和 `created_at`，因此实时消息使用临时 ID 和浏览器时间。
-
-## 8. 完成后的服务端对账
-
-历史数据和实时数据建议分开保存：
-
-```ts
-const visibleMessages = [...historyMessages, ...streamingMessages];
-```
-
-收到 `done` 或 `error` 后：
-
-1. 暂时保留 streamingMessages，避免界面闪烁。
-2. 重新请求当前 Session 的最新历史页。
-3. 历史请求成功后清空 streamingMessages。
-4. 使 Session 列表缓存失效，使刚对话的 Session 回到列表顶部。
-
-不要直接使用正文去重；相同正文可以合法出现多次。以历史接口返回的 `seq` 作为持久化消息唯一标识，临时消息使用独立 UUID。
-
-## 9. 页面完整交互流程
-
-```text
-页面启动
-  → 读取或创建游客 UUID Cookie
-  → GET /api/projects?user_id=...
-  → 对每个项目 GET /api/sessions?user_id=...&project_id=...
-  → 有 Session 时选中已有会话，读取历史并渲染
-  → 项目中没有 Session 时展示空聊天页
-
-用户发送问题
-  → 若当前为空聊天页，先 POST /api/sessions（携带 project_id）
-  → 创建成功后选中真实 Session；创建失败保留原消息并提供重试
-  → 本地插入 user 消息并禁用重复提交
-  → POST /chat，fetch 读取 SSE
-  → reasoning/message/tool_call 增量更新临时消息
-  → done/error 结束当前流
-  → 刷新历史消息和 Session 列表
-  → 服务端历史到达后移除临时消息
-
-连接异常或刷新页面
-  → 获取最新历史，根据 can_resume 恢复“继续执行”入口
-  → 点击后 POST /api/sessions/{session_id}/resume，不重复追加 user 消息
-  → 已收到 done/error 时，收尾断线不覆盖该终态
-
-用户向上滚动
-  → has_more=true 时携带 next_before_seq 请求更早历史
-  → 将返回消息插到列表头部
-  → 恢复加载前的视觉滚动位置
-
-用户新建项目
-  → POST /api/directory-picker
-  → 在 Go 服务所在的设备（Mac / Windows）上选择目录
-  → 输入项目名称
-  → POST /api/projects
-  → 刷新项目列表并选中新项目，展示空聊天页
-
-用户在项目中新建会话
-  → 展示该项目的空聊天页，等待用户输入
-  → 首次发送时才创建真实 Session
-
-用户删除会话
-  → 确认后 DELETE /api/sessions/{id}?user_id=...
-  → 清理列表、历史和上下文缓存
-  → 删除选中会话时选择同项目的其他会话；没有剩余会话则展示空聊天页
-```
-
-## 10. 取消与并发
-
-- 每个 Session 同时只允许一轮 `/chat`；并发请求返回 `409`。
-- 前端发送期间应禁用该 Session 的发送按钮，但其他 Session 可以并行对话。
-- 使用 `AbortController` 可以中断浏览器请求；连接断开会取消服务端当前请求。
-- 切换 Session 时可以让后台流继续并按 Session 保存状态，也可以显式 abort；两种策略必须保持一致。
-- `done` 或 `error` 后必须释放发送中状态，避免输入框永久锁定。
+实现编排、MQ 存储、恢复边界和本轮限制见 [异步聊天任务设计](async-chat-task-design.md)。

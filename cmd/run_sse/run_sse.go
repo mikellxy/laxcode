@@ -19,8 +19,7 @@ import (
 )
 
 // shutdownTimeout 是优雅关闭等待在途 SSE 流结束的上限。一次完整 ReAct 生成可能
-// 较长，故给一个宽松兜底值而非无限等待；超时后强制 Close 断开连接，由 r.Context()
-// 取消驱动在途 Chat 收敛、Cleanup 回收资源。
+// 较长，故使用有限等待；后台任务先由服务 context 取消，再关闭订阅连接。
 const shutdownTimeout = 15 * time.Second
 
 // fatal 由 Run 在资源清理完成后调用，保留命令失败时的非零退出码。
@@ -104,8 +103,8 @@ func run(codeInstance *CodeInstanceGuard) error {
 	case <-ctx.Done():
 	}
 
-	// 优雅关闭：停收新连接并等在途 SSE 流结束；超时则强制 Close 断开，r.Context()
-	// 随之取消，驱动在途 Chat 从 LLM/工具调用收敛，各请求的 defer Cleanup 得以执行。
+	// 先取消后台执行并等待收尾，再关闭 HTTP 订阅；请求断开不承担任务取消。
+	users.server.stopTasks()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -120,6 +119,8 @@ func (s *server) routes() *http.ServeMux {
 	// 无需在各 handler 内重复判方法。
 	mux.HandleFunc("POST /chat", s.handleChat)
 	mux.HandleFunc("POST /api/sessions/{session_id}/resume", s.handleResume)
+	mux.HandleFunc("GET /api/tasks/{task_id}/events", s.handleTaskEvents)
+	mux.HandleFunc("POST /api/tasks/{task_id}/cancel", s.handleCancelTask)
 	mux.HandleFunc("POST /api/evaluations", s.handleCreateEvaluation)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 

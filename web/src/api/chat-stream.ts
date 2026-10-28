@@ -1,7 +1,7 @@
-import { ApiError, request } from "./client";
-import type { ErrorPayload, StreamEvent } from "../types/api";
+import { ApiError, request, requestJSON } from "./client";
+import type { ErrorPayload, StreamEvent, TaskDTO } from "../types/api";
 
-const eventNames = new Set(["prepare", "start", "reasoning", "message", "tool_call", "done", "error"]);
+const eventNames = new Set(["task_state", "refresh_required", "prepare", "start", "reasoning", "message", "tool_call", "done", "error"]);
 
 export function parseSSEFrame(frame: string): StreamEvent | null {
   let event = "message";
@@ -40,5 +40,7 @@ async function consumeSSE(url: string, init: RequestInit, signal: AbortSignal, o
   if (buffer.trim()) { const event = parseSSEFrame(buffer); if (event) onEvent(event); }
 }
 
-export const streamChat = (sessionID: string, task: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void) => consumeSSE("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionID, task }) }, signal, onEvent);
-export const resumeChat = (sessionID: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void) => consumeSSE(`/api/sessions/${encodeURIComponent(sessionID)}/resume`, { method: "POST" }, signal, onEvent);
+export const streamChat = (sessionID: string, task: string) => requestJSON<TaskDTO>("/chat", { method: "POST", body: JSON.stringify({ session_id: sessionID, task }) });
+export const resumeChat = (sessionID: string, taskID?: string | null) => requestJSON<TaskDTO>(`/api/sessions/${encodeURIComponent(sessionID)}/resume`, { method: "POST", body: JSON.stringify({ task_id: taskID ?? "" }) });
+export const subscribeTask = (taskID: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void) => consumeSSE(`/api/tasks/${encodeURIComponent(taskID)}/events`, { method: "GET" }, signal, onEvent);
+export const cancelTask = (taskID: string) => requestJSON<TaskDTO>(`/api/tasks/${encodeURIComponent(taskID)}/cancel`, { method: "POST" });

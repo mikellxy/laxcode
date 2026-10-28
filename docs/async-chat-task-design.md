@@ -1,6 +1,6 @@
 # 异步聊天任务与 SSE 重连恢复设计
 
-状态：设计方案，尚未实现。本文只定义本轮原型范围，不表示现有接口已经切换。
+状态：原型已实现于工作区，尚未部署线上。本文定义当前任务模式及本轮明确保留的限制。
 
 目标：浏览器刷新、关闭页面或 SSE 断线不取消后台聊天；同项目任务串行；重新打开页面可以恢复已保存历史和当前任务输出；失败后由用户选择继续执行或发送新消息。
 
@@ -28,13 +28,13 @@
 
 ### 编排代码的强制约束
 
-`handleChat`、`handleResume`、`handleTaskEvents` 三个主函数必须完整展示各自的编排。阅读单个主函数，应能看到参数和身份校验、锁边界、状态判断、任务创建或订阅、执行或消费、错误处理和响应。
+`handleChat`、`handleResume`、`handleTaskEvents` 三个主函数必须完整展示各自的编排（实现集中在 `cmd/run_sse/tasks.go`）。阅读单个主函数，应能看到参数和身份校验、锁边界、状态判断、任务创建或订阅、执行或消费、错误处理和响应。
 
 允许调用职责单一的辅助函数，例如参数解析、单次仓储操作、消息序号分配、一次 MQ 发布、consumer 创建、JSON/SSE 编码，以及现有 ReAct/文件统计领域能力。
 
 不得拆成 `prepareChat → submitChat → startChat`、`validateResume → scheduleResume` 或 `prepareStream → replayStream → followStream` 等阶段函数。不得用一个 `runTask`/`serveTaskStream` 包装隐藏主要流程。为了集中表达完整流程，chat/resume 可以保留必要的编排重复。
 
-异步执行及其 defer 在主函数的 goroutine 闭包内完整展开。该 defer 属于后台 ReAct 执行作用域，不是 HTTP handler 返回时执行的 defer；HTTP handler 不负责宣布任务执行成功。
+异步执行及其 defer 在主函数的 goroutine 闭包内完整展开。项目/session 内存锁仅另用于保护现有评估快照读取，DB 唯一索引负责聊天任务并发；两者保护的范围不同。该 defer 属于后台 ReAct 执行作用域，不是 HTTP handler 返回时执行的 defer；HTTP handler 不负责宣布任务执行成功。
 
 下文为 Go 风格的设计伪代码，不是可直接编译的实现。仓储、MQ 和 runtime registry 的调用代表单一操作；示意名称不限定最终命名。
 
@@ -314,13 +314,13 @@ Resume 内仍补齐缺失 tool result，不追加新 user message。沿用已有
 
 ### 6.1 MQ 约定
 
-采用启用 JetStream 的本机 NATS 服务，使用文件存储，文件目录不放在临时容器可写层。每个 task 对应独立 subject：
+原型采用每个 cloud 内嵌的 NATS JetStream（`DontListen` + 进程内连接），不新增监听端口或独立服务。使用同步落盘的文件存储，目录为持久 bind mount 下的 `agenthome/.laxcode/task-events`。每个 cloud/文件目录已按用户隔离，每个 task 对应独立 subject：
 
 ```text
-laxcode.events.<user_id>.<session_id>.<task_id>
+tasks.<task_id>
 ```
 
-一个或少量 stream 覆盖这些 subject，不要求每个任务创建一个 stream。使用可重复读取的 LimitsPolicy，不使用消费后删除的 WorkQueuePolicy 或依赖在线消费者保留数据的策略。
+每用户一个 `TASK_EVENTS` stream 覆盖这些 subject，不为每个任务创建 stream。session 归属由该用户 DB 中的任务记录确定。使用可重复读取的 LimitsPolicy，不使用消费后删除的 WorkQueuePolicy 或依赖在线消费者保留数据的策略。
 
 每个 SSE 连接拥有独立的 consumer 和读取位置；断开时销毁本连接 consumer，不销毁任务输出。刷新后可以从该 task 起点重放，多页面互不抢消息。consumer 要支持任务尚未发布第一条事件时等待。
 
@@ -480,6 +480,7 @@ cloud 启动恢复的遗留任务没有正常执行收尾：确认旧执行者�
 ```json
 {
   "text": "用户最后一次发送的内容",
+  "created_at": "2026-10-27T12:00:00Z",
   "base_message_seq": 11,
   "task_id": "提交响应返回后补充；响应丢失时可为空"
 }
@@ -521,7 +522,7 @@ proxy 独立重启不执行上述 task 失败转换，因为原 cloud 可能仍�
 
 ## 10. 实施入口与联动
 
-- `cmd/run_sse/handler.go`：chat/resume 完整主函数及新任务订阅、停止入口。
+- `cmd/run_sse/tasks.go`：chat/resume 完整主函数及新任务订阅、停止入口；`handler.go` 保留 server 结构与通用协议代码。
 - `cmd/run_sse/sse.go`：事件封装、消息身份与输出 Consumer；不再把浏览器断开当作执行取消。
 - `cmd/run_sse/cloud.go`：服务 context、后台活动数、启动恢复和关闭顺序。
 - `internal/application/reactservice/reactservice.go`：task_id 传播、LLM/工具开始前的消息身份、发布错误传播。
@@ -529,7 +530,7 @@ proxy 独立重启不执行上述 task 失败转换，因为原 cloud 可能仍�
 - `workspace/metadata.go` 及现有远程仓储链路：任务读取、历史 DTO、用户 DB 访问。cloud 不另开全局 DB。
 - `laxcode-proxy/main.go`：chat/resume 改为 JSON，移除这些提交接口的 prepare SSE 包装；新 events 路由才流式转发。准备沙箱期间由前端提交状态展示等待。
 - `web/src/api/chat-stream.ts`、`web/src/hooks/use-workspace.ts`、reducer 和消息组件：提交与订阅解耦、恢复、去重、本地输入、停止及状态提示。
-- 部署配置：本机 JetStream、持久目录、连接配置与最小用户隔离；浏览器不直接连接 NATS。
+- `internal/infrastructure/taskevents`：内嵌 JetStream 和进程内连接；复用现有持久工作目录挂载，无新增部署端口、外部 MQ 凭据或 eBPF peer 配置；浏览器不直接连接 NATS。
 
 不改动 eBPF pinned metadata 接管校验，不通过重建 DB 或删除 pins 实现任务升级。
 

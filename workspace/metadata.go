@@ -397,10 +397,14 @@ func (s *API) HandleSwitchModel(w http.ResponseWriter, r *http.Request) {
 }
 
 type HistoryPageDTO struct {
-	CanResume     bool                `json:"can_resume"`
-	Messages      []historyMessageDTO `json:"messages"`
-	NextBeforeSeq uint64              `json:"next_before_seq,omitempty"`
-	HasMore       bool                `json:"has_more"`
+	TaskID           *string             `json:"task_id"`
+	TaskStatus       *string             `json:"task_status"`
+	TaskErrorCode    string              `json:"task_error_code,omitempty"`
+	TaskErrorMessage string              `json:"task_error_message,omitempty"`
+	CanResume        bool                `json:"can_resume"`
+	Messages         []historyMessageDTO `json:"messages"`
+	NextBeforeSeq    uint64              `json:"next_before_seq,omitempty"`
+	HasMore          bool                `json:"has_more"`
 }
 
 // HandleHistory 处理 GET /api/sessions/{session_id}/messages。
@@ -446,6 +450,10 @@ func (s *API) HandleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := HistoryPageDTO{Messages: make([]historyMessageDTO, len(page.Messages)), HasMore: page.HasMore, CanResume: page.CanResume}
+	if t := page.LatestTask; t != nil {
+		response.TaskID, response.TaskStatus = &t.ID, &t.Status
+		response.TaskErrorCode, response.TaskErrorMessage = t.ErrorCode, t.ErrorMessage
+	}
 	for i, msg := range page.Messages {
 		response.Messages[i] = historyMessageDTO{
 			Seq: msg.Seq, Role: msg.Role, Content: msg.Content,

@@ -29,7 +29,7 @@ var (
 	ErrStaleSequence   = errors.New("sessionrepo: stale message sequence")
 	ErrStaleGeneration = errors.New("sessionrepo: stale memory generation")
 	ErrSessionNotFound = errors.New("sessionrepo: session not found")
-	ErrSessionBusy     = errors.New("sessionrepo: session has an active evaluation")
+	ErrSessionBusy     = errors.New("sessionrepo: session has an active task or evaluation")
 	ErrProjectNotFound = errors.New("sessionrepo: project not found")
 )
 
@@ -262,6 +262,9 @@ func (r *SqliteSessionRepo) migrate() error {
 			ON projects(user_id, updated_at DESC, project_id DESC)`).Error; err != nil {
 			return fmt.Errorf("create project list index: %w", err)
 		}
+		if err := migrateTasks(tx); err != nil {
+			return err
+		}
 		if err := migrateEvaluationJobs(tx); err != nil {
 			return err
 		}
@@ -329,6 +332,14 @@ func (r *SqliteSessionRepo) DeleteSession(ctx context.Context, id, userID string
 		if activeEvaluations > 0 {
 			return ErrSessionBusy
 		}
+		var activeTasks int64
+		if err := tx.Model(&session.Task{}).Where("session_id = ? AND status IN ('waiting','running')", id).Count(&activeTasks).Error; err != nil {
+			return err
+		}
+		if activeTasks > 0 {
+			return ErrSessionBusy
+		}
+
 		// Explicitly delete every message generation, without relying on foreign-key settings.
 		if err := tx.Exec("DELETE FROM chat_upsert_files WHERE session_id = ?", id).Error; err != nil {
 			return fmt.Errorf("delete chat files: %w", err)
@@ -340,6 +351,7 @@ func (r *SqliteSessionRepo) DeleteSession(ctx context.Context, id, userID string
 			return fmt.Errorf("delete session context: %w", err)
 		}
 		// Keep the database records available for retry if file cleanup fails.
+
 		path := filepath.Join(r.historyRoot, id)
 		if info, err := os.Lstat(path); err == nil && !info.IsDir() {
 			return fmt.Errorf("session path is not a directory: %s", path)
@@ -471,6 +483,10 @@ func (r *SqliteSessionRepo) ListOriginalHistory(ctx context.Context, id string, 
 			return fmt.Errorf("check session existence: %w", err)
 		}
 		found = true
+		page.LatestTask, err = latestTask(tx, id)
+		if err != nil {
+			return err
+		}
 		// Use the current working set, independent of which history page is requested.
 		var user, tail messageModel
 		memory := func() *gorm.DB {
@@ -595,7 +611,11 @@ func (r *SqliteSessionRepo) CommitCreateMessage(ctx context.Context, id string, 
 		if err != nil {
 			return err
 		}
-		if err := validateCreateTransition(snapshot, current, exists); err != nil {
+		var reserved uint64
+		if err := tx.Raw("SELECT reserved_seq FROM message_sequences WHERE session_id = ?", id).Scan(&reserved).Error; err != nil {
+			return err
+		}
+		if err := validateCreateTransition(snapshot, current, exists, reserved); err != nil {
 			return err
 		}
 		now := time.Now().UTC()
@@ -769,7 +789,7 @@ func validateCreatedMessage(snapshot session.RequestContext, original, memory sh
 	return nil
 }
 
-func validateCreateTransition(snapshot session.RequestContext, current requestContextModel, exists bool) error {
+func validateCreateTransition(snapshot session.RequestContext, current requestContextModel, exists bool, reserved uint64) error {
 	if !exists {
 		if snapshot.Revision != 0 {
 			return ErrContextConflict
@@ -794,7 +814,7 @@ func validateCreateTransition(snapshot session.RequestContext, current requestCo
 	if current.MemoryGeneration != snapshot.MemoryGeneration {
 		return ErrStaleGeneration
 	}
-	if current.LastSeq == ^uint64(0) || snapshot.LastSeq != current.LastSeq+1 {
+	if current.LastSeq == ^uint64(0) || (snapshot.LastSeq <= current.LastSeq || (snapshot.LastSeq != current.LastSeq+1 && snapshot.LastSeq != reserved)) {
 		return ErrStaleSequence
 	}
 	return nil

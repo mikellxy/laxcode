@@ -28,6 +28,8 @@ type ReActService struct {
 	ToolRegistry            tools.Registry
 	Artifacts               tools.ArtifactStore
 	ReActEventConsumerF     func(reactEvent *ReactEvent)
+	ReserveMessageSequence  func(context.Context, string) (uint64, error)
+	TaskID                  string
 	// tracer 是 chat 及其子 span 的追踪注入点，经构造注入；nil 缺省
 	// noop，不产生任何观测输出。类型经 telemetry 别名持有，本包不直接
 	// 依赖 OTel（span 的开启与收尾均走 telemetry 辅助函数）。
@@ -65,6 +67,8 @@ type ContextUsage struct {
 }
 
 type ReactEvent struct {
+	TaskID       string
+	MessageSeq   uint64
 	Type         string
 	Content      string                    // 工具执行提示或人工确认说明
 	ChunkEvent   *sharedkernel.StreamChunk // LLM 流式增量，仅 chunk 事件携带
@@ -142,6 +146,12 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	}
 	userMsg := r.Session.BuildUserMessage(p)
 	userMsg.ChatID = telemetry.ChatIDFromContext(ctx)
+	if r.ReserveMessageSequence != nil {
+		userMsg.Seq, err = r.ReserveMessageSequence(ctx, r.Session.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	candidate, err := r.Session.WithAppendedMessage(&userMsg)
 	if err != nil {
 		return nil, err
@@ -149,7 +159,7 @@ func (r *ReActService) Chat(ctx context.Context, p string) (
 	if err = r.commitCreatedMessage(ctx, candidate, userMsg, userMsg); err != nil {
 		return nil, err
 	}
-	return r.think(ctx)
+	return r.think(ctx, r.TaskID)
 }
 
 // Resume 恢复已经持久化 user message、但尚未以无工具调用 assistant 收束的
@@ -164,7 +174,7 @@ func (r *ReActService) Resume(ctx context.Context) (msg *sharedkernel.Message, e
 	if err := r.recoverBeforeChat(ctx); err != nil {
 		return nil, fmt.Errorf("recover previous chat: %w", err)
 	}
-	return r.think(ctx)
+	return r.think(ctx, r.TaskID)
 }
 
 // Chat 和 Resume 共用执行 span；chat_id 只由请求入口记录。
@@ -257,7 +267,7 @@ func missingToolResults(messages []sharedkernel.Message) []sharedkernel.ToolCall
 	return missing
 }
 
-func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error) {
+func (r *ReActService) think(ctx context.Context, taskID string) (*sharedkernel.Message, error) {
 	turnCnt := 0
 	streak := recentToolStreak(r.Session.Messages)
 	for {
@@ -274,6 +284,14 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 			return nil, prepareErr
 		}
 
+		var messageSeq uint64
+		if r.ReserveMessageSequence != nil {
+			var err error
+			messageSeq, err = r.ReserveMessageSequence(ctx, r.Session.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
 		llmStart := time.Now()
 		llmCtx, llmSpan := telemetry.Start(ctx, r.tracer, telemetry.SpanLLMGenerate,
 			telemetry.AttrTurnSeq.Int(turnCnt),
@@ -285,7 +303,7 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 				llmSpan.AddEvent(telemetry.EventFirstOutput)
 				llmSpan.SetAttributes(telemetry.AttrTTFTMs.Int64(time.Since(llmStart).Milliseconds()))
 			}
-			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeChunk, ChunkEvent: &chunkEvent})
+			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeChunk, TaskID: taskID, MessageSeq: messageSeq, ChunkEvent: &chunkEvent})
 		})
 		if msg != nil {
 			llmSpan.SetAttributes(
@@ -301,6 +319,7 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 		if err != nil {
 			return msg, err
 		}
+		msg.Seq = messageSeq
 		if err := r.handleTurnMsg(ctx, msg); err != nil {
 			return nil, err
 		}
@@ -313,11 +332,19 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 
 		interrupted := false
 		for _, tc := range msg.ToolCalls {
+			var toolSeq uint64
+			if r.ReserveMessageSequence != nil {
+				var err error
+				toolSeq, err = r.ReserveMessageSequence(ctx, r.Session.ID)
+				if err != nil {
+					return nil, err
+				}
+			}
 			info := r.ToolRegistry.BeforeExecInfo(&tc)
 			if r.userRoot != "" {
 				info = strings.ReplaceAll(info, r.userRoot, "")
 			}
-			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, Content: info, ContextUsage: r.contextUsageSnapshot()})
+			r.ReActEventConsumerF(&ReactEvent{Type: ReActEventTypeToolCall, TaskID: taskID, MessageSeq: toolSeq, Content: info, ContextUsage: r.contextUsageSnapshot()})
 
 			var result *sharedkernel.ToolResult
 			if interrupted {
@@ -340,6 +367,7 @@ func (r *ReActService) think(ctx context.Context) (*sharedkernel.Message, error)
 				}
 			}
 			toolMsg := tools.ToolResultAsMsg(result)
+			toolMsg.Seq = toolSeq
 			toolMsg.DisplayContent = info
 			if err := r.handleTurnMsg(ctx, toolMsg); err != nil {
 				return nil, err
@@ -432,6 +460,13 @@ func (r *ReActService) executeToolCall(ctx context.Context, call *sharedkernel.T
 func (r *ReActService) handleTurnMsg(ctx context.Context, msg *sharedkernel.Message) error {
 	if r.userRoot != "" && msg.Role == sharedkernel.RoleAssistant {
 		msg.ChatID = telemetry.ChatIDFromContext(ctx)
+	}
+	if msg.Seq == 0 && r.ReserveMessageSequence != nil {
+		seq, err := r.ReserveMessageSequence(ctx, r.Session.ID)
+		if err != nil {
+			return err
+		}
+		msg.Seq = seq
 	}
 	candidate, err := r.Session.WithAppendedMessage(msg)
 	if err != nil {
